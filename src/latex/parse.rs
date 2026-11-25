@@ -1296,8 +1296,11 @@ fn cd_connector_end(row: &str, at: usize) -> usize {
             }
             i
         },
-        // `@.`, `@=`, `@|`
-        _ => at + 2,
+        // `@.`, `@=`, `@|`, or `@` and any other character
+        _ => row[at + 1..]
+            .chars()
+            .next()
+            .map_or(row.len(), |ch| at + 1 + ch.len_utf8()),
     }
 }
 
@@ -6156,6 +6159,7 @@ impl LatexCompactParser {
         // At the end of its list no space follows anyway.
         if scripts.is_empty()
             || scripts.starts_with('}')
+            || starts_limit_modifier(scripts)
             || self.script_marker_at(scripts).is_some()
         {
             return None;

@@ -394,7 +394,7 @@ fn is_plain_group_row(nodes: &[MathNode]) -> bool {
 
 /// Heap form of `is_idotsint_row`.
 fn is_idotsint_math(nodes: &[MathNode]) -> bool {
-    let is = |node: &MathNode, kind, text: &str| matches!(without_sizes(node), MathNode::Symbol(k, t) if *k == kind && t == text);
+    let is = |node: &MathNode, kind, text: &str| matches!(peel_attributes(node), MathNode::Symbol(k, t) if *k == kind && t == text);
     matches!(nodes, [first, dots, last]
         if is(first, SymbolKind::LargeOp, "\u{222B}")
             && is(dots, SymbolKind::Ordinary, "\u{22EF}")
@@ -404,7 +404,7 @@ fn is_idotsint_math(nodes: &[MathNode]) -> bool {
 /// Whether a node can be the base of leading scripts. Mirrors
 /// `can_take_prescripts` for compact nodes.
 fn can_take_prescripts_math(node: &MathNode) -> bool {
-    match without_sizes(node) {
+    match peel_attributes(node) {
         MathNode::PreScripts { .. }
         | MathNode::Space(_)
         | MathNode::ExplicitSpace { .. }
@@ -416,8 +416,22 @@ fn can_take_prescripts_math(node: &MathNode) -> bool {
     }
 }
 
+/// Whether `node`, or what its attributes are on, is a zero-width space or a
+/// group that normalization emptied.
 fn is_zero_space_math(node: &MathNode) -> bool {
-    matches!(without_sizes(node), MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } if width.num == 0)
+    match peel_attributes(node) {
+        MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
+        MathNode::Row(nodes) => nodes.is_empty(),
+        _ => false,
+    }
+}
+
+/// The node under typesetting attributes.
+fn peel_attributes(mut node: &MathNode) -> &MathNode {
+    while let MathNode::Attributed { content, .. } = node {
+        node = content;
+    }
+    node
 }
 
 /// Whether an empty-base script becomes a leading script of `next`, or of the

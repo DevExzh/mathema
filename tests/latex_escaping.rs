@@ -1936,6 +1936,8 @@ fn braced_operators_are_ordinary() {
         (r"\sum{}x", r"\sum{}x"),
         (r"{\sum x}", r"\sum x"),
         (r"{\sum}", r"\sum"),
+        (r"x^{a{\sum}}", r"x^{a\sum}"),
+        (r"{\sum\limits}x", r"\sum\limits{}x"),
     ] {
         assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
         assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
@@ -2025,6 +2027,11 @@ fn unwritable_colors_around_nothing_are_stable() {
         r"\left(\color{}\idotsint\right)",
         r"^m^\colorbox{~}{}x",
         r"^{\colorbox{~}\mathbf{}}",
+        r"^{\bf{\colorbox{~}{}}}",
+        r"^\textcolor{}{\colorbox{~}{}}x",
+        r"x_\textcolor{}{\colorbox{~}{}}+y",
+        r"\mathop e_\kern_\}",
+        r"\left(\sideset{}{}\int\middle.\right)",
     ] {
         let first = mathema::convert(source, LaTeX, LaTeX).unwrap();
         assert_eq!(
@@ -2064,6 +2071,185 @@ fn nested_unicode_math_brackets_are_grouped() {
             .unwrap();
         let back = mathema::from_mtef(&mtef).unwrap();
         assert_eq!(back.to_unicode_math().unwrap(), source);
+        let latex = format!(r"\underset{{\char{} }}{{c}}", mark as u32);
+        assert_eq!(back.to_latex().unwrap(), latex);
+    }
+}
+
+/// `\limits` is for operators, which a group is not.
+#[test]
+fn limits_after_a_group_are_refused() {
+    for source in [
+        r"{\sum}\limits_a x",
+        r"{\sum} \nolimits_a x",
+        "{\\sum}%\n \\limits_a x",
+        r"{\sum}\relax\limits_a x",
+        r"{{\sum}}\limits_a x",
+        r"\sum {\sum}\limits_a x",
+        r"a{\int}\limits",
+        r"x^{{\sum}\limits_a}",
+    ] {
+        assert!(mathema::from_latex(source).is_err(), "{source}");
+        let config = Config::default().with_strictness(Strictness::Lenient);
+        let lenient = mathema::from_latex_with(source, &config).unwrap();
+        assert!(!lenient.diagnostics().is_empty(), "{source}");
+    }
+    assert!(mathema::from_latex(r"\sum\limits_a x").is_ok());
+}
+
+/// Every tokenizer takes characters of any width anywhere. (A byte index into
+/// one panics.)
+#[test]
+fn multibyte_characters_anywhere() {
+    let latex = [
+        r"\begin{CD}A @>a>b> B @VVV @AAA @. @= @| @\vert @<<< C\\ @V{x}VyV\end{CD}",
+        r"\xymatrix{A \ar[r]^f_g & B \ar@{->}[d]|h \\ C \ar@/^/[u]}",
+        r"\begin{prooftree}\AxiomC{a}\LeftLabel{l}\UnaryInfC{b}\BIC{c}\end{prooftree}",
+        r"\ce{H2O + ^{14}_6C^2+ ->[a][b] SO4^2- v <=> A-B=C#D (aq) $x$}",
+        r"\pu{123.4(5)e-6 m/s^2 kJ//mol}\SI{1.2e3}{\kilo\gram}\num{1.5(6)e7}\ang{1;2;3}",
+        r"\definecolor{f}{RGB}{1,2,3}\color{f!50!blue}x\textcolor[rgb]{1,0,0}{y}",
+        r"\begin{array}{|l*{2}{r@{x}c}>{\columncolor{red}}p{1cm}:}a&b\\[2pt]\cline{1-2}\end{array}",
+        r"\begin{empheq}[left=\{,right=\}]{align}a&=b\end{empheq}",
+        r"\rule[1em]{2em}{3pt}\raisebox{1em}{x}\hspace*{1cm}\kern-2mu\genfrac(]{0pt}{1}{a}{b}",
+        r#"\char"41\char`\a\char'101\verb|a b|\text{\char`\x \'e\"{o}\c{c}\v s}"#,
+        r"\newcommand{\f}[2][d]{#1x#2}\f[q]{r}\def\a#1.#2{#1}\a b.c\let\x=y",
+        r"\sqrt[3]{x}\left<\frac12\middle/\right>\Bigm|\xrightarrow[b]{a}\prescript{a}{b}{c}",
+        r"\href{u}{y}\tag*{2}\dv[2]{f}{x}\qty(a)\Braket{a|b}\Set{x|y}\mqty(a&b\\c&d)",
+    ];
+    let others = [
+        "√(3&x)+■(a&b@c&d)^2_(ij)〖x┴⎴〗┴n \"t\" ∑_(i=1)^n▒a_i █(a&=b) (a/b) ⟨x|y⟩ x ̂",
+        "<math><mi mathsize='12pt'>x</mi><mn>1</mn><mspace width='1em'/><ms lquote='\"'>s</ms>&alpha;<mtable columnalign='left right'><mtr><mtd>y</mtd></mtr></mtable></math>",
+        "<m:oMath xmlns:m='http://schemas.openxmlformats.org/officeDocument/2006/math'><m:acc><m:accPr><m:chr m:val='^'/></m:accPr><m:e><m:r><m:rPr><m:sty m:val='p'/></m:rPr><m:t>x</m:t></m:r></m:e></m:acc></m:oMath>",
+    ];
+    let strict = Config::default();
+    let lenient = Config::default().with_strictness(Strictness::Lenient);
+    let read = |source: &str, index: usize| {
+        for config in [&strict, &lenient] {
+            let parsed = match index {
+                0 => mathema::from_unicode_math_with(source, config),
+                1 => mathema::from_mathml_with(source, config),
+                2 => mathema::from_omml_with(source, config),
+                _ => mathema::from_latex_with(source, config),
+            };
+            if let Ok(parsed) = parsed {
+                let _ = parsed.to_latex();
+                let _ = parsed.to_unicode_math();
+            }
+        }
+    };
+    let sources = others
+        .iter()
+        .enumerate()
+        .map(|(index, &source)| (index, source));
+    for (index, source) in sources.chain(latex.iter().map(|&source| (3, source))) {
+        let mut ends = source.char_indices().map(|(at, _)| at).collect::<Vec<_>>();
+        ends.push(source.len());
+        for pair in ends.windows(2) {
+            for wide in ["é", "\u{301}", "\u{3000}", "\u{1D400}"] {
+                let (before, after) = (&source[..pair[0]], &source[pair[0]..]);
+                read(&format!("{before}{wide}{after}"), index);
+                read(&format!("{before}{wide}{}", &source[pair[1]..]), index);
+                read(&format!("{before}{wide}"), index);
+            }
+        }
+    }
+}
+
+/// The heap normalizer and writers on trees that no LaTeX gives.
+#[test]
+fn heap_trees_normalize_and_write_like_compact_ones() {
+    use mathema::ast::compact::CompactExpr;
+    use mathema::ast::normalize::normalize_compact_expr;
+    use mathema::ast::{FontSize, NodeAttrs};
+    use mathema::writer::unicode_math::UnicodeMathWriter;
+    let sized = |node| MathNode::Attributed {
+        attrs: NodeAttrs::with_size(FontSize::Points(Rational::new(20, 1))),
+        content: Box::new(node),
+    };
+    let symbol = |kind, text: &str| MathNode::Symbol(kind, text.into());
+    let leading = || MathNode::Superscript {
+        base: Box::new(MathNode::Row(vec![])),
+        sup: Box::new(MathNode::Number("2".into())),
+    };
+    let fenced = |content: Vec<MathNode>| MathNode::Fenced {
+        open: "(".into(),
+        close: ")".into(),
+        content: content.into_iter().map(FencedItem::Element).collect(),
+    };
+    let dots = |first| {
+        MathNode::Row(vec![
+            first,
+            symbol(SymbolKind::Ordinary, "\u{22EF}"),
+            symbol(SymbolKind::LargeOp, "\u{222B}"),
+        ])
+    };
+    let cell = |nodes| MathNode::Array {
+        columns: vec![ColumnAlign::Center],
+        rows: vec![vec![nodes]],
+        arraystretch: None,
+        add_jot: false,
+    };
+    for node in [
+        // A zero-width space, also a sized one, and an emptied sized group.
+        fenced(vec![
+            symbol(SymbolKind::BinaryOp, "+"),
+            MathNode::Space(Rational::zero()),
+            sized(MathNode::Space(Rational::zero())),
+            symbol(SymbolKind::BinaryOp, "+"),
+        ]),
+        fenced(vec![
+            symbol(SymbolKind::BinaryOp, "+"),
+            sized(MathNode::Subscript {
+                base: Box::new(MathNode::Row(vec![])),
+                sub: Box::new(MathNode::Space(Rational::zero())),
+            }),
+        ]),
+        // A leading script leads the first node of a group kept for its break.
+        cell(vec![
+            leading(),
+            MathNode::Row(vec![
+                MathNode::Number("9".into()),
+                MathNode::LineBreak,
+                MathNode::Identifier("x".into()),
+            ]),
+        ]),
+        // But no space, sized or not.
+        MathNode::Row(vec![leading(), MathNode::Space(Rational::new(1, 1))]),
+        MathNode::Row(vec![leading(), sized(MathNode::Space(Rational::new(1, 1)))]),
+        // An `\\idotsint` stays one, with a sized sign too.
+        fenced(vec![dots(symbol(SymbolKind::LargeOp, "\u{222B}"))]),
+        fenced(vec![dots(sized(symbol(SymbolKind::LargeOp, "\u{222B}")))]),
+    ] {
+        let mut heap = MathExpr::inline(vec![node]);
+        let mut compact = CompactExpr::from_math_expr(&heap).unwrap();
+        normalize_expr(&mut heap);
+        normalize_compact_expr(&mut compact).unwrap();
+        assert_eq!(heap, compact.to_math_expr());
+    }
+    let bracket = |base| MathNode::Accent {
+        base: Box::new(base),
+        accent: '\u{23B4}',
+        position: AccentPosition::Above,
+        wide: true,
+    };
+    let x = || MathNode::Identifier("x".into());
+    for node in [bracket(bracket(x())), bracket(sized(bracket(x())))] {
+        let expr = MathExpr::inline(vec![node]);
+        let written = UnicodeMathWriter::write(&expr, &Config::default()).unwrap();
+        assert_eq!(written, "〖x┴⎴〗┴⎴");
+    }
+}
+
+/// The text around a logo in a box is one node.
+#[test]
+fn text_boxes_hold_one_text() {
+    for source in [
+        r"\angl{a\KaTeX b}",
+        r"\mbox{a\texttt{}b}",
+        r"\text{a\KaTeX b}",
+    ] {
+        let nodes = mathema::from_latex(source).unwrap().expr().nodes;
+        assert_eq!(format!("{nodes:?}").matches("Text(").count(), 1, "{source}");
     }
 }
 

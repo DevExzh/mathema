@@ -532,8 +532,6 @@ impl Decoder<'_> {
         })
     }
 
-    /// The character of a node that is (a row holding only) a one-character
-    /// symbol, identifier or operator.
     /// The slot and mark of a limit template that is an accent: a tilde, caret,
     /// dot or arrow above a character, or a combining mark below its base (as
     /// the writer writes one).
@@ -561,6 +559,8 @@ impl Decoder<'_> {
         }
     }
 
+    /// The character of a node that is (a row holding only) a one-character
+    /// symbol, identifier or operator.
     pub(super) fn single_char(&self, id: NodeId) -> Option<char> {
         let children = self.children_of(id);
         let [only] = children.as_slice() else {
