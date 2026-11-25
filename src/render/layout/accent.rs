@@ -28,9 +28,15 @@ pub(super) fn is_stretchy_accent(accent: char) -> bool {
     )
 }
 
-/// `\widehat`, `\widetilde` and `\widecheck`, accents of any width in TeX.
-fn is_wide_accent(accent: char) -> bool {
-    matches!(accent, '\u{0302}' | '\u{0303}' | '\u{030C}')
+/// Whether an accent is centred on the attachment point of a character:
+/// TeX's accents, of which `\widehat`, `\widetilde` and `\widecheck` are wide,
+/// not `\overrightarrow` and its like.
+fn is_centred_accent(accent: char, wide: bool) -> bool {
+    match accent {
+        '\u{0302}' | '\u{0303}' | '\u{030C}' => true,
+        '\u{2190}' | '\u{2192}' | '\u{2194}' | '\u{21BC}' | '\u{21C0}' => false,
+        _ => !wide,
+    }
 }
 
 /// The width an accent is drawn at: over a single character that of the
@@ -877,7 +883,7 @@ pub(super) fn layout_accent(
 
     // TeX Rule 12: only for accents above, not `\overrightarrow` and its like.
     let skew = match position {
-        AccentPosition::Above if !wide || is_wide_accent(accent) => accent_skew(&base_box),
+        AccentPosition::Above if is_centred_accent(accent, wide) => accent_skew(&base_box),
         _ => 0.0,
     };
     let accent_dx = (base_width - accent_box.width) / 2.0 + skew;
@@ -1261,7 +1267,7 @@ pub(super) fn layout_accent_arena(
     let accent_h = arena.get(accent_id).height;
 
     let skew = match position {
-        AccentPosition::Above if !wide || is_wide_accent(accent) => {
+        AccentPosition::Above if is_centred_accent(accent, wide) => {
             accent_skew_arena(base_id, arena)
         },
         _ => 0.0,

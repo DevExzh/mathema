@@ -429,6 +429,57 @@ fn the_bar_of_a_fraction_is_inside_its_null_delimiters() {
     assert_arena_heap_equivalent("\\frac{m}{s}", MathStyle::Display);
 }
 
+/// A bare integral sign as the base of a script, as other readers give it.
+#[test]
+fn a_display_integral_has_the_correction_of_its_variant() {
+    let base = || Box::new(MathNode::Symbol(SymbolKind::LargeOp, "∫".into()));
+    let expr = MathExpr::inline(vec![MathNode::Subscript {
+        base: base(),
+        sub: Box::new(MathNode::Number("2".into())),
+    }]);
+    let root = layout_expr(&expr, MathStyle::Display, &default_options());
+    assert!((root.width - 0.408 - 0.4).abs() < 1e-9, "{}", root.width);
+    let root = layout_expr(&expr, MathStyle::Text, &default_options());
+    assert!((root.width - 0.333 - 0.4).abs() < 1e-9, "{}", root.width);
+}
+
+/// The surd of a script is the glyph of the script's size.
+#[test]
+fn surds_are_chosen_at_the_size_of_their_text() {
+    let expr = crate::from_latex("x^{\\sqrt{y}}").unwrap().expr();
+    let root = layout_expr(&expr, MathStyle::Text, &default_options());
+    let text = format!("{root:?}");
+    let at = text.find("Delimiter").unwrap();
+    assert!(text[at..].contains("scale: 0.7 "), "{}", &text[at..]);
+}
+
+/// `\overrightarrow` and its like are centred on the base and as wide.
+#[test]
+fn wide_accents_have_the_width_of_the_base() {
+    for (latex, centred) in [
+        ("\\overrightarrow{T}", true),
+        ("\\widehat{T}", false),
+        ("\\widetilde{T}", false),
+    ] {
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        let BoxKind::HBox { children } = &root.kind else {
+            panic!("{root:?}")
+        };
+        let BoxKind::HBox { children } = &children[0].layout.kind else {
+            panic!("{root:?}")
+        };
+        let [base, accent] = &children[..] else {
+            panic!("{root:?}")
+        };
+        assert!(
+            (accent.layout.width - base.layout.width).abs() < 1e-9,
+            "{latex}"
+        );
+        assert_eq!(accent.dx.abs() < 1e-9, centred, "{latex}");
+    }
+}
+
 /// An accent over one character has its own width.
 #[test]
 fn accents_of_characters_do_not_stretch() {
