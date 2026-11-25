@@ -2705,7 +2705,7 @@ impl LatexCompactParser {
             *self.arena.node_mut_in_place(base) = CompactNode::Symbol(SymbolKind::Ordinary, sid);
         }
         if grouped {
-            base = self.ordinary_symbol(base);
+            base = self.ordinary_symbol(input, base);
         }
         // An infix fraction command is no atom: scripts after it begin the
         // next one, the denominator's first (`a \over^2 b`).
@@ -6290,7 +6290,7 @@ impl LatexCompactParser {
 
     /// A symbol in braces without spaces, as in `1{,}000` and `a{=}b`.
     #[inline(never)]
-    fn ordinary_symbol(&mut self, base: NodeId) -> NodeId {
+    fn ordinary_symbol(&mut self, rest: &str, base: NodeId) -> NodeId {
         let CompactNode::Symbol(
             SymbolKind::Punctuation | SymbolKind::BinaryOp | SymbolKind::Relation,
             _,
@@ -6298,6 +6298,11 @@ impl LatexCompactParser {
         else {
             return base;
         };
+        // The writer braces the base of a script.
+        let scripts = &rest[self.skip_script_ws(rest.as_bytes())..];
+        if starts_limit_modifier(scripts) || self.script_marker_at(scripts).is_some() {
+            return base;
+        }
         let ordinary = self.arena.push_node(CompactNode::MathAtom {
             atom_type: MathAtomType::Ord,
             content: base,

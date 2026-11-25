@@ -623,7 +623,6 @@ fn symbols_in_braces_have_no_space() {
         ("a{\\leq}b", 1.750),
         ("a{\\not=}b", 1.750),
         ("a{=}{=}b", 2.528),
-        ("a{=}^2b", 2.198),
         ("-{+}x", 2.128),
         ("a{;}b", 1.250),
         ("a=b", 2.306),
@@ -650,6 +649,10 @@ fn symbols_in_braces_have_no_space() {
     for (latex, expected) in [
         ("1{,}000", "1\\mathord{,}000"),
         ("a{=}b", "a\\mathord{=}b"),
+        // The base of a script is braced by the writer.
+        ("\\in_t", "{\\in}_t"),
+        ("{\\to}^t", "{\\rightarrow}^t"),
+        ("{+}'", "+^{\\prime}"),
         // Alone, or as an operand, the braces only delimit it.
         ("{=}", "="),
         ("x^{{+}}", "x^+"),
