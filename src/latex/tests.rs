@@ -3838,12 +3838,13 @@ fn empheq_box_wraps_inner_align_in_boxed() {
 #[test]
 fn empheq_left_brace_delimiter_and_combined_box() {
     use crate::convert::from_latex;
-    // `left=\{` (escaped brace) plus a combined `box=` key must both apply.
+    // `left=\{` (escaped brace, at its own size) plus a combined `box=` key must
+    // both apply.
     let src = r"\begin{empheq}[left=\{,box=\fbox]{align} a &= b\\ c &= d \end{empheq}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     assert!(
         mathml.contains(">{</mo>"),
-        "expected a left brace delimiter, got:\n{mathml}"
+        "expected a left brace, got:\n{mathml}"
     );
     assert!(
         mathml.contains("menclose notation=\"box\""),

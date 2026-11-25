@@ -2611,14 +2611,33 @@ fn empheq_sides_are_math() {
             r"\left\| @ \right\|",
         ),
         (r"left=\empheqlvert", r"\left| @ \right."),
-        (r"left=\{", r"\left\{ @ \right."),
-        (r"right=)", r"\left. @ \right)"),
-        (r"left=.", r"\left. @ \right."),
-        (r"left=\langle", r"\left\langle @ \right."),
-        (r"right=\Uparrow", r"\left. @ \right\Uparrow"),
-        // Not a delimiter.
+        // Other delimiters are math at their own size, as in pdfTeX.
+        (r"left=\{", r"{\{\left. @ \right.}"),
+        (r"right=)", r"{\left. @ \right.)}"),
+        (r"left=(", r"{(\left. @ \right.}"),
+        (r"left={(}", r"{(\left. @ \right.}"),
+        (r"left={{(}}", r"{(\left. @ \right.}"),
+        (r"left=.", r"{.\left. @ \right.}"),
+        (r"left=\langle", r"{\langle\left. @ \right.}"),
+        (r"right={\rangle}", r"{\left. @ \right.\rangle}"),
+        (r"left={|}", r"{|\left. @ \right.}"),
+        (r"left={\|}", r"{\|\left. @ \right.}"),
+        (r"left={/}", r"{/\left. @ \right.}"),
+        (r"left={\uparrow}", r"{\uparrow \left. @ \right.}"),
+        (r"left={\lfloor}", r"{\lfloor\left. @ \right.}"),
+        (r"right=\Uparrow", r"{\left. @ \right.\Uparrow}"),
         (r"left=\Rightarrow", r"{\Rightarrow \left. @ \right.}"),
+        (r"left={\int}", r"{\int{}\left. @ \right.}"),
+        (r"left=\sum", r"{\sum{}\left. @ \right.}"),
         (r"left={{x=\empheqlbrace}}", r"{{x=}\left\{ @ \right.}"),
+        (r"left={ {x=\empheqlbrace} }", r"{{x=}\left\{ @ \right.}"),
+        // A group of the command alone is the command.
+        (r"left={{\empheqlbrace}}", r"\left\{ @ \right."),
+        (r"left={\empheqlbrace}x", r"\left\{ x@ \right."),
+        (
+            r"right={{\empheqrbrace}\quad z}",
+            r"{\left. @ \right\}{\quad z}}",
+        ),
         ("left=", r"\left. @ \right."),
         // keyval takes off the braces around a whole value.
         (r"left={\empheqlbrace}", r"\left\{ @ \right."),
@@ -2647,8 +2666,8 @@ fn empheq_sides_are_math() {
             r"{\mathord{\text{\textbackslash{}empheqlbrace}}\left[ @ \right.}",
         ),
         (
-            r"left={\empheqlbrace}x",
-            r"{{\mathord{\text{\textbackslash{}empheqlbrace}}x}\left. @ \right.}",
+            r"left={x\empheqlbrace}y",
+            r"{{{x\mathord{\text{\textbackslash{}empheqlbrace}}}y}\left. @ \right.}",
         ),
         (
             r"right=x\empheqfoo",
@@ -2673,7 +2692,7 @@ fn empheq_sides_are_math() {
         let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
         assert_eq!(again, written, "{options}");
     }
-    // A symbol that TeX does not take as a delimiter is no fence, braced or not.
+    // A symbol is no fence, braced or not.
     for symbol in [
         "=",
         r"\Rightarrow",
@@ -2725,15 +2744,10 @@ fn empheq_sides_are_math() {
         ] {
             let input = format!(r"\begin{{empheq}}[{side}]{{align}}a\end{{empheq}}");
             let written = mathema::from_latex(&input).unwrap().to_latex().unwrap();
-            if matches!(symbol, "<" | ">") {
-                assert!(written.contains("angle"), "{side}: {written}");
-            } else {
-                assert!(
-                    written.contains(r"\left. \begin")
-                        && written.contains(r"\end{aligned} \right."),
-                    "{side}: {written}"
-                );
-            }
+            assert!(
+                written.contains(r"\left. \begin") && written.contains(r"\end{aligned} \right."),
+                "{side}: {written}"
+            );
             let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
             assert_eq!(again, written, "{side}");
         }

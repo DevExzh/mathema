@@ -376,8 +376,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LaTeX: `\bbsum`, which is written `\mathop{⅀}` for KaTeX, is read back as the
   operator, with its scripts and operand; the rewritten text differed from pass
   to pass next to primes, scripts and groups. `left=` and `right=` of empheq are
-  math of its own (`left={f(x)=\empheqlbrace}`) and its `\empheqlbrace`, …
-  delimiters as tall as the display; they were literal text. A compound symbol as a delimiter of `\genfrac` is a null
+  math of its own (`left={f(x)=\empheqlbrace}`), where only empheq's
+  `\empheqlbrace`, … are delimiters as tall as the display, as in pdfTeX; they
+  were literal text, and `left=(` was a tall parenthesis. A compound symbol as a delimiter of `\genfrac` is a null
   one, with a warning.
 - Security: a control word of the LaTeX output no longer takes in letters that
   follow it when what was between them writes nothing: the base of a leading

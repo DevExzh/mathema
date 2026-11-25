@@ -21,8 +21,7 @@ use crate::error::{
 use crate::unicode::decode_script_scalar;
 use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
-    UNNAMED_NARY, is_operator_command, is_tex_delimiter, latex_to_unicode, lookup_command,
-    operator_has_limits,
+    UNNAMED_NARY, is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
 };
 
 use place::{Buffers, Place};
@@ -781,11 +780,16 @@ fn braced(text: &str) -> Option<&str> {
 /// to the display: what is outside of it, the delimiter, and what is between.
 fn split_empheq_delimiter(spec: &str, left: bool) -> Option<(&str, char, &str)> {
     let mut found = None;
+    // Where the group that is open began.
+    let mut open: Option<usize> = None;
     let mut depth = 0usize;
     let mut at = 0;
     while let Some(byte) = spec.as_bytes().get(at) {
         match byte {
-            b'{' => depth += 1,
+            b'{' => {
+                depth += 1;
+                open = Some(at);
+            },
             b'}' => depth = depth.saturating_sub(1),
             b'\\' => {
                 let name = &spec[at + 1..];
@@ -793,10 +797,20 @@ fn split_empheq_delimiter(spec: &str, left: bool) -> Option<(&str, char, &str)> 
                     .find(|ch: char| !ch.is_ascii_alphabetic())
                     .unwrap_or(name.len());
                 let (name, after) = name.split_at(end);
-                if depth == 0
-                    && let Some(delimiter) = empheq_delimiter(name)
-                {
-                    found = Some((&spec[..at], delimiter, after));
+                let delimiter = empheq_delimiter(name);
+                // A group of the command alone is the command (`{\empheqlbrace}`).
+                let alone =
+                    open.filter(|&start| depth == 1 && spec[start + 1..at].trim().is_empty());
+                let bounds = match (depth, alone) {
+                    (0, _) => Some((&spec[..at], after)),
+                    (_, Some(start)) => after
+                        .trim_start()
+                        .strip_prefix('}')
+                        .map(|after| (&spec[..start], after)),
+                    _ => None,
+                };
+                if let (Some(delimiter), Some((before, after))) = (delimiter, bounds) {
+                    found = Some((before, delimiter, after));
                     if !left {
                         break;
                     }
@@ -8462,8 +8476,8 @@ impl LatexCompactParser {
         })
     }
 
-    /// What empheq's `left=` or `right=` sets beside the display: a delimiter as
-    /// tall as it, or math, which may hold such a delimiter (`f(x)=\empheqlbrace`).
+    /// What empheq's `left=` or `right=` sets beside the display: math, in which
+    /// only empheq's commands are delimiters as tall as it (`f(x)=\empheqlbrace`).
     /// Returns the math outside of the delimiter, it, and the math inside.
     fn parse_empheq_side<'a>(
         &mut self,
@@ -8474,12 +8488,6 @@ impl LatexCompactParser {
         let null = self.arena.push_str("");
         if spec.is_empty() {
             return Ok(("", (None, null, None)));
-        }
-        if let Ok((rest, delimiter)) = self.parse_delimiter_into(spec)
-            && rest.trim().is_empty()
-            && self.arena.str_val(delimiter).chars().all(is_tex_delimiter)
-        {
-            return Ok(("", (None, delimiter, None)));
         }
         let Some((first, delimiter, last)) = split_empheq_delimiter(spec, left) else {
             let (rest, math) = self.parse_empheq_math(spec)?;
