@@ -1303,9 +1303,8 @@ fn appended_ends_with_letter_command(buf: &str, start: usize, previous: bool) ->
 }
 
 /// Check if a node's first written character would be a plain ASCII letter.
-/// (XeTeX and LuaTeX also take a non-ASCII letter into the control word before
-/// it, as in `\alphaé`; KaTeX, MathJax, pdfTeX and the reader do not. A known
-/// limitation: which letters are written as themselves depends on the context.)
+/// (Only where a space is written early: `LatexBuffer` sets every letter apart
+/// from the control word before it.)
 /// Recursively handles compound nodes whose base is written via `write_braced`.
 fn node_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {

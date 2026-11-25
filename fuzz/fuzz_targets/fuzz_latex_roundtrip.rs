@@ -1,6 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use mathema::ast::normalize::normalize_compact_expr;
+use mathema::ast::validate_compact_depth_with;
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -15,6 +16,13 @@ fuzz_target!(|data: &[u8]| {
         let Ok(mut r1) = LatexReader::parse_compact(input, &config) else {
             return;
         };
+        // `from_latex` and `convert` refuse a tree that nests too deep, before
+        // they normalize: normalization goes no deeper, so what it leaves
+        // below would be normalized in the second pass only.
+        let limit = config.effective_max_depth();
+        if validate_compact_depth_with(&r1.expr.arena, r1.expr.roots, limit).is_err() {
+            return;
+        }
         if normalize_compact_expr(&mut r1.expr).is_err() {
             return;
         }

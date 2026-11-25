@@ -22,3 +22,6 @@ fuzz/seeds/latex`).
 - `fuzz/seeds/latex/` is written by hand, one construct or package per file;
   `tests/latex_fuzz_seeds.rs` checks that every environment of the dictionary is
   in one, and that each is read and stable.
+- `fuzz/seeds/mathml/` and `fuzz/seeds/omml/` (for `fuzz_mathml`, `fuzz_omml` and
+  `fuzz_omml_roundtrip`) have operators next to letters and to nodes that draw
+  nothing: what the LaTeX writer must set apart from a control word.

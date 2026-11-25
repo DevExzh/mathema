@@ -6,6 +6,9 @@ use mathema::reader::mathml::MathmlReader;
 use mathema::writer::Writer;
 use mathema::writer::mathml::MathmlWriter;
 
+#[path = "../support/latex_output.rs"]
+mod latex_output;
+
 fuzz_target!(|data: &[u8]| {
     if let Ok(input) = std::str::from_utf8(data) {
         let config = Config::default();
@@ -14,6 +17,7 @@ fuzz_target!(|data: &[u8]| {
                 let _ = MathmlReader::parse_compact(&xml, &config);
             }
             let _ = MathmlWriter::write(&parsed.expr.to_math_expr(), &config);
+            latex_output::write(parsed.expr, &config);
         }
     }
 });

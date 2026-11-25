@@ -1,8 +1,8 @@
 //! The characters that are letters (category code 11) in XeTeX and LuaTeX.
 //!
-//! Generated from the `\catcode`s of XeLaTeX and LuaLaTeX (TeX Live), which
-//! agree: the letters and marks of Unicode. A range also covers unassigned code
-//! points in it. ASCII is left out.
+//! The table is the output of `scripts/gen_tex_letters.py`, from the `\catcode`s
+//! of XeLaTeX and LuaLaTeX (TeX Live), which agree: the letters and marks of
+//! Unicode. A range also covers unassigned code points in it. ASCII is left out.
 
 /// Whether `ch`, not an ASCII character, continues the name of a control word
 /// in XeTeX and LuaTeX.

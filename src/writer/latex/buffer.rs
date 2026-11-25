@@ -74,6 +74,21 @@ fn control_words(text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// Some of `text` around the control word `word`.
+#[cfg(debug_assertions)]
+fn excerpt<'a>(text: &'a str, word: &str) -> &'a str {
+    const AROUND: usize = 60;
+    let at = text.find(&format!("\\{word}")).unwrap_or(0);
+    let boundary = |mut at: usize| {
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let end = (at + word.len() + AROUND).min(text.len());
+    &text[boundary(at.saturating_sub(AROUND))..boundary(end)]
+}
+
 impl LatexBuffer {
     pub(super) fn new(keep_undefined: bool, report: LossReport) -> Self {
         Self {
@@ -240,7 +255,7 @@ impl LatexBuffer {
             assert!(
                 self.words.contains(word),
                 "\\{word} in the output is no command the writer wrote: {}",
-                self.text
+                excerpt(&self.text, word)
             );
         }
         self.text
@@ -342,6 +357,72 @@ mod tests {
         buf.replace_char(0, &crate::writer::latex::escape::char_code('\u{301}', " "));
         buf.push('y');
         assert_eq!(&buf[..], r"\char769 \sum y");
+    }
+
+    /// A buffer with the undefined command `\foo` after `before`.
+    fn undefined(before: &str) -> LatexBuffer {
+        let mut buf = LatexBuffer::new(true, LossReport::default());
+        buf.push_str(before);
+        buf.command("foo");
+        buf.end_undefined_command();
+        buf
+    }
+
+    /// The end of an undefined command is followed through edits, too.
+    #[test]
+    fn a_group_after_an_undefined_command_is_set_apart_after_edits() {
+        // (`insert_str` before the command moves its end.)
+        let mut buf = undefined("x");
+        buf.insert_text(0, "{-}");
+        buf.push_str("{a}");
+        assert_eq!(buf.finish(), r"{-}x\foo\relax{a}");
+        // After it, it does not.
+        let mut buf = undefined("x");
+        buf.insert_text(buf.len(), "{}");
+        assert_eq!(buf.finish(), r"x\foo\relax{}");
+
+        let mut buf = undefined("xy");
+        buf.insert_text_at_each(&[0, 1, 2], "{-}");
+        buf.push_str("{a}");
+        assert_eq!(buf.finish(), r"{-}x{-}y{-}\foo\relax{a}");
+
+        // A command that was cut off has no end.
+        let mut buf = undefined("xyz");
+        buf.truncate_text(2);
+        buf.push_str("12345{a}");
+        assert_eq!(buf.finish(), "xy12345{a}");
+        let mut buf = undefined("xyz");
+        let len = buf.len();
+        buf.push_str("{a}");
+        buf.truncate_text(len);
+        buf.push_str("{b}");
+        assert_eq!(buf.finish(), r"xyz\foo\relax{b}");
+
+        // Space does not keep a group from being an argument.
+        let mut buf = undefined("");
+        buf.push_str("  {a}");
+        assert_eq!(buf.finish(), r"\foo\relax  {a}");
+        let mut buf = undefined("");
+        buf.push_str(" a{b}");
+        assert_eq!(buf.finish(), r"\foo a{b}");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn an_excerpt_is_short_and_whole_characters() {
+        let text = format!(r"{}\foo{}", "é".repeat(500), "é".repeat(500));
+        let shown = excerpt(&text, "foo");
+        assert!(shown.contains(r"\foo") && shown.len() < 200);
+        assert_eq!(excerpt(r"\foo", "foo"), r"\foo");
+        let panic = std::panic::catch_unwind(|| {
+            let mut buf = buffer();
+            buf.push_str("\\");
+            buf.push_str("input");
+            buf.push_str(&" é".repeat(500));
+            buf.finish()
+        })
+        .unwrap_err();
+        assert!(panic.downcast_ref::<String>().unwrap().len() < 300);
     }
 
     /// No dangerous command comes out of a command and letters after it.
