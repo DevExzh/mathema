@@ -31,6 +31,9 @@ pub(super) struct Glyph {
     pub(super) ch: char,
     /// Position in the font's 8-bit encoding (MTEF 5 `mtefOPT_CHAR_ENC_CHAR_8`).
     pub(super) font_position: Option<u8>,
+    /// Bold (1) and italic (2) of a character that only the definition of its
+    /// typeface style can make so.
+    pub(super) drawn: Option<u8>,
 }
 
 impl Glyph {
@@ -39,6 +42,7 @@ impl Glyph {
             typeface,
             ch,
             font_position: None,
+            drawn: None,
         }
     }
 
@@ -47,7 +51,13 @@ impl Glyph {
             typeface,
             ch,
             font_position: Some(position),
+            drawn: None,
         }
+    }
+
+    pub(super) const fn drawn(mut self, bits: u8) -> Self {
+        self.drawn = Some(bits);
+        self
     }
 }
 

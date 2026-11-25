@@ -188,7 +188,9 @@ None is drawn otherwise. By character, for the letters and digits an equation
 draws in such fonts only (any family, bytes 1 and 2), the pictures agree with
 bold = 1 and italic = 2 in 26 MTEF 2 equations and 310 MTEF 3 equations, with
 the description in 0 and 1; 3 and 18 show neither. The MTEF 2 equations are from
-about 11 documents, Macintosh and Windows, those of MTEF 3 from about 100.
+about 11 documents, Macintosh and Windows, those of MTEF 3 from about 100. All
+are Equation Editor's: no MTEF 3 (or 2) file of MathType with such a byte has a
+picture, and it is read as Equation Editor's are.
 
 No MTEF 4 equation with such a byte has a picture (3 equations have explicit
 fonts at all): there the reader keeps to the description of MTEF 4.

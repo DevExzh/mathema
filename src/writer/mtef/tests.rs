@@ -1413,3 +1413,229 @@ fn smashed_content_is_written() {
         }
     }
 }
+
+/// All text, function names or upper-case Greek of one style are defined so in
+/// MTEF 5; otherwise the loss is reported.
+#[test]
+fn styles_of_whole_equations_are_defined() {
+    use crate::{DiagnosticKind, MtefVersion, MtefWriteOptions};
+    let write = |latex: &str, version| {
+        let (bytes, diagnostics) = crate::from_latex(latex)
+            .unwrap()
+            .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(version))
+            .unwrap();
+        let losses = diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagnosticKind::Warning)
+            .count();
+        let read = crate::from_mtef_bytes(&bytes).unwrap();
+        (read.to_latex().unwrap().trim().to_owned(), losses)
+    };
+    for (latex, plain) in [
+        (r"\textbf{ab}", r"\text{ab}"),
+        (r"\textit{ab}", r"\text{ab}"),
+        (r"\mathbf{\sin}", r"\sin"),
+        (r"\mathit{\sin}", r"\sin"),
+        (r"\mathit{\Gamma}", r"\Gamma"),
+    ] {
+        assert_eq!(write(latex, MtefVersion::V5), (latex.to_owned(), 0));
+        assert_eq!(
+            write(latex, MtefVersion::V3),
+            (plain.to_owned(), 1),
+            "{latex}"
+        );
+    }
+    for (latex, plain) in [
+        (r"\textbf{ab}x\text{c}", r"\text{ab}x\text{c}"),
+        (r"\mathbf{\sin}x+\cos x", r"\sin x+ \cos x"),
+        (r"\mathit{\Gamma}\Delta", r"\Gamma\Delta"),
+        (r"\mathit{12}", "12"),
+    ] {
+        assert_eq!(
+            write(latex, MtefVersion::V5),
+            (plain.to_owned(), 1),
+            "{latex}"
+        );
+    }
+    // Function names are upright in \boldsymbol.
+    let bold = (r"\mathbf{\sin}".to_owned(), 0);
+    assert_eq!(write(r"\boldsymbol{\sin}", MtefVersion::V5), bold);
+}
+
+#[test]
+fn bold_numbers_and_symbols_read_back() {
+    use crate::{MtefVersion, MtefWriteOptions};
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        let write = |latex: &str| {
+            crate::from_latex(latex)
+                .unwrap()
+                .to_mtef_bytes(&MtefWriteOptions::new(version))
+                .unwrap()
+        };
+        let read = |latex: &str| {
+            let result = crate::from_mtef_bytes(&write(latex)).unwrap();
+            result.to_latex().unwrap().trim().replace("+ ", "+")
+        };
+        for latex in [
+            r"\mathbf{12.5}",
+            r"\mathbf{12}\mathbf{34}",
+            r"1.5+\mathbf{12}.\mathbf{34}",
+            r"\mathbf{12}.5",
+            r"\mathbf{12}^{2}",
+            r"\mathbf{7.8}12 .\mathbf{6}",
+            r"\mathbf{7.8}9.6",
+            r"\mathbf{x12}",
+            r"\boldsymbol{+}",
+        ] {
+            assert_eq!(read(latex), latex, "{version:?}");
+        }
+        // The point in a bold number is not of the plain one after it.
+        let split = r"\mathbf{7.8} 12 .6";
+        assert_eq!(write(&read(split)), write(split));
+        // A point at an end is not of the number.
+        assert_eq!(read(r"\mathbf{.5}"), r".\mathbf{5}");
+        assert_eq!(read(r"\mathbf{5.}"), r"\mathbf{5}.");
+        // One digit is in the Vector-Matrix style (7, biased by 128).
+        assert!(write(r"\mathbf{7}").contains(&135));
+        assert!(write(r"\mathbf{\boldsymbol{12}34}").contains(&135));
+        // Other symbols stay in their style, and no space is written.
+        assert_eq!(write(r"\boldsymbol{\leq}"), write(r"\leq"));
+        assert!(!write(r"x\mathbf{12}").contains(&152));
+        // A minus, not a hyphen.
+        let minus = write(r"\boldsymbol{-}");
+        assert!(
+            minus.windows(2).any(|code| code == [0x12, 0x22]),
+            "{minus:?}"
+        );
+    }
+    let options = MtefWriteOptions::new(MtefVersion::V5);
+    for (content, read) in [
+        ("<mn>.5</mn>", r".\mathbf{5}"),
+        ("<mn>5.</mn>", r"\mathbf{5}."),
+        ("<mn>1.2.3</mn>", r"\mathbf{1}.\mathbf{2}.\mathbf{3}"),
+    ] {
+        let mathml = format!(r#"<math><mstyle mathvariant="bold">{content}</mstyle></math>"#);
+        let bytes = crate::from_mathml(&mathml)
+            .unwrap()
+            .to_mtef_bytes(&options)
+            .unwrap();
+        let back = crate::from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(back.to_latex().unwrap().trim(), read);
+    }
+    let greek = r"\mathit{\Gamma}\mathit{\Delta}";
+    let bytes = crate::from_latex(greek)
+        .unwrap()
+        .to_mtef_bytes(&options)
+        .unwrap();
+    assert_eq!(
+        crate::from_mtef_bytes(&bytes).unwrap().to_latex().unwrap(),
+        greek
+    );
+}
+
+/// How the characters of an MTEF 5 equation are drawn: the typeface, bits and
+/// code of each CHAR record of a flat line, with the styles EQN_PREFS defines.
+fn drawn(latex: &str) -> (Vec<(char, u8)>, usize) {
+    let options = crate::MtefWriteOptions::new(crate::MtefVersion::V5);
+    let (bytes, diagnostics) = crate::from_latex(latex)
+        .unwrap()
+        .to_mtef_bytes_with_diagnostics(&options)
+        .unwrap();
+    // The 12 styles end at the first size record; fnTEXT_FE may be undefined.
+    let table = bytes
+        .windows(3)
+        .position(|w| w == [0x0F, 0x0C, 0x01])
+        .unwrap()
+        + 2;
+    let mut at = table;
+    let styles: Vec<u8> = (0..12)
+        .map(|_| {
+            let font = bytes[at];
+            at += if font == 0 { 1 } else { 2 };
+            if font == 0 { 0 } else { bytes[at - 1] }
+        })
+        .collect();
+    let mut fonts = Vec::new();
+    let mut chars = Vec::new();
+    while at < bytes.len() {
+        match bytes[at] {
+            0 | 10..=14 => at += 1,
+            1 => at += 2,
+            8 => {
+                fonts.push(bytes[at + 2]);
+                at += 3;
+            },
+            2 => {
+                let options = bytes[at + 1];
+                let typeface = i32::from(bytes[at + 2]) - 128;
+                let code = u16::from_le_bytes([bytes[at + 3], bytes[at + 4]]);
+                at += if options & 4 != 0 { 6 } else { 5 };
+                let bits = match typeface {
+                    24 => continue,
+                    1.. => styles[typeface as usize - 1],
+                    _ => fonts[(-typeface) as usize - 1],
+                };
+                chars.push((char::from_u32(u32::from(code)).unwrap(), bits));
+            },
+            other => panic!("record {other} in {latex}"),
+        }
+    }
+    let warnings = diagnostics
+        .iter()
+        .filter(|d| d.kind == crate::DiagnosticKind::Warning)
+        .count();
+    (chars, warnings)
+}
+
+/// Bytes, as the reader does not see the weight of punctuation: what is in a
+/// style that is defined bold or italic is drawn so.
+#[test]
+fn defined_styles_draw_only_what_is_bold_or_italic() {
+    let sin = |bits: u8| [('s', bits), ('i', bits), ('n', bits)];
+    let line = |parts: &[&[(char, u8)]]| parts.concat();
+    for (latex, chars, warnings) in [
+        (
+            r"\mathit{\sin}(x,y)",
+            line(&[&sin(2), &[('(', 0), ('x', 2), (',', 0), ('y', 2), (')', 0)]]),
+            0,
+        ),
+        (
+            r"\mathbf{\sin}[x]",
+            line(&[&sin(1), &[('[', 0), ('x', 2), (']', 0)]]),
+            0,
+        ),
+        // Before the name, and bold punctuation.
+        (
+            r"!\mathbf{\sin}\boldsymbol{,}",
+            line(&[&[('!', 0)], &sin(1), &[(',', 1)]]),
+            0,
+        ),
+        (r"\sin;", line(&[&sin(0), &[(';', 0)]]), 0),
+        // Names of two styles.
+        (
+            r"\mathbf{\sin}\sin;",
+            line(&[&sin(0), &sin(0), &[(';', 0)]]),
+            1,
+        ),
+        // Far East text has a style of its own, which is not defined.
+        (r"\textbf{中}", vec![('中', 0)], 1),
+        (r"\mathbf{中}", vec![('中', 0)], 1),
+        (r"\mathrm{中}", vec![('中', 0)], 0),
+        (r"\textbf{a中b}", vec![('a', 0), ('中', 0), ('b', 0)], 1),
+        (
+            r"\textbf{ab}\text{中}",
+            vec![('a', 1), ('b', 1), ('中', 0)],
+            0,
+        ),
+        // Letters of an alphabet MTEF has not, and an undefined command.
+        (
+            r"\mathit{\Gamma}\mathfrak{\Gamma}",
+            vec![('Γ', 0), ('Γ', 0)],
+            2,
+        ),
+        (r"\mathit{\Gamma}\Delta", vec![('Γ', 0), ('Δ', 0)], 1),
+        (r"\mathit{\Gamma}x", vec![('Γ', 2), ('x', 2)], 0),
+    ] {
+        assert_eq!(drawn(latex), (chars, warnings), "{latex}");
+    }
+}

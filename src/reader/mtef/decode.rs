@@ -86,8 +86,10 @@ pub(super) struct Glyph {
     pub(super) ch: char,
     /// MTEF 5 `mtefOPT_CHAR_FUNC_START`: the character starts a function name.
     pub(super) func_start: bool,
-    /// Bold/italic of the explicit font, for a negative typeface.
-    pub(super) explicit: Option<FontStyle>,
+    /// Bold/italic of the explicit font, for a negative typeface; of a
+    /// typeface style, where the equation defines it otherwise than it is
+    /// (MTEF 5).
+    pub(super) font_style: Option<FontStyle>,
     /// The math alphabet of a letter MathType wrote as an MTCode
     /// private-use code point (`ch` then holds the plain letter).
     pub(super) alphabet: Option<TextStyle>,
@@ -273,7 +275,7 @@ impl Item {
 /// How a character takes part in its line.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Class {
-    Text,
+    Text(TextStyle),
     Function,
     Number,
     Ident,
@@ -314,6 +316,9 @@ pub(super) struct Decoder<'a> {
     font_styles: Vec<(u16, FontStyle)>,
     /// MTEF 5 EQN_PREFS style definitions: font_def index per typeface style.
     style_fonts: Vec<u16>,
+    /// Bold and italic of the typeface styles 1 to 9, where EQN_PREFS
+    /// defines them otherwise than MathType does.
+    defined_styles: [Option<FontStyle>; chars::FN_USER1 as usize],
     /// MTEF 5 COLOR_DEF records: each colour as `#rrggbb`, `None` for black.
     colors: Vec<Option<String>>,
     /// The COLOR_DEF index of the current colour (MTEF 5 COLOR record);
@@ -383,6 +388,7 @@ impl<'a> Decoder<'a> {
             font_alphabets: Vec::new(),
             font_styles: Vec::new(),
             style_fonts: Vec::new(),
+            defined_styles: [None; chars::FN_USER1 as usize],
             colors: Vec::new(),
             color: None,
             color_context: None,
@@ -672,7 +678,7 @@ impl<'a> Decoder<'a> {
         Ok(line)
     }
 
-    /// Note the style a number or symbol is drawn in. It is put around the
+    /// Note the style a number, symbol or function name is drawn in. It is put around the
     /// leaf once the equation is complete, so that the leaf is found as one
     /// until then.
     fn set_leaf_style(&mut self, id: NodeId, glyph: &Glyph) -> Result<()> {
@@ -680,14 +686,8 @@ impl<'a> Decoder<'a> {
             return Ok(());
         };
         let spare = self.node(*self.arena.node(id))?;
-        let height = &mut self.heights[id.index()];
-        *height += 1;
-        if usize::from(*height) > self.max_depth {
-            return Err(Error::LimitExceeded {
-                kind: LimitKind::Depth,
-                limit: self.max_depth,
-            });
-        }
+        // Checked where a node is built around it.
+        self.heights[id.index()] += 1;
         self.styled_leaves.push((id, spare, style));
         Ok(())
     }
@@ -695,7 +695,13 @@ impl<'a> Decoder<'a> {
     fn style_leaves(&mut self) -> Result<()> {
         for (id, spare, style) in std::mem::take(&mut self.styled_leaves) {
             let leaf = *self.arena.node(id);
-            if matches!(leaf, CompactNode::Number(_) | CompactNode::Symbol(..)) {
+            // A name that takes limits has to be found as one.
+            let styled = match leaf {
+                CompactNode::Operator { limits, .. } => limits == LimitStyle::SubSup,
+                CompactNode::Number(_) | CompactNode::Symbol(..) => true,
+                _ => false,
+            };
+            if styled {
                 *self.arena.node_mut(spare) = leaf;
                 let span = self.children(&[spare])?;
                 *self.arena.node_mut_in_place(id) = CompactNode::Styled(style, span);
@@ -1240,7 +1246,7 @@ impl<'a> Decoder<'a> {
             typeface,
             ch,
             func_start,
-            explicit,
+            font_style: explicit.or_else(|| self.defined_style(typeface)),
             alphabet,
             embells,
             offset: u32::try_from(start).unwrap_or(u32::MAX),
@@ -1994,14 +2000,30 @@ impl<'a> Decoder<'a> {
         self.dimension_array(start)?;
         let count = self.u8()?;
         self.style_fonts.clear();
-        for _ in 0..count {
+        self.defined_styles = [None; chars::FN_USER1 as usize];
+        for index in 0..usize::from(count) {
             let font = self.uint()?;
             if font != 0 {
-                self.u8()?;
+                // Bit 0 bold, bit 1 italic.
+                let bits = self.u8()? & 0x03;
+                if let (Some(defined), Some(&own)) =
+                    (self.defined_styles.get_mut(index), OWN_STYLES.get(index))
+                    && bits != own
+                {
+                    *defined = Some(FontStyle {
+                        bold: bits & 0x01 != 0,
+                        italic: bits & 0x02 != 0,
+                    });
+                }
             }
             self.style_fonts.push(font);
         }
         Ok(())
+    }
+
+    fn defined_style(&self, typeface: i32) -> Option<FontStyle> {
+        let index = usize::try_from(typeface).ok()?.checked_sub(1)?;
+        *self.defined_styles.get(index)?
     }
 
     /// A count of dimensions followed by a nibble stream: per dimension a unit
@@ -2231,14 +2253,14 @@ impl<'a> Decoder<'a> {
                     let mut size = glyph.size;
                     let id = match class {
                         Class::Marker => continue,
-                        Class::Text => {
+                        Class::Text(style) => {
                             let mut text = String::new();
                             text.push(glyph.ch);
                             let mut blank = glyph.ch.is_whitespace();
                             while let Some(Item::Glyph(next)) = items.front()
                                 && next.embells.is_empty()
                                 && next.color == glyph.color
-                                && classify(next) == Class::Text
+                                && classify(next) == class
                                 && (blank || self.same_size(next, size) || next.ch.is_whitespace())
                             {
                                 // Blanks have no size that shows.
@@ -2250,7 +2272,7 @@ impl<'a> Decoder<'a> {
                                 self.note_run_size(next.size, next.ch);
                                 items.pop_front();
                             }
-                            self.str_node(&text, |s| CompactNode::Text(TextStyle::Normal, s))?
+                            self.str_node(&text, |s| CompactNode::Text(style, s))?
                         },
                         Class::Function => {
                             let mut mixed = false;
@@ -2275,7 +2297,7 @@ impl<'a> Decoder<'a> {
                                 self.lose_size(SizeLoss::FunctionName);
                                 size = self.size_by_place();
                             }
-                            self.str_node(&name, |s| CompactNode::Operator {
+                            let id = self.str_node(&name, |s| CompactNode::Operator {
                                 name: s,
                                 // MTEF records the function class but not an
                                 // explicit movable/side limit modifier.  Use
@@ -2286,7 +2308,11 @@ impl<'a> Decoder<'a> {
                                 } else {
                                     LimitStyle::SubSup
                                 },
-                            })?
+                            })?;
+                            if glyph.font_style.is_some() {
+                                self.set_leaf_style(id, &glyph)?;
+                            }
+                            id
                         },
                         Class::Number => {
                             let mut digits = String::new();
@@ -2326,18 +2352,25 @@ impl<'a> Decoder<'a> {
                                 }
                             }
                             let id = self.str_node(&digits, CompactNode::Number)?;
-                            self.set_leaf_style(id, &glyph)?;
+                            if glyph.font_style.is_some() {
+                                self.set_leaf_style(id, &glyph)?;
+                            }
                             id
                         },
                         Class::Styled(style) => {
                             let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
                             run.push(self.plain_char_node(glyph.ch)?);
+                            // Letters of a style are variables of their own:
+                            // scripts and primes are the nearest one's.
+                            let is_variable = glyph.typeface > 0 && glyph.font_style.is_some();
                             while let Some(Item::Glyph(next)) = items.front()
                                 && next.embells.is_empty()
                                 && next.color == glyph.color
                                 && next.typeface == glyph.typeface
                                 && classify(next) == class
                                 && self.same_size(next, size)
+                                && !(is_variable
+                                    && (pending.is_some() || takes_scripts(items.get(1))))
                             {
                                 let ch = next.ch;
                                 self.note_run_size(next.size, next.ch);
@@ -3695,17 +3728,25 @@ impl<'a> Decoder<'a> {
     fn glyph_node(&mut self, glyph: &Glyph, class: Class) -> Result<NodeId> {
         let ch = glyph.ch;
         match class {
-            Class::Text => self.char_node(ch, |s| CompactNode::Text(TextStyle::Normal, s)),
-            Class::Function => self.char_node(ch, |s| CompactNode::Operator {
-                name: s,
-                // This fallback is a single function glyph, not a complete
-                // native command name; it cannot denote one of the known
-                // limit functions.
-                limits: LimitStyle::SubSup,
-            }),
+            Class::Text(style) => self.char_node(ch, |s| CompactNode::Text(style, s)),
+            Class::Function => {
+                let id = self.char_node(ch, |s| CompactNode::Operator {
+                    name: s,
+                    // This fallback is a single function glyph, not a complete
+                    // native command name; it cannot denote one of the known
+                    // limit functions.
+                    limits: LimitStyle::SubSup,
+                })?;
+                if glyph.font_style.is_some() {
+                    self.set_leaf_style(id, glyph)?;
+                }
+                Ok(id)
+            },
             Class::Number => {
                 let id = self.char_node(ch, CompactNode::Number)?;
-                self.set_leaf_style(id, glyph)?;
+                if glyph.font_style.is_some() {
+                    self.set_leaf_style(id, glyph)?;
+                }
                 Ok(id)
             },
             Class::Ident => self.char_node(ch, CompactNode::Identifier),
@@ -3716,7 +3757,9 @@ impl<'a> Decoder<'a> {
             },
             Class::Symbol(kind) => {
                 let id = self.char_node(ch, |s| CompactNode::Symbol(kind, s))?;
-                self.set_leaf_style(id, glyph)?;
+                if glyph.font_style.is_some() {
+                    self.set_leaf_style(id, glyph)?;
+                }
                 Ok(id)
             },
             Class::Space(width) => {
@@ -3848,6 +3891,10 @@ fn dimension_points(unit: u8, digits: &str) -> Option<Rational> {
     (units >= 1.0 && units <= f64::from(i32::MAX)).then(|| Rational::new(units as i32, 32))
 }
 
+/// Bold (1) and italic (2) of the typeface styles 1 to 9 as MathType defines
+/// them and as they are read without a definition; USER1 is read as variables.
+const OWN_STYLES: [u8; chars::FN_USER1 as usize] = [0, 0, 2, 2, 0, 0, 1, 0, 2];
+
 /// Whether a glyph is the point of a decimal number: a full stop outside the
 /// text styles.
 fn is_decimal_point(glyph: &Glyph) -> bool {
@@ -3873,7 +3920,9 @@ fn classify(glyph: &Glyph) -> Class {
                 None => Class::Space(Rational::new(3, 18)),
             };
         },
-        chars::FN_TEXT | chars::FN_TEXT_FE => return Class::Text,
+        chars::FN_TEXT | chars::FN_TEXT_FE => {
+            return Class::Text(glyph.font_style.map_or(TextStyle::Normal, letter_style));
+        },
         _ => {},
     }
     if chars::is_marker(code) {
@@ -3884,7 +3933,7 @@ fn classify(glyph: &Glyph) -> Class {
     }
     // Within a function-face run, U+2009 is part of the operator name.
     // Standalone mathematical spacing is encoded by FN_SPACE above.
-    if ch == '\u{2009}' && glyph.typeface == chars::FN_FUNCTION && glyph.explicit.is_none() {
+    if ch == '\u{2009}' && glyph.typeface == chars::FN_FUNCTION {
         return Class::Function;
     }
     // A symbol-face U+2009 is a literal glyph, while FN_SPACE records are
@@ -3896,22 +3945,30 @@ fn classify(glyph: &Glyph) -> Class {
     if ch.is_whitespace() {
         return Class::Space(Rational::new(1, 4));
     }
-    if let Some(style) = glyph.explicit {
+    if glyph.typeface < 0
+        && let Some(style) = glyph.font_style
+    {
         if ch.is_ascii_digit() {
             return Class::Number;
         }
         if ch.is_alphabetic() {
-            return match (style.bold, style.italic) {
-                (false, true) => Class::Ident,
-                (true, true) => Class::Styled(TextStyle::BoldItalic),
-                (true, false) => Class::Styled(TextStyle::Bold),
-                (false, false) => Class::Styled(TextStyle::Normal),
+            return match letter_style(style) {
+                TextStyle::Italic => Class::Ident,
+                style => Class::Styled(style),
             };
         }
         return Class::Symbol(chars::symbol_kind(ch));
     }
     match glyph.typeface {
         chars::FN_FUNCTION if ch.is_alphabetic() => Class::Function,
+        chars::FN_VARIABLE | chars::FN_LCGREEK | chars::FN_UCGREEK | chars::FN_USER1
+            if ch.is_alphabetic() =>
+        {
+            match glyph.font_style {
+                Some(style) => Class::Styled(letter_style(style)),
+                None => Class::Ident,
+            }
+        },
         chars::FN_VECTOR if ch.is_alphanumeric() => Class::Styled(TextStyle::Bold),
         chars::FN_NUMBER if ch.is_ascii_digit() || ch == '.' => Class::Number,
         _ if ch.is_ascii_digit() => Class::Number,
@@ -3920,16 +3977,47 @@ fn classify(glyph: &Glyph) -> Class {
     }
 }
 
-/// The style of a number or symbol drawn bold in an explicit font.
+/// The style of a number, symbol or function name drawn bold or italic.
 ///
 /// Symbols are as `\boldsymbol` sets them: `\mathbf` is for letters and digits.
 fn leaf_style(glyph: &Glyph) -> Option<TextStyle> {
-    if !glyph.explicit?.bold {
-        None
-    } else if glyph.ch.is_ascii_digit() {
-        Some(TextStyle::Bold)
+    let style = glyph.font_style?;
+    if glyph.typeface == chars::FN_FUNCTION {
+        return if style.bold {
+            Some(TextStyle::Bold)
+        } else {
+            (style.italic).then_some(TextStyle::Italic)
+        }
+        .filter(|_| glyph.ch.is_alphabetic());
+    }
+    if !style.bold {
+        return None;
+    }
+    let explicit = glyph.typeface < 0;
+    if glyph.ch.is_ascii_digit() {
+        (explicit || matches!(glyph.typeface, chars::FN_NUMBER | chars::FN_USER1))
+            .then_some(TextStyle::Bold)
     } else {
-        chars::is_bold_symbol(glyph.ch).then_some(TextStyle::BoldItalic)
+        ((explicit || glyph.typeface == chars::FN_SYMBOL) && chars::is_bold_symbol(glyph.ch))
+            .then_some(TextStyle::BoldItalic)
+    }
+}
+
+fn letter_style(style: FontStyle) -> TextStyle {
+    match (style.bold, style.italic) {
+        (false, false) => TextStyle::Normal,
+        (true, false) => TextStyle::Bold,
+        (false, true) => TextStyle::Italic,
+        (true, true) => TextStyle::BoldItalic,
+    }
+}
+
+/// Whether what precedes `item` on its line is its base.
+fn takes_scripts(item: Option<&Item>) -> bool {
+    match item {
+        Some(Item::Script(_)) => true,
+        Some(Item::Glyph(glyph)) => chars::is_prime(glyph.ch),
+        _ => false,
     }
 }
 

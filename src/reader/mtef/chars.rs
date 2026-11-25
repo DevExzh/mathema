@@ -7,11 +7,13 @@ use crate::ast::{Rational, SymbolKind, TextStyle};
 // names one of MathType's styles; a negative value names an explicit font.
 pub(super) const FN_TEXT: i32 = 1;
 pub(super) const FN_FUNCTION: i32 = 2;
+pub(super) const FN_VARIABLE: i32 = 3;
 pub(super) const FN_LCGREEK: i32 = 4;
 pub(super) const FN_UCGREEK: i32 = 5;
 pub(super) const FN_SYMBOL: i32 = 6;
 pub(super) const FN_VECTOR: i32 = 7;
 pub(super) const FN_NUMBER: i32 = 8;
+pub(super) const FN_USER1: i32 = 9;
 pub(super) const FN_MTEXTRA: i32 = 11;
 pub(super) const FN_TEXT_FE: i32 = 12;
 pub(super) const FN_MARKER: i32 = 23;

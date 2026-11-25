@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 
 use super::chars::{
     self, DIRAC_BAR, DIRAC_LEFT, DIRAC_RIGHT, FN_EXPAND, FN_FUNCTION, FN_NUMBER, FN_SPACE, FN_TEXT,
-    FN_VARIABLE, FN_VECTOR, Fence, Glyph,
+    FN_UCGREEK, FN_VARIABLE, FN_VECTOR, Fence, Glyph,
 };
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
@@ -67,6 +67,10 @@ const TV_SUM: u16 = 0x40;
 /// Font definition MathType's default preferences use for text (font 1,
 /// Times New Roman); explicit upright and bold-italic letters use it.
 const TEXT_FONT_DEF: u8 = 1;
+// The typeface styles whose definition the writer chooses.
+const DEFINED_TEXT: usize = 0;
+const DEFINED_FUNCTION: usize = 1;
+const DEFINED_GREEK: usize = 2;
 /// The font name of explicit fonts in MTEF 3 FONT records.
 const TEXT_FONT_NAME: &[u8] = b"Times New Roman";
 
@@ -221,6 +225,15 @@ pub(super) struct Encoder<'a> {
     /// (bit 0 bold, bit 1 italic).
     explicit: [Option<i32>; 4],
     explicit_count: i32,
+    /// The bold (1) and italic (2) bits of the Text and Function styles and of
+    /// upper-case Greek, in that order: `Some(None)` where they differ.
+    defined: [Option<Option<u8>>; 3],
+    /// Whether punctuation was written in the Function style.
+    has_function_punctuation: bool,
+    /// Whether punctuation is written in an explicit font instead.
+    pub(super) punctuation_font: bool,
+    /// The style of the text being written.
+    text_style: TextStyle,
     /// The run the last written glyph belongs to.
     last_run: Option<Run>,
     /// The colour it was drawn in.
@@ -297,6 +310,10 @@ impl<'a> Encoder<'a> {
             diagnostics: Vec::new(),
             explicit: [None; 4],
             explicit_count: 0,
+            defined: [None; 3],
+            has_function_punctuation: false,
+            punctuation_font: false,
+            text_style: TextStyle::Normal,
             last_run: None,
             last_color: None,
             decimal: false,
@@ -715,7 +732,19 @@ impl<'a> Encoder<'a> {
     }
 
     /// One CHAR record with its embellishment list.
-    fn glyph(&mut self, size: Size, glyph: Glyph, func_start: bool, embells: &[u8]) -> Result<()> {
+    fn glyph(
+        &mut self,
+        size: Size,
+        mut glyph: Glyph,
+        func_start: bool,
+        embells: &[u8],
+    ) -> Result<()> {
+        if matches!(
+            glyph.typeface,
+            FN_TEXT | FN_FUNCTION | FN_UCGREEK | chars::FN_TEXT_FE
+        ) {
+            glyph = self.note_drawn(glyph);
+        }
         // `'s` before a letter would read back as a primed variable: a zero
         // space ends the word.
         if self.possessive_s.is_some()
@@ -794,6 +823,7 @@ impl<'a> Encoder<'a> {
 
     /// A glyph that starts a leaf: separate it from the previous leaf when
     /// the reader would otherwise join the two.
+    #[inline(always)]
     fn first_glyph(
         &mut self,
         size: Size,
@@ -1071,9 +1101,13 @@ impl<'a> Encoder<'a> {
             },
             CompactNode::Symbol(_, s) => self.leaf(size, Leaf::Symbol, s),
             CompactNode::Text(style, s) => {
-                if style != TextStyle::Normal {
-                    self.lose("MTEF text has no font style; styled text was written as plain text");
+                if !matches!(
+                    style,
+                    TextStyle::Normal | TextStyle::Bold | TextStyle::Italic | TextStyle::BoldItalic
+                ) {
+                    self.lose("MTEF text has no font family; it was written in the text font");
                 }
+                self.text_style = style;
                 self.leaf(size, Leaf::Text, s)
             },
             CompactNode::Middle(s) => {
@@ -1097,6 +1131,7 @@ impl<'a> Encoder<'a> {
             CompactNode::Row(span) => self.list(span, size),
             CompactNode::UndefinedCommand { name, arguments } => {
                 self.lose("an undefined LaTeX command was written as plain text");
+                self.text_style = TextStyle::Normal;
                 self.leaf(size, Leaf::Text, name)?;
                 let groups: SmallVec<[NodeId; 4]> = self.arena.children(arguments).into();
                 for group in groups {
@@ -1347,7 +1382,7 @@ impl<'a> Encoder<'a> {
             return self.bold_number(size, text);
         }
         if kind == Leaf::Number {
-            let joins = matches!(self.run_before(), Some(Run::Number(_)));
+            let joins = self.run_before() == Some(Run::Number(FN_NUMBER));
             self.decimal = text.contains('.') || joins && self.decimal;
         }
         let mut first = true;
@@ -1372,6 +1407,8 @@ impl<'a> Encoder<'a> {
 
     /// A bold number of several digits, which is read back as one number in
     /// an explicit font. The Vector-Matrix style is for letters.
+    #[cold]
+    #[inline(never)]
     fn bold_number(&mut self, size: Size, text: &str) -> Result<()> {
         let typeface = self.explicit_font(1);
         let run = Run::Number(typeface);
@@ -1398,11 +1435,15 @@ impl<'a> Encoder<'a> {
             // style, whose font has the glyphs.
             Leaf::Text if chars::is_far_east(ch) => {
                 self.far_east = true;
-                (Glyph::new(chars::FN_TEXT_FE, ch), Some(Run::Text))
+                let glyph = Glyph::new(chars::FN_TEXT_FE, ch);
+                (glyph.drawn(font_bits(self.text_style)), Some(Run::Text))
             },
-            Leaf::Text => (Glyph::new(FN_TEXT, ch), Some(Run::Text)),
+            Leaf::Text => {
+                let glyph = Glyph::new(FN_TEXT, ch);
+                (glyph.drawn(font_bits(self.text_style)), Some(Run::Text))
+            },
             Leaf::Operator => (
-                Glyph::new(FN_FUNCTION, ch),
+                Glyph::new(FN_FUNCTION, ch).drawn(self.function_bits()),
                 // MTEF 5 marks the first letter of each function name; MTEF 3
                 // has no such flag, so adjacent names must be separated.
                 (!self.v5 && (ch.is_alphabetic() || ch == '\u{2009}')).then_some(Run::Function),
@@ -1417,12 +1458,22 @@ impl<'a> Encoder<'a> {
                 Some(TextStyle::Bold) if ch != '.' => {
                     (Glyph::new(FN_VECTOR, ch), Some(Run::Styled(FN_VECTOR)))
                 },
-                _ => (Glyph::new(FN_NUMBER, ch), Some(Run::Number(FN_NUMBER))),
+                style => {
+                    if style == Some(TextStyle::Italic) {
+                        self.lose("MTEF has no italic numbers; they were written upright");
+                    }
+                    (Glyph::new(FN_NUMBER, ch), Some(Run::Number(FN_NUMBER)))
+                },
             },
             Leaf::Number => (chars::symbol_glyph(ch), None),
             // CJK letters need the Far East font, as in text.
             Leaf::Identifier if chars::is_far_east(ch) => {
                 self.far_east = true;
+                if self.style.is_some_and(|style| font_bits(style) != 0) {
+                    self.lose(
+                        "MTEF has no font style for Far East letters; they were written plain",
+                    );
+                }
                 (Glyph::new(chars::FN_TEXT_FE, ch), Some(Run::Text))
             },
             Leaf::Identifier if ch.is_alphabetic() => self.styled_letter(ch)?,
@@ -1433,7 +1484,17 @@ impl<'a> Encoder<'a> {
     /// A letter of a variable in the current style.
     fn styled_letter(&mut self, ch: char) -> Result<(Glyph, Option<Run>)> {
         let style_bits = match self.style {
-            None | Some(TextStyle::Italic) => return Ok((chars::identifier_glyph(ch), None)),
+            None => return Ok((chars::identifier_glyph(ch), None)),
+            Some(TextStyle::Italic) => {
+                let glyph = chars::identifier_glyph(ch);
+                if glyph.typeface == FN_UCGREEK {
+                    return Ok((glyph.drawn(2), Some(Run::Styled(FN_UCGREEK))));
+                }
+                self.lose(
+                    "MTEF has no italic math alphabet; italic letters were written as variables",
+                );
+                return Ok((glyph, None));
+            },
             // The Vector-Matrix style is bold upright.
             Some(TextStyle::Bold) => {
                 return Ok((Glyph::new(FN_VECTOR, ch), Some(Run::Styled(FN_VECTOR))));
@@ -1623,14 +1684,86 @@ impl<'a> Encoder<'a> {
         -index
     }
 
-    fn note_style(&mut self, style: TextStyle) {
-        if style == TextStyle::Italic {
-            self.lose("MTEF has no italic math alphabet; italic letters were written as variables");
+    /// Note how a character of a typeface style is drawn, where the equation
+    /// can define the style for all its characters. Every character written
+    /// passes here.
+    #[inline(never)]
+    fn note_drawn(&mut self, mut glyph: Glyph) -> Glyph {
+        if self.punctuation_font
+            && glyph.typeface == FN_FUNCTION
+            && glyph.drawn.is_none()
+            && !glyph.ch.is_whitespace()
+        {
+            glyph.typeface = self.explicit_font(0);
+        }
+        let which = match glyph.typeface {
+            FN_TEXT => DEFINED_TEXT,
+            FN_FUNCTION => DEFINED_FUNCTION,
+            FN_UCGREEK => DEFINED_GREEK,
+            // The Far East style is not defined with the Text style.
+            chars::FN_TEXT_FE => {
+                if glyph.drawn.is_some_and(|bits| bits != 0) {
+                    self.defined[DEFINED_TEXT] = Some(None);
+                }
+                return glyph;
+            },
+            _ => return glyph,
+        };
+        let bits = match glyph.drawn {
+            Some(bits) => bits,
+            None if glyph.ch.is_whitespace() => return glyph,
+            None if glyph.typeface == FN_FUNCTION => {
+                self.has_function_punctuation = true;
+                return glyph;
+            },
+            None => 0,
+        };
+        let defined = &mut self.defined[which];
+        *defined = match *defined {
+            None => Some(Some(bits)),
+            Some(Some(before)) if before == bits => return glyph,
+            Some(_) => Some(None),
+        };
+        glyph
+    }
+
+    /// Whether punctuation must be written again, in a font of its own: the
+    /// Function style, in which it is written, is to be bold or italic.
+    pub(super) fn punctuation_needs_font(&self) -> bool {
+        self.v5
+            && self.has_function_punctuation
+            && matches!(self.defined[DEFINED_FUNCTION], Some(Some(bits)) if bits != 0)
+    }
+
+    /// The bits of a function name. Names are not italic in `\boldsymbol`.
+    fn function_bits(&self) -> u8 {
+        match self.style {
+            Some(TextStyle::Bold | TextStyle::BoldItalic) => 1,
+            Some(TextStyle::Italic) => 2,
+            _ => 0,
         }
     }
 
+    /// The bold and italic bits EQN_PREFS defines for the Text and Function
+    /// styles and upper-case Greek.
+    pub(super) fn defined_styles(&mut self) -> [u8; 3] {
+        let losses = [
+            "MTEF text has no font style of its own; styled text was written as plain text",
+            "MTEF function names have no font style of their own; styled names were written plain",
+            "MTEF upper-case Greek has no font style of its own; italic letters were written upright",
+        ];
+        let mut styles = [0; 3];
+        for (which, loss) in losses.into_iter().enumerate() {
+            match self.defined[which] {
+                None | Some(Some(0)) => {},
+                Some(Some(bits)) if self.v5 => styles[which] = bits,
+                Some(_) => self.lose(loss),
+            }
+        }
+        styles
+    }
+
     fn styled(&mut self, size: Size, style: TextStyle, span: NodeSpan) -> Result<()> {
-        self.note_style(style);
         let outer = self.style.replace(style);
         let outer_start = self.styled_start.replace(self.items);
         // A number the reader finds bold as a whole.
@@ -1885,7 +2018,6 @@ impl<'a> Encoder<'a> {
     fn embellished(&mut self, size: Size, embellished: &Embellished) -> Result<()> {
         let outer = (self.style, self.own_size);
         if let Some(style) = embellished.style {
-            self.note_style(style);
             self.style = Some(style);
         }
         let mut size = size;
@@ -1906,7 +2038,10 @@ impl<'a> Encoder<'a> {
             CompactNode::Identifier(s) => (Leaf::Identifier, s),
             CompactNode::Operator { name, .. } => (Leaf::Operator, name),
             CompactNode::Symbol(_, s) => (Leaf::Symbol, s),
-            CompactNode::Text(_, s) => (Leaf::Text, s),
+            CompactNode::Text(style, s) => {
+                self.text_style = style;
+                (Leaf::Text, s)
+            },
             _ => return self.node(leaf, size),
         };
         let Some(ch) = self.arena.str_val(ch).chars().next() else {
@@ -3323,4 +3458,14 @@ fn is_bold_number(text: &str) -> bool {
         && text.bytes().filter(|&b| b == b'.').count() <= 1
         && !text.starts_with('.')
         && !text.ends_with('.')
+}
+
+/// Bold (1) and italic (2) of a style of fonts.
+fn font_bits(style: TextStyle) -> u8 {
+    match style {
+        TextStyle::Bold => 1,
+        TextStyle::Italic => 2,
+        TextStyle::BoldItalic => 3,
+        _ => 0,
+    }
 }

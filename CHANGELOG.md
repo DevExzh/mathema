@@ -103,6 +103,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept and drawn relative to an assumed 12 pt.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
+- MTEF 5 reader: the bold and italic an equation's preferences define for the
+  text, function, variable, Greek, symbol, number and first user styles are
+  read, as the pictures of equations draw them: `\mathbf{x}`, `\boldsymbol{x}`,
+  `\mathrm{x}`, `\textbf{…}`, `\mathbf{\sin}`, `\mathbf{12}`, `\boldsymbol{+}`.
+  Function names with limits and other symbols stay plain. The MTEF 5 writer
+  defines bold or italic text, function names and upper-case Greek where all of
+  an equation have it (punctuation, in the Function style otherwise, then has a
+  font of its own), and reports a loss otherwise; it had written them plain,
+  function names without a word.
 - MTEF reader and writer: digits, and the symbols `+ - = < > ( ) [ ] / , . : ; ! * | %`,
   in a bold explicit font are bold (`\mathbf{1}`, `\boldsymbol{+}`), as the
   pictures of equations draw them. MTEF is written so for `\mathbf` around a

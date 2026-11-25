@@ -2488,6 +2488,212 @@ fn digits_and_symbols_of_bold_fonts_are_bold() {
     }
 }
 
+/// Styles are what the preferences of the equation define them as.
+#[test]
+fn defined_styles_are_bold_and_italic_as_defined() {
+    use crate::{MtefVersion, MtefWriteOptions};
+    // EQN_PREFS: no sizes and spacings, 12 styles, of which `typeface` has
+    // the font 1 and the given bits.
+    let read = |typeface: u8, bits: u8, text: &str, func_start: bool| {
+        let mut data = vec![5, 1, 0, 6, 0];
+        data.extend_from_slice(b"DSMT6\0\0");
+        data.extend_from_slice(b"\x11\x01Arial\0\x12\0\0\0\x0c");
+        for style in 1..=12 {
+            if style == typeface {
+                data.extend_from_slice(&[1, bits]);
+            } else {
+                data.push(0);
+            }
+        }
+        data.extend_from_slice(&[10, 1, 0]);
+        for (at, code) in text.encode_utf16().enumerate() {
+            let options = if func_start && at == 0 { 2 } else { 0 };
+            data.extend_from_slice(&[2, options, 128 + typeface]);
+            data.extend_from_slice(&code.to_le_bytes());
+        }
+        data.extend_from_slice(&[0, 0]);
+        crate::from_mtef_bytes(&data).unwrap()
+    };
+    for (typeface, bits, text, latex) in [
+        (1, 0, "ab c", r"\text{ab c}"),
+        (1, 1, "ab c", r"\textbf{ab c}"),
+        (1, 2, "ab c", r"\textit{ab c}"),
+        (2, 0, "sin", r"\sin"),
+        (2, 1, "sin", r"\mathbf{\sin}"),
+        (2, 2, "sin", r"\mathit{\sin}"),
+        (2, 1, "(", "("),
+        (3, 2, "xy", "xy"),
+        // Bits other than bold and italic; digits and symbols of letters.
+        (3, 6, "xy", "xy"),
+        (3, 1, "1", "1"),
+        (3, 1, "=", "="),
+        (3, 0, "xy", r"\mathrm{xy}"),
+        (3, 1, "xy", r"\mathbf{xy}"),
+        (3, 3, "xy", r"\boldsymbol{xy}"),
+        (4, 2, "α", r"\alpha"),
+        (4, 0, "α", r"\mathrm{\alpha}"),
+        (4, 1, "α", r"\mathbf{\alpha}"),
+        (4, 3, "α", r"\boldsymbol{\alpha}"),
+        (5, 0, "Γ", r"\Gamma"),
+        (5, 1, "Γ", r"\mathbf{\Gamma}"),
+        (5, 2, "Γ", r"\mathit{\Gamma}"),
+        (6, 0, "+", "+"),
+        (6, 1, "+", r"\boldsymbol{+}"),
+        (6, 1, "\u{2264}", r"\leq"),
+        (8, 0, "1.5", "1.5"),
+        (8, 2, "1.5", "1.5"),
+        (8, 1, "1.5", r"\mathbf{1.5}"),
+        (9, 2, "xy", "xy"),
+        (9, 0, "xy", r"\mathrm{xy}"),
+        (9, 1, "xy", r"\mathbf{xy}"),
+        (9, 1, "12", r"\mathbf{12}"),
+        // Too few pictures.
+        (10, 1, "x", "x"),
+    ] {
+        let result = read(typeface, bits, text, typeface == 2);
+        assert_eq!(
+            result.to_latex().unwrap().trim(),
+            latex,
+            "{typeface} {bits}"
+        );
+        let bytes = result
+            .to_mtef_bytes(&MtefWriteOptions::new(MtefVersion::V5))
+            .unwrap();
+        let again = crate::from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(
+            again.to_mathml().unwrap(),
+            result.to_mathml().unwrap(),
+            "{latex}"
+        );
+    }
+    let limit = read(2, 1, "lim", true).to_latex().unwrap();
+    assert_eq!(limit.trim(), r"\lim");
+}
+
+/// A script belongs to the nearest variable of a bold or upright style.
+#[test]
+fn scripts_of_defined_styles_have_one_letter_as_base() {
+    let prefs = b"\x11\x01Arial\0\x12\0\0\0\x03\0\0\x01\x01";
+    let mut data = vec![5, 1, 0, 6, 0];
+    data.extend_from_slice(b"DSMT6\0\0");
+    data.extend_from_slice(prefs);
+    data.extend_from_slice(&[10, 1, 0]);
+    for letter in *b"abc" {
+        data.extend_from_slice(&[2, 0, 131, letter, 0]);
+    }
+    // Superscript template (28) with a null and a full slot.
+    data.extend_from_slice(&[3, 0, 28, 0, 0, 11, 1, 1, 1, 0, 2, 0, 136, b'2', 0, 0, 0]);
+    data.extend_from_slice(&[0, 0]);
+    let result = crate::from_mtef_bytes(&data).unwrap();
+    assert_eq!(result.to_latex().unwrap(), r"\mathbf{ab}\mathbf{c}^{2}");
+    let read = |body: &[&[u8]], again: bool| {
+        let mut data = vec![5, 1, 0, 6, 0];
+        data.extend_from_slice(b"DSMT6\0\0");
+        data.extend_from_slice(prefs);
+        if again {
+            // Preferences without a definition of the style.
+            data.extend_from_slice(b"\x12\0\0\0\x03\0\0\0");
+        }
+        data.extend_from_slice(&[10, 1, 0]);
+        for part in body {
+            data.extend_from_slice(part);
+        }
+        data.extend_from_slice(&[0, 0]);
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap()
+    };
+    let (a, b) = ([2, 0, 131, b'a', 0], [2, 0, 131, b'b', 0]);
+    assert_eq!(read(&[&a, &b], false), r"\mathbf{ab}");
+    assert_eq!(read(&[&a, &b], true), "ab");
+    // Typed prime; a script in front.
+    let prime = [2, 0, 134, 0x32, 0x20];
+    assert_eq!(
+        read(&[&a, &b, &prime], false),
+        r"\mathbf{a}\mathbf{b}^{\prime}"
+    );
+    let leading = [3, 0, 28, 1, 0, 11, 1, 1, 1, 0, 2, 0, 136, b'2', 0, 0, 0];
+    let led = read(&[&leading, &a, &b], false);
+    assert!(led.ends_with(r"\mathbf{b}"), "{led}");
+}
+
+/// Every symbol that was compared with pictures is read as bold.
+#[test]
+fn symbols_of_bold_fonts_are_bold() {
+    for symbol in "+-=<>()[]/,.:;!*|%".chars() {
+        let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, 1];
+        data.extend_from_slice(b"Arial\0");
+        data.extend_from_slice(&[2, 127, symbol as u8, 0, 0, 0]);
+        let latex = crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap();
+        assert!(latex.contains(r"\boldsymbol{"), "{symbol}: {latex}");
+    }
+}
+
+/// A run of an explicit font is the base of its script as a whole.
+#[test]
+fn scripts_of_explicit_fonts_have_the_run_as_base() {
+    let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, 1];
+    data.extend_from_slice(b"Arial\0");
+    data.extend_from_slice(&[2, 127, b'a', 0, 2, 127, b'b', 0]);
+    data.extend_from_slice(&[3, 15, 0, 0, 11, 17, 1, 2, 136, b'2', 0, 0, 0, 0, 0]);
+    let result = crate::from_mtef_bytes(&data).unwrap();
+    assert_eq!(result.to_latex().unwrap(), r"\mathbf{ab}^{2}");
+}
+
+/// Far East text is not of the Text style.
+#[test]
+fn far_east_text_is_not_bold_with_the_text_style() {
+    let mut data = vec![5, 1, 0, 6, 0];
+    data.extend_from_slice(b"DSMT6\0\0\x11\x01Arial\0\x12\0\0\0\x01\x01\x01");
+    data.extend_from_slice(&[10, 1, 0, 2, 0, 129, b'a', 0, 2, 0, 140, 0x2D, 0x4E, 0, 0]);
+    let result = crate::from_mtef_bytes(&data).unwrap();
+    assert_eq!(result.to_latex().unwrap(), r"\textbf{a}\text{中}");
+}
+
+/// A number is bold as a whole: a plain digit does not join it.
+#[test]
+fn plain_digits_do_not_join_bold_numbers() {
+    let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, 1];
+    data.extend_from_slice(b"Arial\0");
+    data.extend_from_slice(&[2, 127, b'1', 0, 2, 130, b'.', 0, 2, 136, b'5', 0, 0, 0]);
+    let result = crate::from_mtef_bytes(&data).unwrap();
+    assert_eq!(result.to_latex().unwrap(), r"\mathbf{1}.5");
+}
+
+/// The style around a leaf counts for the depth, which embellishments add to.
+#[test]
+fn bold_digits_respect_the_depth_limit() {
+    let smallest = |style: u8| {
+        let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, style];
+        data.extend_from_slice(b"Arial\0");
+        data.extend_from_slice(&[0x22, 127, b'1', 0]);
+        for _ in 0..12 {
+            data.extend_from_slice(&[6, 17, 0]);
+        }
+        data.extend_from_slice(&[0, 0, 0]);
+        (1..60)
+            .find(|&depth| {
+                let config = Config::default().with_max_depth(depth);
+                crate::from_mtef_bytes_with(&data, &config).is_ok()
+            })
+            .unwrap()
+    };
+    assert_eq!(smallest(1), smallest(0) + 1);
+}
+
+/// A bold symbol in a size of its own keeps its class as a script base.
+#[test]
+fn sized_bold_symbols_keep_their_class() {
+    let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, 1];
+    data.extend_from_slice(b"Arial\0");
+    data.extend_from_slice(&[2, 131, b'x', 0]);
+    // A bold `]` at 18 pt, then a superscript.
+    data.extend_from_slice(&[9, 101, 64, 2, 2, 127, b']', 0, 10]);
+    data.extend_from_slice(&[3, 15, 0, 0, 11, 17, 1, 2, 136, b'2', 0, 0, 0, 0, 0]);
+    let result = crate::from_mtef_bytes(&data).unwrap();
+    let latex = result.to_latex().unwrap();
+    assert!(latex.contains(r"\mathclose{"), "{latex}");
+    assert!(latex.contains(r"\boldsymbol{]}"), "{latex}");
+}
+
 /// The style around a leaf counts as a node.
 #[test]
 fn bold_digits_respect_the_node_limit() {

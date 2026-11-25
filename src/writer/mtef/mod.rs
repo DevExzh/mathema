@@ -273,6 +273,10 @@ const V5_PREFERENCES: &[u8] = &[
     0x0c, 1, 0, 1, 0, 1, 2, 2, 2, 2, 0, 2, 0, 1, 1, 1, 0, 3, 0, 1, 0, 4, 0,
 ];
 
+/// The character styles of fnTEXT, fnFUNCTION and fnUCGREEK in
+/// [`V5_PREFERENCES`], counted from its end.
+const V5_DEFINED_STYLES: [usize; 3] = [21, 19, 13];
+
 /// The sizes in [`V5_PREFERENCES`], with their count.
 const V5_SIZES: std::ops::Range<usize> = 2..20;
 
@@ -409,14 +413,23 @@ impl MtefWriter {
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>, Option<CompactExpr>)> {
         let v5 = options.v5();
-        let mut encoder = Encoder::new(
-            &expr.arena,
-            config,
-            v5,
-            expr.display,
-            crate::ast::attrs::base_size_pt(expr.meta.as_deref()),
-        );
+        let new_encoder = || {
+            Encoder::new(
+                &expr.arena,
+                config,
+                v5,
+                expr.display,
+                crate::ast::attrs::base_size_pt(expr.meta.as_deref()),
+            )
+        };
+        let mut encoder = new_encoder();
         encoder.equation(expr.roots)?;
+        if encoder.punctuation_needs_font() {
+            encoder = new_encoder();
+            encoder.punctuation_font = true;
+            encoder.equation(expr.roots)?;
+        }
+        let styles = encoder.defined_styles();
         let body = std::mem::take(&mut encoder.out);
         let diagnostics = std::mem::take(&mut encoder.diagnostics);
 
@@ -457,6 +470,10 @@ impl MtefWriter {
                     mtef.extend_from_slice(&V5_PREFERENCES[V5_SIZES.end..]);
                 },
                 None => mtef.extend_from_slice(V5_PREFERENCES),
+            }
+            for (at, style) in V5_DEFINED_STYLES.into_iter().zip(styles) {
+                let at = mtef.len() - at;
+                mtef[at] = style;
             }
             mtef.extend_from_slice(far_east_style(far_east, alphabets));
         }

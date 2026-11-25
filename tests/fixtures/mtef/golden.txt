@@ -6,6 +6,7 @@ govdocs-v3-size-points: \footnotesize \uparrow
 govdocs-v3-size-typesize: F\scriptstyle 12\displaystyle = k\frac{q\scriptstyle 1\textstyle \cdot q\scriptstyle 2}{r\scriptstyle 2}
 govdocs-v5-bare-space-codes: \int\nolimits {residual\,.\;\mathbf{D}_i\,(x)\;dx}= 0
 govdocs-v5-buffer-slack: v(\hat{\theta})
+govdocs-v5-defined-styles: \textcolor[HTML]{008000}{\boldsymbol{I}_{\textstyle \boldsymbol{x}}\textbf{=}\mathbf{2}\boldsymbol{\pi}{\left( \boldsymbol{M}\boldsymbol{+}\mathbf{\Delta}\boldsymbol{M}\,\boldsymbol{x} \right)}^{\mathbf{2}}\boldsymbol{\rho}_{\boldsymbol{l}}\boldsymbol{\rho}_{\boldsymbol{r}}\boldsymbol{e}^{\mathbf{2}}\boldsymbol{V}/\hbar\,\,\textbf{=}\,\,\boldsymbol{I}_{\mathbf{0}}\boldsymbol{+}\boldsymbol{k}\,\boldsymbol{x}}
 govdocs-v5-fraktur: \mathfrak{B}(\mathbf{u}: x,t,\xi)= 0
 govdocs-v5-line-ruler: T= \frac{\varepsilon}{\kappa n}
 govdocs-v5-script: y= f(\theta)+ \varepsilon,\quad \varepsilon\sim \mathcal{N}(0,\sigma^{2})
