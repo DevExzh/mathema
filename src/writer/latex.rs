@@ -3411,7 +3411,7 @@ fn write_accent_base_content(buf: &mut LatexBuffer, arena: &AstArena, content: N
         CompactNode::Space(width) if width.num == 0 => buf.push_str("\\\\ "),
         CompactNode::Operator {
             name,
-            limits: LimitStyle::AboveBelow,
+            limits: LimitStyle::AboveBelow | LimitStyle::Default,
         } => {
             let name = &*kept_name(arena.str_val(name));
             let style = if crate::unicode::symbols::operator_has_limits(name) {

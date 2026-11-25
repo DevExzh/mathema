@@ -351,13 +351,14 @@ fn takes_limits_math(node: &MathNode) -> bool {
     }
 }
 
-fn is_break_group(item: &FencedItem) -> bool {
-    matches!(item, FencedItem::Element(MathNode::Row(nodes)) if is_break_group_row(nodes))
+fn is_plain_group(item: &FencedItem) -> bool {
+    matches!(item, FencedItem::Element(MathNode::Row(nodes)) if is_plain_group_row(nodes))
 }
 
-/// A group that holds a line break and no declaration to keep inside it.
-fn is_break_group_row(nodes: &[MathNode]) -> bool {
-    nodes.contains(&MathNode::LineBreak) && !nodes.iter().any(is_declaration_math)
+/// A group that holds no declaration to keep inside it, so that its nodes are
+/// nodes of the fence (none, for an empty one).
+fn is_plain_group_row(nodes: &[MathNode]) -> bool {
+    !nodes.iter().any(is_declaration_math)
 }
 
 /// Whether a node can be the base of leading scripts. Mirrors
@@ -419,13 +420,13 @@ fn normalize_node_depth_with_identifiers(
                     normalize_node_depth_with_identifiers(n, d, merge_identifiers);
                 }
             }
-            // As in the compact normalizer, a group's line break breaks the
+            // As in the compact normalizer, a group is flattened into the
             // fenced row.
-            if content.iter().any(is_break_group) {
+            if content.iter().any(is_plain_group) {
                 *content = std::mem::take(content)
                     .into_iter()
                     .flat_map(|item| match item {
-                        FencedItem::Element(MathNode::Row(nodes)) if is_break_group_row(&nodes) => {
+                        FencedItem::Element(MathNode::Row(nodes)) if is_plain_group_row(&nodes) => {
                             nodes.into_iter().map(FencedItem::Element).collect()
                         },
                         item => vec![item],

@@ -1579,3 +1579,178 @@ fn dropped_text_between_inline_math() {
         assert_eq!(reread(latex).to_latex().unwrap(), latex);
     }
 }
+
+/// The normalized heap and compact expressions of `source`, as LaTeX.
+fn normalized_latex(source: &str) -> Option<[String; 2]> {
+    use mathema::reader::Reader;
+    use mathema::reader::latex::LatexReader;
+    let config = Config::default();
+    let mut compact = LatexReader::parse_compact(source, &config).ok()?.expr;
+    let mut heap = LatexReader::parse(source, &config).ok()?.expr;
+    mathema::ast::normalize::normalize_compact_expr(&mut compact).ok()?;
+    normalize_expr(&mut heap);
+    Some([
+        LatexWriter::write(&heap, &config).unwrap(),
+        LatexWriter::write_compact(&compact, &config).unwrap(),
+    ])
+}
+
+#[test]
+fn fenced_content_is_normalized_as_a_list() {
+    for (source, latex) in [
+        (r"\left( ' {}_{} \right)", r"\left( {}^{\prime} \right)"),
+        (r"\left( 1{}2 \right)", r"\left( 12 \right)"),
+        (
+            r"\left( {a{b}}\middle|{}c \right)",
+            r"\left( ab \middle| c \right)",
+        ),
+        (r"\left( '{}x \right)", r"\left( {{}^{\prime}x} \right)"),
+        (r"\left( a\\ {b\\ c} \right)", r"\left( a\\ b\\ c \right)"),
+        (
+            r"\left( {\large x}{y} \right)",
+            r"\left( {\large x}y \right)",
+        ),
+    ] {
+        assert_eq!(
+            normalized_latex(source).unwrap(),
+            [latex, latex],
+            "{source}"
+        );
+        assert_eq!(normalized_latex(latex).unwrap(), [latex, latex], "{source}");
+    }
+}
+
+#[test]
+fn sized_and_starred_operators_in_accents_are_stable() {
+    for (source, latex) in [
+        (r"\hat{\operatorname*{mod}}", r"\hat{\operatorname{mod}}"),
+        (r"\^\big\bmod", r"\hat{\operatorname{mod}}"),
+        (r"\hat{\Big\lim}", r"\hat{\lim}"),
+        (r"\vec{\big\big\bmod}", r"\vec{\operatorname{mod}}"),
+        (
+            r"\hat{\textcolor{$}{\operatorname*{mod}}}",
+            r"\hat{\operatorname{mod}}",
+        ),
+        (r"\hat{\big(}", r"\hat{\big(}"),
+        (r"\operatorname*{mod}_x", r"\operatorname*{mod}_x"),
+        (
+            r"\hat{\operatorname*{mod}_x}",
+            r"\hat{\operatorname*{mod}_x}",
+        ),
+    ] {
+        use mathema::Format::LaTeX;
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
+/// An empty preamble is the preamble, not the first cell.
+#[test]
+fn empty_array_preamble() {
+    for (source, latex) in [
+        (
+            r"\begin{array}{}\hline\end{array}",
+            r"\begin{array}{} \hline  \end{array}",
+        ),
+        (
+            r"\begin{array}\hline\end{array}",
+            r"\begin{array}{} \hline  \end{array}",
+        ),
+        (
+            r"\begin{array}{}\hline a\\\hline\end{array}",
+            r"\begin{array}{} \hline a \\ \hline \end{array}",
+        ),
+        (
+            r"\begin{array}{}\hdashline a\end{array}",
+            r"\begin{array}{} \hdashline a \end{array}",
+        ),
+        (
+            r"\begin{array}{}a&b\end{array}",
+            r"\begin{array}{} a & b \end{array}",
+        ),
+        (
+            r"\begin{array}{}{}a\end{array}",
+            r"\begin{array}{} a \end{array}",
+        ),
+        (
+            r"\begin{array}{c}\hline\end{array}",
+            r"\begin{array}{c} \hline  \end{array}",
+        ),
+    ] {
+        use mathema::Format::LaTeX;
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
+fn arb_latex() -> impl Strategy<Value = String> {
+    let leaf = prop::sample::select(vec![
+        "a",
+        "b",
+        "1",
+        "2",
+        ".",
+        "+",
+        "=",
+        "'",
+        "_1",
+        "^2",
+        "{}",
+        "{}_1",
+        "{}^a",
+        "{}_{}",
+        r"\sum",
+        r"\int ",
+        r"\lim",
+        r"\alpha ",
+        r"\operatorname*{mod}",
+        r"\bmod ",
+        r"\big(",
+        r"\Big\bmod ",
+        r"\large ",
+        r"\scriptstyle ",
+        r"\text{t}",
+        r"\text{u}",
+        r"\,",
+        r"\hline ",
+        r"\middle|",
+        "-",
+        r"\prime ",
+        "x_1",
+        "y'",
+        r"\cdots ",
+    ])
+    .prop_map(String::from);
+    leaf.prop_recursive(4, 40, 5, |inner| {
+        let list = prop::collection::vec(inner, 0..5).prop_map(|parts| parts.concat()).boxed();
+        prop_oneof![
+            4 => list.clone(),
+            2 => list.clone().prop_map(|x| format!(r"\left({x}\right)")),
+            1 => list.clone().prop_map(|x| format!("{{{x}}}")),
+            1 => (list.clone(), list.clone()).prop_map(|(a, b)| format!(r"\left[{a}\middle|{b}\right.")),
+            1 => list.clone().prop_map(|x| format!(r"\hat{{{x}}}")),
+            1 => (list.clone(), list.clone()).prop_map(|(a, b)| format!(r"\frac{{{a}}}{{{b}}}")),
+            1 => list.clone().prop_map(|x| format!("z_{{{x}}}")),
+            1 => list.clone().prop_map(|x| format!(r"\textcolor{{red}}{{{x}}}")),
+            1 => list.clone().prop_map(|x| format!(r"\mathbf{{{x}}}")),
+            1 => (prop::sample::select(vec!["", "c", "|c|", "cc"]), list)
+                .prop_map(|(spec, x)| format!(r"\begin{{array}}{{{spec}}}{x}\end{{array}}")),
+        ]
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    /// The heap writer is as stable as the compact one, on the normalized
+    /// expression of any source.
+    #[test]
+    fn heap_and_compact_are_stable(source in arb_latex()) {
+        if let Some([heap, compact]) = normalized_latex(&source) {
+            let [heap_again, _] = normalized_latex(&heap).expect("reads back");
+            prop_assert_eq!(&heap_again, &heap, "heap: {}", source);
+            let [_, compact_again] = normalized_latex(&compact).expect("reads back");
+            prop_assert_eq!(&compact_again, &compact, "compact: {}", source);
+        }
+    }
+}

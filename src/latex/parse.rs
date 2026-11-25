@@ -5884,20 +5884,26 @@ impl LatexCompactParser {
         };
         let (input, _) = ws(input)?;
         let (input, delim_id) = self.parse_big_delim_arg(input)?;
+        // TeX sets an element that is no delimiter in its own size. (An infix
+        // fraction command divides no list from here.)
+        if !self.is_infix_marker_id(delim_id)
+            && !matches!(
+                self.arena.node(delim_id),
+                CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, _)
+            )
+        {
+            return Ok((input, delim_id));
+        }
         let scaled = self.arena.push_node(CompactNode::Scaled {
             factor,
             content: delim_id,
         });
-        let is_delim = matches!(
-            self.arena.node(delim_id),
-            CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, _)
-        );
         let id = match atom_type {
-            Some(atom_type) if is_delim => self.arena.push_node(CompactNode::MathAtom {
+            Some(atom_type) => self.arena.push_node(CompactNode::MathAtom {
                 atom_type,
                 content: scaled,
             }),
-            _ => scaled,
+            None => scaled,
         };
         Ok((input, id))
     }
@@ -5928,10 +5934,9 @@ impl LatexCompactParser {
         let (rest, sid) = match parsed {
             Ok(parsed) => parsed,
             // TeX rejects a command that is not a delimiter here. Keep reading
-            // it as an ordinary element instead; the writer then drops the
-            // sizing command. parse_element (not parse_command) consumes the
-            // scripts and body of an n-ary operator, so the element reparses
-            // to the same shape once the wrapper is gone.
+            // it as an ordinary element instead, without the size.
+            // parse_element (not parse_command) consumes the scripts and body
+            // of an n-ary operator.
             Err(nom::Err::Error(_)) if input.starts_with('\\') => {
                 return self.parse_element(input);
             },
@@ -6981,7 +6986,11 @@ impl LatexCompactParser {
                 if let Some(end) = end {
                     let spec = &inner[..end];
                     let rest = &inner[end + 1..];
-                    if !spec.is_empty() {
+                    if spec.is_empty() {
+                        // No columns. The group is the preamble all the same, so
+                        // a rule after it is at the top edge.
+                        break 'col (rest, (SmallVec::new(), 0, true, 0), Vec::new());
+                    } else {
                         // Extract `>{\columncolor{..}}` column backgrounds and
                         // strip them so the alignment spec parses cleanly.
                         let (cleaned, col_bg) = self.extract_column_colors(spec);

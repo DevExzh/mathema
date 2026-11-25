@@ -651,13 +651,7 @@ mod tests {
     fn big_before_a_large_operator_keeps_its_body() {
         // `\big\int` is no delimiter; the operator still takes its body.
         let node = parse_one("\\big\\int x");
-        let MathNode::Scaled { content, .. } = &node else {
-            panic!("expected Scaled, got {node:?}");
-        };
-        assert!(
-            matches!(content.as_ref(), MathNode::Nary { .. }),
-            "{content:?}"
-        );
+        assert!(matches!(node, MathNode::Nary { .. }), "{node:?}");
     }
 
     #[test]

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- LaTeX output keeps a script without a base before a literal closing
+  delimiter where it is (``\left/ {}^{\prime} \middle. \mathclose{\char`\~}
+  \right.``), and dropped or empty text in a text box no longer splits or loses
+  what is around it.
+- An empty `array` preamble is read as the preamble, so a rule after it
+  (`\begin{array}{}\hline …`) is kept; it was read as the first cell.
+- A sizing command before something that is no delimiter (`\big\alpha`) leaves
+  it in its own size in every output, as TeX does; LaTeX output already did.
+- `normalize_expr` flattens groups in the content of a fence, as the compact
+  normalizer does.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
 - MTEF writer: stretchy bar accents over several letters no longer warn as
