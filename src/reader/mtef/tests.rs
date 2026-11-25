@@ -2269,6 +2269,108 @@ fn a_possessive_after_a_script_on_an_empty_fence_settles() {
     }
 }
 
+/// Generated equations, reduced: how coloured parts are grouped.
+#[test]
+fn reduced_generated_equations_are_grouped_by_colour() {
+    for (digits, expected) in [
+        // Scripts on nothing that a leading script leads are coloured part by part.
+        (
+            concat!(
+                "05000654360000100000000000e803100000000000000010e80300000000",
+                "0a010003001b01000100020083780000000f0302009801ef03001b000001",
+                "00010002000f0100009801ef02000082270000010100",
+            ),
+            r##"<mmultiscripts><msub><mspace width="0em"/><mstyle"##,
+        ),
+        // Two coloured nodes side by side are one.
+        (
+            concat!(
+                "05534d54360000100000000000010101010100021c010001010100010002",
+                "008227000f010300000001000200863d0002003d000000000200000000",
+            ),
+            r##"<mo>=</mo><mo>"##,
+        ),
+        // A function name takes no scripts on nothing in another colour.
+        (
+            concat!(
+                "05000654360000100000000000000a010002000000010002008273000f01",
+                "0300150000010003001c0101000200863220020083780003000001010100",
+                "0200837300020083780000000001010101010003001b0100010002000300",
+                "1500000000",
+            ),
+            r##"<mmultiscripts><mo>′</mo>"##,
+        ),
+        // What was painted apart in one colour is one.
+        (
+            concat!(
+                "05000654360000100000000000e80310000000000000001000e803000000",
+                "00030000010002008831000f03000200863d0003001b0100010001000f01",
+                "0201822700060012000001000200863d000000009801ef0200000000",
+            ),
+            r##"<mprescripts/><mstyle mathcolor="#0000ff"><mrow>"##,
+        ),
+    ] {
+        let data: Vec<u8> = (0..digits.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
+            .collect();
+        let result = crate::from_mtef_bytes_with(&data, &lenient()).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(mathml.contains(expected), "{expected}: {mathml}");
+        settles(&data);
+    }
+    // Two coloured nodes are one, not only three.
+    let digits = "05534d54360000100000000000010101010100021c010001010100010002008227000f010300000001000200863d0002003d000000000200000000";
+    let data: Vec<u8> = (0..digits.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
+        .collect();
+    let result = crate::from_mtef_bytes_with(&data, &lenient()).unwrap();
+    let mathml = result.to_mathml().unwrap();
+    assert_eq!(mathml.matches("mathcolor").count(), 1, "{mathml}");
+}
+
+/// The zero spaces at the ends of slots are dropped, in the tree as it is read.
+#[test]
+fn zero_spaces_at_the_ends_of_slots_are_dropped() {
+    let zero = c5(0, 24, '\u{EF01}');
+    let x = c5(0, 3, 'x');
+    let y = c5(0, 3, 'y');
+    let top = [&x[..], &y, &zero].concat();
+    let bottom = [&zero[..], &x, &y, &zero, &zero].concat();
+    for content in [&top, &bottom, &zero] {
+        let fraction = template5(11, 0, &[Some(content), Some(&x)]);
+        let tree = MtefReader::parse_bytes(&eq5(&fraction), &Config::default()).unwrap();
+        let tree = format!("{:?}", tree.expr);
+        assert!(!tree.contains("Space"), "{tree}");
+    }
+    // Primes before one are primes.
+    let prime = c5(0, 2, '\'');
+    let sup = template5(
+        28,
+        0,
+        &[None, Some(&[&prime[..], &prime, &zero, &prime].concat())],
+    );
+    let mathml = settled_mathml(&eq5(&[&x[..], &sup, &script5(0, &y)].concat()));
+    assert!(mathml.contains("<msubsup>"), "{mathml}");
+}
+
+/// Primes on primes join an item in the order in which they are drawn.
+#[test]
+fn primes_of_a_template_keep_their_order() {
+    let mark = |ch: char| c5(0, 6, ch);
+    let sup = |ch: char| template5(28, 0, &[None, Some(&mark(ch))]);
+    let content = [mark('\u{2032}'), sup('\u{2033}'), sup('\u{2034}')].concat();
+    let template = template5(21, 0, &[Some(&[]), None, None, Some(&content)]);
+    let data = eq5(&[c5(0, 3, 'x'), template].concat());
+    let mathml = settled_mathml(&data);
+    let marks: String = mathml
+        .chars()
+        .filter(|ch| ('\u{2032}'..='\u{2034}').contains(ch))
+        .collect();
+    assert_eq!(marks, "\u{2032}\u{2033}\u{2034}", "{mathml}");
+}
+
 /// The zero space that keeps an apostrophe is written before whatever draws a
 /// letter, and not at the start of the next line.
 #[test]

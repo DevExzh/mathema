@@ -1368,3 +1368,20 @@ fn numbers_in_two_colours_need_no_space() {
         "{mathml}"
     );
 }
+
+/// Only the `s` of a possessive is kept apart from a letter: not that of a
+/// function name, nor one of text.
+#[test]
+fn an_apostrophe_before_a_function_name_or_in_text_needs_no_space() {
+    for latex in [
+        r"x\char`'\sin y",
+        r"\text{it'sy}",
+        r"x\text{'sy}",
+        r"\text{x'}sy",
+    ] {
+        let mtef = crate::convert(latex, crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+        assert!(!mtef.contains("9801ef"), "{latex}: {mtef}");
+    }
+    let mtef = crate::convert(r"x\char`'sy", crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+    assert!(mtef.contains("9801ef"), "{mtef}");
+}

@@ -97,6 +97,23 @@ fn drawn(expr: &CompactExpr) -> Option<Vec<char>> {
     Some(characters)
 }
 
+/// Whether the tree has a function application. The writer knows one by its
+/// place in a list, which a color around it changes.
+fn applies_function(expr: &CompactExpr) -> bool {
+    struct Finder(bool);
+    impl Visitor for Finder {
+        fn visit_node(&mut self, node: &MathNode) {
+            self.0 |= matches!(node, MathNode::Symbol(_, text) if text.contains('\u{2061}'));
+            if !self.0 {
+                walk_node(self, node);
+            }
+        }
+    }
+    let mut finder = Finder(false);
+    finder.visit_expr(&expr.to_math_expr());
+    finder.0
+}
+
 /// A color changes nothing of what is written: a tree is written as it is with
 /// each color replaced by what it colors.
 fn colors_are_content(read: &CompactExpr, written: &str) {
@@ -134,8 +151,7 @@ fn keeps_text(input: &str) {
     ) else {
         return;
     };
-    // (A colored function application is written as a character.)
-    if has_unwritten(&read.expr) && !input.contains('\u{2061}') && !input.contains("2061;") {
+    if has_unwritten(&read.expr) && !applies_function(&read.expr) {
         colors_are_content(&read.expr, &written);
     }
     if !lost

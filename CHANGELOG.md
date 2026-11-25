@@ -84,9 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them; primes drawn by many templates are joined in linear time.
 - MTEF writer: `'s` before a letter is written with a zero space that keeps the
   apostrophe.
-- Pure OMML: colors are dropped before normalizing, by `convert` and
+- Pure OMML: colors are dropped before runs are joined, by `convert` and
   `ConvertResult` alike, so text and numbers that only a color kept apart are
-  one run, as they read back.
+  one run, as they read back: neighbouring digit groups told apart only by
+  their colors become one number (`16`, `10`, `16` are written `161016`).
+  WordprocessingML and DrawingML output keeps the colors and keeps them apart.
 - MTEF writer: stretchy bar accents over several letters no longer warn as
   narrow accents, and MTEF 5 writes a strike under an accent in its own
   direction.
