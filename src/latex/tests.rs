@@ -832,7 +832,9 @@ fn legacy_font_declarations_scope_like_grouped_fonts() {
     let legacy_mathml =
         crate::convert(r"\rm xyz", crate::Format::LaTeX, crate::Format::MathML).unwrap();
     assert!(
-        legacy_mathml.contains(r#"<mstyle mathvariant="normal"><mi mathvariant="normal">xyz</mi>"#),
+        legacy_mathml.contains(
+            r#"<mstyle mathvariant="normal"><mi mathvariant="normal">x</mi><mi mathvariant="normal">y</mi><mi mathvariant="normal">z</mi>"#
+        ),
         "legacy declaration did not style its full remaining expression: {legacy_mathml}"
     );
 

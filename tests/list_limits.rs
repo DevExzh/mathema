@@ -70,12 +70,19 @@ fn lists_up_to_the_limit_still_convert() {
 
 #[test]
 fn merging_long_letter_runs_is_linear() {
-    // Normalization merges a run of letters into one identifier. Each merge
-    // used to copy the whole run so far: 65 000 letters needed about 2 GB.
-    let latex = format!("({{{}}})", "x".repeat(65_000)).repeat(3);
+    // Normalization merges the letters of an operator's name into one
+    // identifier. Each merge used to copy the whole run so far: 65 000 letters
+    // needed about 2 GB.
+    let letters = "x".repeat(65_000);
+    let latex = format!(r"\operatorname{{\underline{{a}}{letters}}}");
     let result = mathema::from_latex(&latex).unwrap();
     let out = mathema::convert(&latex, Format::LaTeX, Format::LaTeX).unwrap();
-    assert_eq!(out.matches('x').count(), 195_000);
+    assert_eq!(out.matches('x').count(), 65_000);
+    // Other letters are nodes of their lists, which have a limit.
+    let latex = format!("({{{letters}}})");
+    assert!(mathema::convert(&latex, Format::LaTeX, Format::LaTeX).is_ok());
+    let latex = mathema::convert(&latex.repeat(3), Format::LaTeX, Format::LaTeX);
+    assert!(is_list_limit(&latex));
     let mut normalized = result.compact_expr().clone();
     mathema::ast::normalize::normalize_compact_expr(&mut normalized).unwrap();
     assert!(normalized.arena.heap_bytes() < 64 * 1024 * 1024);

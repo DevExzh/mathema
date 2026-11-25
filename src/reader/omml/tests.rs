@@ -330,12 +330,13 @@ fn matrix_mcs_column_alignment_is_preserved() {
 }
 
 #[test]
-fn italic_multi_character_run_is_identifier() {
+fn letters_of_an_italic_run_are_variables() {
     for text in ["abc", "Pr", "sin", "lim"] {
         let input = omath(&format!(
             r#"<m:r><m:rPr><m:sty m:val="i"/></m:rPr><m:t>{text}</m:t></m:r>"#
         ));
-        assert_eq!(parse_one(&input), id(text));
+        let letters = text.chars().map(|c| id(&c.to_string())).collect();
+        assert_eq!(parse_one(&input), MathNode::Row(letters));
     }
 }
 
@@ -626,7 +627,7 @@ fn characters_outside_xml_are_rejected() {
     let input = omath("<m:r><m:t>a\u{0}b</m:t></m:r>");
     strict_err(&input);
     let result = lenient(&input);
-    assert_eq!(result.expr.nodes, vec![id("ab")]);
+    assert_eq!(result.expr.nodes, vec![id("a"), id("b")]);
     assert!(result.has_warnings());
     strict_err(&omath(
         "<m:d><m:dPr><m:begChr m:val=\"\u{1}\"/></m:dPr><m:e/></m:d>",

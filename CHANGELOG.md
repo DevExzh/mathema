@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (behavior):** letters that are separate in the source stay
+  separate. `convert`, `normalize_expr` and `normalize_compact_expr` joined
+  neighbouring ASCII letters into one identifier, which MathML draws upright:
+  `ab` became `<mi mathvariant="normal">ab</mi>` and is now
+  `<mi>a</mi><mi>b</mi>`, as TeX and `from_latex(…).to_mathml()` mean it. OMML
+  gets a run per letter and UnicodeMath parentheses where a row of letters is an
+  operand (`(ab)/c`). Only the letters of operator names (`\varinjlim`) are
+  joined.
+- **Breaking (behavior):** the letters of an italic OMML run (`sty` i, or none,
+  which is Word's default) are identifiers of their own; a run of `sty` p is one
+  as before.
+- The MathML writer spells the style on the letters of `\mathrm`
+  (`<mi mathvariant="normal">`), as MathML Core has no `mathvariant` on
+  `mstyle`, and that of a styled word on its `mi`, which was upright.
 - The heap normalizer normalizes trees with typesetting attributes as their
   compact form. MTEF SIZE records with nothing added are read as the typesize
   records they spell out.

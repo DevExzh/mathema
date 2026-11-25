@@ -1211,7 +1211,7 @@ mod review {
         }
         let written = convert(&source, Format::Omml, Format::Omml).unwrap();
         assert!(
-            written.contains(">TH<") && written.contains(">12<"),
+            written.contains(">T<") && written.contains(">H<") && written.contains(">12<"),
             "{written}"
         );
         assert_eq!(

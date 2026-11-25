@@ -1545,8 +1545,7 @@ impl<'i> Parser<'i> {
                     buf.push(chars[i].1);
                     i += 1;
                 }
-                let id = self.letters(&buf, cstyle.or(style))?;
-                out.push(id);
+                self.letters(&buf, cstyle.or(style), out)?;
             } else {
                 let mut tmp = [0u8; 4];
                 let sym = self.symbol(classify_op_char(orig), orig.encode_utf8(&mut tmp));
@@ -1568,29 +1567,36 @@ impl<'i> Parser<'i> {
 
     /// Classify a run of letters. Without an explicit style (math italic)
     /// or with upright style, a known function name becomes an operator.
-    fn letters(&mut self, text: &str, style: Option<TextStyle>) -> Result<NodeId> {
+    fn letters(&mut self, text: &str, style: Option<TextStyle>, out: &mut Ids) -> Result<()> {
         let sid = self.arena.push_str(text);
         let is_operator =
             text.chars().count() > 1 && crate::unicode::symbols::is_operator_command(text);
-        match style {
+        out.push(match style {
             None | Some(TextStyle::Normal) if is_operator => {
                 let limits = if crate::unicode::symbols::operator_has_limits(text) {
                     LimitStyle::Default
                 } else {
                     LimitStyle::SubSup
                 };
-                Ok(self
-                    .arena
-                    .push_node(CompactNode::Operator { name: sid, limits }))
+                self.arena
+                    .push_node(CompactNode::Operator { name: sid, limits })
             },
+            // Italic, which is Word's default ([MS-OI29500] 2.1.1705): a run
+            // has no word to keep together, each letter is a variable.
             None | Some(TextStyle::Italic) => {
-                Ok(self.arena.push_node(CompactNode::Identifier(sid)))
+                let mut letter = [0u8; 4];
+                for c in text.chars() {
+                    let sid = self.arena.push_str(c.encode_utf8(&mut letter));
+                    out.push(self.arena.push_node(CompactNode::Identifier(sid)));
+                }
+                return Ok(());
             },
             Some(st) => {
                 let ident = self.arena.push_node(CompactNode::Identifier(sid));
-                self.styled(st, ident)
+                self.styled(st, ident)?
             },
-        }
+        });
+        Ok(())
     }
 
     // ── Math objects ────────────────────────────────────────────────────

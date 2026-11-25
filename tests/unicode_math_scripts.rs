@@ -101,7 +101,7 @@ const READS: &[(&str, &str, &str)] = &[
         "(f′(x))/2",
         r"\frac{f^{\prime}\left( x \right)}{2}",
     ),
-    ("abc/d", "abc/d", r"\frac{abc}{d}"),
+    ("abc/d", "(abc)/d", r"\frac{abc}{d}"),
     ("a+(b)/c", "a+b/c", r"a+ \frac{b}{c}"),
     ("a+b/c d", "a+b/c d", r"a+ \frac{b}{c}d"),
     ("a/b/c", "(a/b)/c", r"\frac{\frac{a}{b}}{c}"),

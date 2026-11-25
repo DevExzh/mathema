@@ -365,6 +365,9 @@ fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
 struct MathOutput<T> {
     target: T,
     operator_font: Option<TextStyle>,
+    /// The style of the `mstyle` around, which a letter spells itself where
+    /// that of the `mstyle` is not enough.
+    letter_style: Option<TextStyle>,
     /// The size of ordinary text in points.
     base_pt: f64,
     /// Text size in force from enclosing `mathsize`, in thousandths of the
@@ -387,6 +390,7 @@ impl<T> MathOutput<T> {
         Self {
             target,
             operator_font: None,
+            letter_style: None,
             base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
             size_per_mille: 1000,
             has_sizes: false,
@@ -418,6 +422,14 @@ impl<T> MathOutput<T> {
         let previous = std::mem::replace(&mut self.operator_font, font);
         let result = f(self);
         self.operator_font = previous;
+        result
+    }
+
+    /// Write what is in a style.
+    fn with_letter_style<R>(&mut self, style: TextStyle, write: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = self.letter_style.replace(style);
+        let result = write(self);
+        self.letter_style = previous;
         result
     }
 }
@@ -1710,7 +1722,9 @@ fn write_node_in(
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             let font = w.operator_font.map(|_| *style);
-            w.with_operator_font(font, |w| write_nodes(w, children, display_style, false))?;
+            w.with_operator_font(font, |w| {
+                w.with_letter_style(*style, |w| write_nodes(w, children, display_style, false))
+            })?;
             w.write_event(Event::End(BytesEnd::new("mstyle")))
                 .map_err(to_err)?;
             Ok(())
@@ -1974,14 +1988,26 @@ fn write_mspace(w: &mut XmlWriter, width: Rational, physical: Option<Rational>) 
 /// The TeX length of a physical space on its `mspace`, in TeX points.
 pub(crate) const KERN_ATTRIBUTE: &str = "data-mathema-kern";
 
-fn identifier_variant(s: &str, font: Option<TextStyle>) -> Option<&'static str> {
-    font.map(style_to_mathvariant)
-        .or_else(|| (s.len() > 1 && s.bytes().all(|b| b.is_ascii_alphabetic())).then_some("normal"))
+/// The `mathvariant` of an `mi`. One of several letters is upright by itself,
+/// one of a single letter italic, whatever style an `mstyle` around has
+/// (MathML Core 3.2.2, where `mstyle` has no `mathvariant`).
+fn identifier_variant(
+    s: &str,
+    font: Option<TextStyle>,
+    around: Option<TextStyle>,
+) -> Option<&'static str> {
+    if let Some(font) = font {
+        return Some(style_to_mathvariant(font));
+    }
+    if s.len() > 1 && s.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Some(style_to_mathvariant(around.unwrap_or(TextStyle::Normal)));
+    }
+    (around == Some(TextStyle::Normal)).then_some("normal")
 }
 
 fn write_mi(w: &mut XmlWriter, s: &str) -> Result<()> {
     let mut elem = BytesStart::new("mi");
-    if let Some(variant) = identifier_variant(s, w.operator_font) {
+    if let Some(variant) = identifier_variant(s, w.operator_font, w.letter_style) {
         elem.push_attribute(("mathvariant", variant));
     }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
@@ -2971,7 +2997,9 @@ fn write_bare_node_fast(
             buf.push_str("\">");
             let font = buf.operator_font.map(|_| style);
             buf.with_operator_font(font, |buf| {
-                write_nodes_fast(buf, arena, arena.children(span), display_style, false)
+                buf.with_letter_style(style, |buf| {
+                    write_nodes_fast(buf, arena, arena.children(span), display_style, false)
+                })
             });
             buf.push_str("</mstyle>");
         },
@@ -3573,7 +3601,7 @@ fn is_empty_compact_node(arena: &AstArena, id: NodeId) -> bool {
 
 #[inline]
 fn write_mi_fast(buf: &mut XmlBuffer, s: &str) {
-    if let Some(variant) = identifier_variant(s, buf.operator_font) {
+    if let Some(variant) = identifier_variant(s, buf.operator_font, buf.letter_style) {
         buf.push_str(r#"<mi mathvariant=""#);
         buf.push_str(variant);
         buf.push_str(r#"">"#);
