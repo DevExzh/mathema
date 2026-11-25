@@ -486,6 +486,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Font sizes as typesetting attributes of nodes (`ast::NodeAttrs`,
+  `FontSize`, `MathNode::Attributed`, `AstArena::attrs`): the sizes MTEF
+  gives characters where a template does not imply them, MathML absolute
+  `mathsize` and OMML `w:sz`. `NodeAttrs::glyph_size` is the size of a node's
+  own sign, the operator of an n-ary node or the mark of an accent (MTEF,
+  MathML `<mo mathsize>`, OMML `m:ctrlPr`). The MathML, OMML
+  (`OmmlRunProperties::WordprocessingMl`) and MTEF writers write them and the
+  renderer draws them. The LaTeX writer writes the nearest size command
+  within 10 %, and in scripts only `\textstyle`, `\scriptstyle` or
+  `\scriptscriptstyle`; other sizes are dropped with an Info diagnostic, as
+  are those of signs and of operator names with scripts.
+  `Config::typesetting` (`TypesettingPolicy`) selects whether approximated
+  sizes, and in UnicodeMath dropped ones, are reported too. `MathExpr::meta`
+  holds the size of ordinary text. Not kept: the sizes of delimiters (MTEF
+  reports them), of other OMML objects' `m:ctrlPr`, DrawingML `sz`, MathML
+  `mathsize` on table rows and cells, and letters in the operator slot of an
+  MTEF big operator at a symbol size.
+- **Breaking (behavior):** `AstArena::node_mut` removes the typesetting
+  attributes of the node it returns, which may become another node.
+- **Breaking:** `MathExpr`, `CompactExpr` and `Config` have a new field each
+  (`meta`, `meta`, `typesetting`), and `MathNode` a new variant.
+- **Breaking (behavior):** MTEF runs of text, digits or function names are
+  split where their size changes; absolute MathML sizes are attributes instead
+  of being dropped with a warning (accent and operator signs included); OMML `w:sz` is no longer a diagnostic and an invalid
+  value is an error in `Strictness::Strict`.
 - The MTEF reader reads MTEF 2 (Equation Editor 1.x and 2.x, MathType 3.0) and
   MTEF 4 (MathType 3.5), which were errors before. New variants
   `MtefVersion::V2` and `MtefVersion::V4` (the enum is `#[non_exhaustive]`, so

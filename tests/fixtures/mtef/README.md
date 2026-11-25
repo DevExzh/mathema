@@ -52,6 +52,11 @@ Equation Editor habit that Strict mode now accepts.
 | `govdocs-v5-fraktur.bin` (OLE) | `zipfiles/302.zip` | `302/302170.ppt` | PowerPoint OLE object at offset 2309673 | 5 | Euclid Fraktur letter as MTCode U+F001 with font position `B` |
 | `govdocs-v5-script.bin` (OLE) | `zipfiles/456.zip` | `456/456574.doc` | `ObjectPool/_1140353549/Equation Native` | 5 | Euclid Math One letter as MTCode U+F10D with font position `N` |
 | `govdocs-v5-symbol-arrow-extension.bin` (OLE) | `zipfiles/871.zip` | `871/871082.doc` | `ObjectPool/_1200312916/Equation Native` | 5 | Symbol-font arrow extension written as Adobe's U+F8E6 |
+| `govdocs-v3-size-points.bin` (OLE) | `zipfiles/637.zip` | `637/637999.ppt` | PowerPoint OLE object at offset 138953 | 3 | SIZE with an explicit size, 288/32 = 9 pt; the preview picture draws it at 288/32 pt |
+| `govdocs-v5-size-points.bin` (OLE) | `zipfiles/723.zip` | `723/723266.pps` | PowerPoint OLE object at offset 253903 | 5 | SIZE with an explicit size, 384/32 = 12 pt; the preview picture draws it at 384/32 pt |
+| `govdocs-v5-size-delta.bin` (OLE) | `zipfiles/474.zip` | `474/474123.doc` | `ObjectPool/_1060372244/Equation Native` | 5 | SIZE with a delta, full size - 2 pt |
+| `govdocs-v3-size-typesize.bin` (OLE) | `zipfiles/832.zip` | `832/832299.ppt` | PowerPoint OLE object at offset 133125 | 3 | a typesize set by hand: digits beside letters at the Subscript size; the preview picture draws them at 224/384 of the text |
+| `govdocs-v5-size-typesize.bin` (OLE) | `zipfiles/848.zip` | `848/848516.ppt` | PowerPoint OLE object at offset 479105 | 5 | a letter at the Sub-Subscript size; the preview picture draws it at 161/32 pt, 42 % of 12 pt |
 `Equation Native` streams of documents in the govdocs1 corpus (Digital
 Corpora; documents of the U.S. government, public domain). Each file is one
 unmodified stream; the table names the corpus archive and its member.
