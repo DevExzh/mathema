@@ -949,22 +949,31 @@ pub(crate) fn nearest_size_scale(scale: f64) -> Option<(u8, bool)> {
     Some((index as u8, exact))
 }
 
-/// Whether any node of a heap tree has attributes.
+/// Whether any node of a heap tree has attributes, as deep as trees are
+/// written. (No deeper one is.)
 pub(crate) fn has_attributes(expr: &MathExpr) -> bool {
-    struct Finder(bool);
+    struct Finder {
+        found: bool,
+        depth: usize,
+    }
     impl visit::Visitor for Finder {
         fn visit_node(&mut self, node: &MathNode) {
             if matches!(node, MathNode::Attributed { .. }) {
-                self.0 = true;
+                self.found = true;
             }
-            if !self.0 {
+            if !self.found && self.depth <= MAX_AST_DEPTH {
+                self.depth += 1;
                 visit::walk_node(self, node);
+                self.depth -= 1;
             }
         }
     }
-    let mut finder = Finder(false);
+    let mut finder = Finder {
+        found: false,
+        depth: 0,
+    };
     visit::Visitor::visit_expr(&mut finder, expr);
-    finder.0
+    finder.found
 }
 
 /// Maximum allowed AST nesting depth for safe recursive traversal.

@@ -511,6 +511,50 @@ impl CompactExpr {
         })
     }
 
+    /// Remove the attributes of nodes that are no part of the expression: what
+    /// a reader or normalization dropped has no sizes to write or report.
+    #[inline]
+    pub(crate) fn drop_unreachable_attrs(&mut self) {
+        if self.arena.has_attrs() {
+            self.drop_attrs_out_of_reach();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn drop_attrs_out_of_reach(&mut self) {
+        use super::visit::{CompactVisitor, walk_compact_node};
+        struct Reach {
+            attrs: Vec<(NodeId, super::NodeAttrs)>,
+            depth: usize,
+            too_deep: bool,
+        }
+        impl CompactVisitor for Reach {
+            fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+                if self.depth > super::MAX_AST_DEPTH {
+                    self.too_deep = true;
+                    return;
+                }
+                if let Some(attrs) = arena.attrs(id) {
+                    self.attrs.push((id, attrs.clone()));
+                }
+                self.depth += 1;
+                walk_compact_node(self, arena, id);
+                self.depth -= 1;
+            }
+        }
+        let mut reach = Reach {
+            attrs: Vec::new(),
+            depth: 0,
+            too_deep: false,
+        };
+        reach.visit_expr(self);
+        // What is deeper is not written: no need to know what is in reach.
+        if !reach.too_deep {
+            self.arena.set_attrs(reach.attrs);
+        }
+    }
+
     /// Reconstruct a `MathExpr` from the arena. O(n) walk.
     #[must_use]
     pub fn to_math_expr(&self) -> MathExpr {

@@ -483,6 +483,11 @@ impl<'a> Emitter<'a> {
     /// Start an equation. The size of ordinary text
     /// is written too, if it is known and the host has one.
     fn start(&mut self, expr: &CompactExpr) {
+        if expr.meta.is_none() && !expr.arena.has_attrs() {
+            self.sized = false;
+            self.run_size = None;
+            return;
+        }
         self.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
         self.sized = expr.arena.has_attrs() && self.host == OmmlRunProperties::WordprocessingMl;
         if expr.arena.has_attrs() && !self.sized {

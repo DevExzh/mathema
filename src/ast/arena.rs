@@ -494,6 +494,11 @@ impl AstArena {
         }
     }
 
+    /// Replace all typesetting attributes.
+    pub(crate) fn set_attrs(&mut self, attrs: Vec<(NodeId, NodeAttrs)>) {
+        self.attrs = (!attrs.is_empty()).then(|| Box::new(AttrStore(attrs.into_iter().collect())));
+    }
+
     /// Remove every typesetting attribute.
     pub(crate) fn clear_attrs(&mut self) {
         self.attrs = None;

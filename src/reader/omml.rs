@@ -185,6 +185,7 @@ impl MathReader for OmmlReader {
                 arena.check_limits()?;
                 let base = sizes.apply(&mut arena);
                 let mut expr = CompactExpr::new(arena, roots, display);
+                expr.drop_unreachable_attrs();
                 expr.set_base_size(base);
                 Ok(CompactParseResult::with_diagnostics(expr, diags))
             },
@@ -229,6 +230,7 @@ impl OmmlReader {
                     arena.check_limits()?;
                     let base = eq.sizes.apply(&mut arena);
                     let mut expr = CompactExpr::new(arena, roots, display);
+                    expr.drop_unreachable_attrs();
                     expr.set_base_size(base);
                     equations.push(expr);
                 }
@@ -359,21 +361,29 @@ type Ids = SmallVec<[NodeId; 8]>;
 /// The text runs read and their sizes.
 #[derive(Default)]
 struct RunSizes {
+    /// Most equations have none.
+    runs: Option<Box<SizedRuns>>,
+    /// A run has the size that the document gives it.
+    unsized_runs: bool,
+}
+
+#[derive(Default)]
+struct SizedRuns {
     sized: Vec<(NodeId, MathStyle, u16)>,
     /// Nodes that took the place of others, by those.
     replaced: Vec<(NodeId, NodeId)>,
     /// The signs of n-ary objects and accents.
     signs: Vec<(NodeId, MathStyle, u16)>,
-    /// A run has the size that the document gives it.
-    unsized_runs: bool,
 }
 
 impl RunSizes {
     /// A node took the place of a run.
     fn replaced(&mut self, old: NodeId, new: NodeId) {
         // Only of runs with sizes is it of interest.
-        if !self.sized.is_empty() {
-            self.replaced.push((old, new));
+        if let Some(runs) = &mut self.runs
+            && !runs.sized.is_empty()
+        {
+            runs.replaced.push((old, new));
         }
     }
 
@@ -381,13 +391,22 @@ impl RunSizes {
     ///
     /// The application scales the runs of scripts: what `w:sz` gives is the
     /// size that a run would have outside of them.
+    #[inline]
     fn apply(self, arena: &mut AstArena) -> Option<Rational> {
+        self.runs?.apply(self.unsized_runs, arena)
+    }
+}
+
+impl SizedRuns {
+    #[cold]
+    #[inline(never)]
+    fn apply(self, unsized_runs: bool, arena: &mut AstArena) -> Option<Rational> {
         let mut counts = std::collections::BTreeMap::<u16, usize>::new();
         for &(_, _, size) in &self.sized {
             *counts.entry(size).or_default() += 1;
         }
         // Unsized runs have a size that only the document knows.
-        let base = (!self.unsized_runs)
+        let base = (!unsized_runs)
             .then(|| {
                 counts
                     .into_iter()
@@ -1172,6 +1191,7 @@ impl<'i> Parser<'i> {
         result
     }
 
+    #[inline]
     fn arg_content(&mut self, name: &'static str) -> Result<Ids> {
         let mut out = Ids::new();
         let mut seen_pr = false;
@@ -1426,6 +1446,8 @@ impl<'i> Parser<'i> {
             Some(size) => {
                 let style = self.style;
                 self.sizes
+                    .runs
+                    .get_or_insert_default()
                     .sized
                     .extend(ids.iter().map(|&id| (id, style, size)));
             },
@@ -1610,7 +1632,11 @@ impl<'i> Parser<'i> {
                     wide: false,
                 });
                 if let Some(size) = mark {
-                    self.sizes.signs.push((id, self.style, size));
+                    self.sizes
+                        .runs
+                        .get_or_insert_default()
+                        .signs
+                        .push((id, self.style, size));
                 }
                 Ok(id)
             },
@@ -2438,7 +2464,11 @@ impl<'i> Parser<'i> {
             limits,
         });
         if let Some(size) = sign {
-            self.sizes.signs.push((id, self.style, size));
+            self.sizes
+                .runs
+                .get_or_insert_default()
+                .signs
+                .push((id, self.style, size));
         }
         Ok(id)
     }

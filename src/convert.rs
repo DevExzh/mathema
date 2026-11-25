@@ -49,12 +49,19 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
 /// What the target does not write goes first: it must not keep apart what
 /// normalization joins.
 fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()> {
-    drop_unwritten(expr, to)?;
-    if from == Format::Mtef || to == Format::Mtef {
-        normalize_compact_expr_keeping_identifiers(expr)
+    let normalize = if from == Format::Mtef || to == Format::Mtef {
+        normalize_compact_expr_keeping_identifiers
     } else {
-        normalize_compact_expr(expr)
+        normalize_compact_expr
+    };
+    if from == Format::Mtef && to == Format::LaTeX && expr.arena.has_attrs() {
+        // As it is normalized when it is read for a `ConvertResult`: sizes are
+        // declared for the nodes of a list, not of groups in it.
+        // (The colors of MTEF can all be written.)
+        normalize(expr)?;
     }
+    drop_unwritten(expr, to)?;
+    normalize(expr)
 }
 
 /// Drop what `target` does not write, before normalization: the font sizes of
@@ -279,6 +286,9 @@ impl ConvertResult {
 
     /// Serialize to UnicodeMath using the given configuration.
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
+        if !self.compact.expr.arena.has_attrs() {
+            return UnicodeMathWriter::write_compact(&self.compact.expr, config);
+        }
         let plain = self.without_sizes()?;
         UnicodeMathWriter::write_compact(plain.as_ref().unwrap_or(&self.compact.expr), config)
     }

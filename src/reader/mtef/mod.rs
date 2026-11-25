@@ -178,16 +178,18 @@ impl MtefReader {
         };
         match outcome {
             Ok(roots) => {
-                // The preferences matter only to sizes seen against them.
-                let base = if decoder.arena.has_attrs() {
-                    decoder.full_size()
-                } else {
-                    None
-                };
+                let full_size = decoder
+                    .arena
+                    .has_attrs()
+                    .then(|| decoder.full_size())
+                    .flatten();
                 let mut arena = decoder.arena;
                 let roots = arena.push_children(&roots)?;
                 arena.check_limits()?;
                 let mut expr = CompactExpr::new(arena, roots, display);
+                expr.drop_unreachable_attrs();
+                // The preferences matter only to sizes seen against them.
+                let base = full_size.filter(|_| expr.arena.has_attrs());
                 expr.set_base_size(base);
                 Ok((
                     CompactParseResult::with_diagnostics(expr, decoder.diagnostics),

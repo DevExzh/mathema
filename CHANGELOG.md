@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The heap normalizer normalizes trees with typesetting attributes as their
+  compact form. MTEF SIZE records with nothing added are read as the typesize
+  records they spell out.
 - The scripts of `\underbrace`, `\overbrace`, `\underbracket` and
   `\overbracket` are their labels in every format (`munder`, `m:limLow`, LaTeX
   `\underbrace{x}_n`, MTEF brace templates); they were subscripts of a group,

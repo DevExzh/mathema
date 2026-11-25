@@ -59,6 +59,7 @@ impl MathReader for MathmlReader {
                 let roots = parser.arena.push_children(&ids)?;
                 let base_size = parser.base_size.take();
                 let mut expr = CompactExpr::new(parser.arena, roots, display);
+                expr.drop_unreachable_attrs();
                 expr.set_base_size(base_size);
                 Ok(CompactParseResult::with_diagnostics(
                     expr,
@@ -74,10 +75,9 @@ impl MathReader for MathmlReader {
                         message: format!("MathML parse error (recovered): {e}"),
                         span: None,
                     });
-                    Ok(CompactParseResult::with_diagnostics(
-                        CompactExpr::new(parser.arena, NodeSpan::EMPTY, display),
-                        diagnostics,
-                    ))
+                    let mut expr = CompactExpr::new(parser.arena, NodeSpan::EMPTY, display);
+                    expr.drop_unreachable_attrs();
+                    Ok(CompactParseResult::with_diagnostics(expr, diagnostics))
                 } else {
                     Err(e)
                 }

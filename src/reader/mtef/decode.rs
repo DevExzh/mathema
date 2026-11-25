@@ -982,11 +982,7 @@ impl<'a> Decoder<'a> {
             FONT => self.v3_font()?,
             SIZE => self.size_record()?,
             FULL..=SUBSYM => {
-                // A full size that is said to be one in a smaller slot is not
-                // the lack of records.
-                self.script_sizes |=
-                    matches!(rtype - FULL, 1 | 2) || rtype == FULL && self.slot_size != 0;
-                self.size = SizeState::level(rtype - FULL);
+                self.set_typesize(SizeState::level(rtype - FULL));
             },
             COLOR if self.v5 => self.color()?,
             COLOR_DEF if self.v5 => self.color_def(options)?,
@@ -1607,7 +1603,7 @@ impl<'a> Decoder<'a> {
     /// SIZE: an explicit point size (101), a large delta (100) or a typesize
     /// with a one-byte delta.
     fn size_record(&mut self) -> Result<()> {
-        self.size = match self.u8()? {
+        let size = match self.u8()? {
             // MTEFv5.md gives "-point size" here, but every record seen in
             // documents holds the positive size. Both are read.
             101 => SizeState::points((self.u16()? as i16).saturating_abs()),
@@ -1618,7 +1614,18 @@ impl<'a> Decoder<'a> {
             },
             level => SizeState::logical(level, i16::from(self.u8()?) - 128),
         };
+        self.set_typesize(size);
         Ok(())
+    }
+
+    /// A SIZE record, or a typesize record: the short way of specifying a
+    /// typesize with nothing added (MTEFv5.md "Typesize records").
+    fn set_typesize(&mut self, size: SizeState) {
+        // A full size that is said to be one in a smaller slot is not the lack
+        // of records.
+        self.script_sizes |=
+            matches!(size.0, 1 | 2) || size == SizeState::level(0) && self.slot_size != 0;
+        self.size = size;
     }
 
     /// Whether `size` is, without a closer look, what text has by its place.
