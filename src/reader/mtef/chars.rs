@@ -404,13 +404,15 @@ pub(super) fn is_private_use(ch: char) -> bool {
 
 /// The math class of a symbol character.
 pub(super) fn symbol_kind(ch: char) -> SymbolKind {
+    if let Some(class) = crate::unicode::symbols::ascii_class(ch) {
+        return class;
+    }
     match ch {
-        '(' | '[' | '{' | '\u{27E8}' | '\u{2308}' | '\u{230A}' | '\u{27E6}' => SymbolKind::Open,
-        ')' | ']' | '}' | '\u{27E9}' | '\u{2309}' | '\u{230B}' | '\u{27E7}' => SymbolKind::Close,
-        '|' | '\u{2016}' | '\u{2223}' => SymbolKind::Fence,
-        ',' | ';' | '\u{3001}' | '\u{FF0C}' | '\u{FF1B}' => SymbolKind::Punctuation,
-        '+' | '-' | '\u{2212}' | '*' | '/' => SymbolKind::BinaryOp,
-        '=' | '<' | '>' | ':' => SymbolKind::Relation,
+        '{' | '\u{27E8}' | '\u{2308}' | '\u{230A}' | '\u{27E6}' => SymbolKind::Open,
+        '}' | '\u{27E9}' | '\u{2309}' | '\u{230B}' | '\u{27E7}' => SymbolKind::Close,
+        '\u{2016}' | '\u{2223}' => SymbolKind::Fence,
+        '\u{3001}' | '\u{FF0C}' | '\u{FF1B}' => SymbolKind::Punctuation,
+        '\u{2212}' => SymbolKind::BinaryOp,
         '\u{2211}' | '\u{220F}' | '\u{2210}' | '\u{222B}' | '\u{222C}' | '\u{222D}'
         | '\u{222E}' | '\u{22C3}' | '\u{22C2}' => SymbolKind::LargeOp,
         _ => crate::unicode::symbols::symbol_kind(ch),

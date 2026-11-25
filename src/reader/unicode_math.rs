@@ -1618,8 +1618,8 @@ impl CompactParser {
         Ok((rest, self.push_node(point)))
     }
 
-    /// UTN #28 sections 2.1 and 3.2: `\/` is a literal solidus (a binary
-    /// operator, as LaTeX `/`), not the fraction operator.
+    /// UTN #28 sections 2.1 and 3.2: `\/` is a literal solidus (an
+    /// ordinary symbol, as LaTeX `/`), not the fraction operator.
     fn parse_literal_solidus<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let rest = input
             .strip_prefix("\\/")
@@ -1627,7 +1627,7 @@ impl CompactParser {
         let sid = self.arena.push_str("/");
         Ok((
             rest,
-            self.push_node(CompactNode::Symbol(SymbolKind::BinaryOp, sid)),
+            self.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
         ))
     }
 

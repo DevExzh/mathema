@@ -2220,35 +2220,35 @@ fn round_trip_script_base_tokens() {
     let cases = [
         (
             "dd'a/\u{2113}'a/\u{2113}",
-            r"d{d}^{\prime}a/ \ell^{\prime}a/ \ell",
+            r"d{d}^{\prime}a/\ell^{\prime}a/\ell",
         ),
         ("\u{2113}'", r"\ell^{\prime}"),
         (r"\ell'", r"\ell^{\prime}"),
-        ("a/\u{2113}_2", r"a/ \ell_{2}"),
-        (r"a/\ell_2'", r"a/ \ell_{2}^{\prime}"),
-        ("a/\u{03B1}'", r"a/ \alpha^{\prime}"),
-        (r"a/\alpha_2'", r"a/ \alpha_{2}^{\prime}"),
-        ("a/\u{03B4}'", r"a/ \delta^{\prime}"),
-        (r"a/\delta_2'", r"a/ \delta_{2}^{\prime}"),
-        ("a/\u{221E}'", r"a/ {\infty}^{\prime}"),
-        (r"a/\infty_2'", r"a/ {\infty}_{2}^{\prime}"),
-        (r"a/\Finv_2'", r"a/ \Finv_{2}^{\prime}"),
-        ("a/\u{2132}_2'", "a/ \u{2132}_{2}^{\\prime}"),
-        (r"a/\textohm_2'", r"a/ \Omega_{2}^{\prime}"),
-        ("a/\u{03A9}_2'", r"a/ \Omega_{2}^{\prime}"),
-        (r"a/\textmu_2'", "a/ \u{00B5}_{2}^{\\prime}"),
-        (r"a/\textmicro_2'", "a/ \u{00B5}_{2}^{\\prime}"),
-        ("a/\u{00B5}_2'", "a/ \u{00B5}_{2}^{\\prime}"),
-        (r"a/\textangstrom_2'", "a/ \u{00C5}_{2}^{\\prime}"),
-        ("a/\u{00C5}_2'", "a/ \u{00C5}_{2}^{\\prime}"),
-        (r"a/\textordmasculine_2'", "a/ \u{00BA}_{2}^{\\prime}"),
-        ("a/\u{00BA}_2'", "a/ \u{00BA}_{2}^{\\prime}"),
-        (r"a/\textordfeminine_2'", "a/ \u{00AA}_{2}^{\\prime}"),
-        ("a/\u{00AA}_2'", "a/ \u{00AA}_{2}^{\\prime}"),
-        (r"a/\textflorin_2'", "a/ \u{0192}_{2}^{\\prime}"),
-        ("a/\u{0192}_2'", "a/ \u{0192}_{2}^{\\prime}"),
-        (r"a/\circledS_2'", r"a/ \circledS_{2}^{\prime}"),
-        ("a/\u{24C8}_2'", "a/ \u{24C8}_{2}^{\\prime}"),
+        ("a/\u{2113}_2", r"a/\ell_{2}"),
+        (r"a/\ell_2'", r"a/\ell_{2}^{\prime}"),
+        ("a/\u{03B1}'", r"a/\alpha^{\prime}"),
+        (r"a/\alpha_2'", r"a/\alpha_{2}^{\prime}"),
+        ("a/\u{03B4}'", r"a/\delta^{\prime}"),
+        (r"a/\delta_2'", r"a/\delta_{2}^{\prime}"),
+        ("a/\u{221E}'", r"a/{\infty}^{\prime}"),
+        (r"a/\infty_2'", r"a/{\infty}_{2}^{\prime}"),
+        (r"a/\Finv_2'", r"a/\Finv_{2}^{\prime}"),
+        ("a/\u{2132}_2'", "a/\u{2132}_{2}^{\\prime}"),
+        (r"a/\textohm_2'", r"a/\Omega_{2}^{\prime}"),
+        ("a/\u{03A9}_2'", r"a/\Omega_{2}^{\prime}"),
+        (r"a/\textmu_2'", "a/\u{00B5}_{2}^{\\prime}"),
+        (r"a/\textmicro_2'", "a/\u{00B5}_{2}^{\\prime}"),
+        ("a/\u{00B5}_2'", "a/\u{00B5}_{2}^{\\prime}"),
+        (r"a/\textangstrom_2'", "a/\u{00C5}_{2}^{\\prime}"),
+        ("a/\u{00C5}_2'", "a/\u{00C5}_{2}^{\\prime}"),
+        (r"a/\textordmasculine_2'", "a/\u{00BA}_{2}^{\\prime}"),
+        ("a/\u{00BA}_2'", "a/\u{00BA}_{2}^{\\prime}"),
+        (r"a/\textordfeminine_2'", "a/\u{00AA}_{2}^{\\prime}"),
+        ("a/\u{00AA}_2'", "a/\u{00AA}_{2}^{\\prime}"),
+        (r"a/\textflorin_2'", "a/\u{0192}_{2}^{\\prime}"),
+        ("a/\u{0192}_2'", "a/\u{0192}_{2}^{\\prime}"),
+        (r"a/\circledS_2'", r"a/\circledS_{2}^{\prime}"),
+        ("a/\u{24C8}_2'", "a/\u{24C8}_{2}^{\\prime}"),
         ("\u{211C}''\t|'", r"\Re^{\prime\prime}|^{\prime}"),
         ("\\Re''\t|'", r"\Re^{\prime\prime}|^{\prime}"),
         (
@@ -2258,8 +2258,8 @@ fn round_trip_script_base_tokens() {
         ("-'", r"-^{\prime}"),
         ("\u{2212}'", r"{\mathord{-}}^{\prime}"),
         (r"\middle-'", r"-^{\prime}"),
-        ("a/+_2'", r"a/ +_{2}^{\prime}"),
-        ("a/d_2'", r"a/ d_{2}^{\prime}"),
+        ("a/+_2'", r"a/+_{2}^{\prime}"),
+        ("a/d_2'", r"a/d_{2}^{\prime}"),
     ];
     for (input, expected) in cases {
         let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
@@ -4433,7 +4433,7 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
     assert_eq!(first, second);
     assert_eq!(
         first,
-        "{{}_{:}8.82}8.81888::::::::^{\\prime}:::::::::::::+ :::::::::::::::::8::::::"
+        "{{}_{:}8.82}8.81888: : : : : : : :^{\\prime}: : : : : : : : : : : : : + : : : : : : : : : : : : : : : : : 8: : : : : :"
     );
 
     for input in [

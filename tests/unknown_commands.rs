@@ -391,10 +391,7 @@ fn dangerous_primitives_stay_inert_text() {
     let escaped =
         |name: &str, rest: &str| format!(r"\mathord{{\text{{\textbackslash{{}}{name}}}{rest}}}");
     for (input, expected) in [
-        (
-            r"\input{/etc/passwd}",
-            escaped("input", r"\{/ etc/ passwd\}"),
-        ),
+        (r"\input{/etc/passwd}", escaped("input", r"\{/etc/passwd\}")),
         (
             r"\immediate\write18{ls}",
             escaped("immediate", "") + &escaped("write", "") + r"18ls",
@@ -468,7 +465,7 @@ fn merror_reads_only_undefined_names_as_commands() {
         ),
         (
             "<merror><mtext>\\input</mtext><mrow><mo>/</mo><mi>e</mi></mrow></merror>",
-            r"{\text{\textbackslash{}input}{\char`/e}}",
+            r"{\text{\textbackslash{}input}{/e}}",
         ),
         // Undefined and misplaced names do read back as commands.
         ("<merror><mtext>\\foo</mtext></merror>", r"\foo"),

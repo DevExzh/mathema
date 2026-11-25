@@ -79,7 +79,7 @@ const READS: &[(&str, &str, &str)] = &[
     ("1 12′", "1 12′", r"1{12}^{\prime}"),
     ("x/y^3 2", "x/y^3 2", r"\frac{x}{y^{3}}2"),
     // `\/` is a literal solidus.
-    ("x\\/y", "x\\/y", r"x/ y"),
+    ("x\\/y", "x\\/y", r"x/y"),
     // A numerator or denominator is the whole operand (section 2.1), so a
     // function or product keeps its parentheses before `/`.
     ("f(x)/2", "(f(x))/2", r"\frac{f\left( x \right)}{2}"),

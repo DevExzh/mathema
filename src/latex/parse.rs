@@ -281,7 +281,7 @@ pub(crate) const fn ascii_ordinary_needs_char(ch: char) -> bool {
     match ch {
         // `is_symbol_byte` whose class is ordinary (see `classify_char`), the
         // symbols with a control symbol, and the double quote.
-        '!' | '.' | ':' | '?' | '\'' | '@' | '#' | '$' | '%' | '&' | '"' => false,
+        '!' | '.' | '/' | '?' | '\'' | '@' | '#' | '$' | '%' | '&' | '"' => false,
         _ => ch.is_ascii(),
     }
 }
@@ -299,19 +299,9 @@ fn package_delimiter(name: &str) -> Option<char> {
 }
 
 fn classify_char(c: char) -> SymbolKind {
-    match c {
-        '+' | '-' | '*' => SymbolKind::BinaryOp,
-        '/' => SymbolKind::BinaryOp,
-        '=' | '<' | '>' => SymbolKind::Relation,
-        '!' => SymbolKind::Ordinary,
-        ',' | ';' => SymbolKind::Punctuation,
-        '.' | ':' | '?' | '\'' | '@' => SymbolKind::Ordinary,
-        '|' => SymbolKind::Fence,
-        '(' | '[' => SymbolKind::Open,
-        ')' | ']' => SymbolKind::Close,
-        // All callers guard with is_symbol_byte, so this arm is unreachable.
-        _ => unreachable!("classify_char called with non-symbol byte: {c:?}"),
-    }
+    // All callers guard with is_symbol_byte.
+    crate::unicode::symbols::ascii_class(c)
+        .unwrap_or_else(|| unreachable!("classify_char called with non-symbol byte: {c:?}"))
 }
 
 fn negate_char(ch: char) -> Option<char> {
@@ -2603,6 +2593,13 @@ impl LatexCompactParser {
         }
         let grouped = input.starts_with('{');
         let (input, base) = self.parse_atom(input)?;
+        // A brace group is an ordinary atom: `a{:}b`.
+        if grouped
+            && let CompactNode::Symbol(SymbolKind::Relation, sid) = *self.arena.node(base)
+            && self.arena.str_val(sid) == ":"
+        {
+            *self.arena.node_mut_in_place(base) = CompactNode::Symbol(SymbolKind::Ordinary, sid);
+        }
         // An infix fraction command is no atom: scripts after it begin the
         // next one, the denominator's first (`a \over^2 b`).
         if self.is_infix_marker_id(base) {

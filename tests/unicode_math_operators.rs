@@ -507,9 +507,9 @@ const OPERANDS: &[(&str, &str, &str)] = &[
     (
         r"\int_0^1 {max}/x dx",
         r"∫_0^1 〖m ax〗 \/xdx",
-        r"\int\nolimits_{0}^{1} {max}/ xdx",
+        r"\int\nolimits_{0}^{1} {max}/xdx",
     ),
-    (r"{max}/{max}", r"m ax\/m ax", r"max/ max"),
+    (r"{max}/{max}", r"m ax\/m ax", r"max/max"),
     (
         r"\sum_i {xmin} b",
         r"∑_i 〖xm in〗 b",

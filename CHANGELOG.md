@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A brace, overline or underline over `\mathop{…}` keeps its command, and a
   lone `⏞`/`⏟` over or under something is written `\overbrace`/`\underbrace`.
 - Rendering: an operator without an operand has no thin space after it.
+- A `/` is an ordinary symbol and a `:` a relation, as in TeX and KaTeX, in
+  every reader; they were a binary operator and an ordinary symbol. `a/b` is
+  written without a space, an ordinary colon `{:}` and a punctuation one `\colon`.
 - Rendering: a letter's box includes its italic correction, as in TeX, so `T)`,
   `f_1` and `\frac{V}{Y}` no longer collide. A superscript (primes too) follows
   the correction, a subscript does not, and that of an integral sits under its

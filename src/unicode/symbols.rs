@@ -962,10 +962,26 @@ pub(crate) fn mapped_symbol_kind(ch: char) -> Option<SymbolKind> {
 #[inline]
 pub(crate) fn operator_glyph_kind(ch: char) -> Option<SymbolKind> {
     if ch.is_ascii() {
-        return None;
+        // A relation wherever it is an operator (TeX's `:`, not `\colon`).
+        return (ch == ':').then_some(SymbolKind::Relation);
     }
     mapped_symbol_kind(ch)
         .filter(|kind| !matches!(kind, SymbolKind::Ordinary | SymbolKind::Alphabetic))
+}
+
+/// The class TeX and KaTeX give an ASCII character of a formula: the one table
+/// for the readers. A `/` is ordinary and a `:` a relation.
+pub(crate) const fn ascii_class(ch: char) -> Option<SymbolKind> {
+    Some(match ch {
+        '+' | '-' | '*' => SymbolKind::BinaryOp,
+        '=' | '<' | '>' | ':' => SymbolKind::Relation,
+        ',' | ';' => SymbolKind::Punctuation,
+        '(' | '[' => SymbolKind::Open,
+        ')' | ']' => SymbolKind::Close,
+        '|' => SymbolKind::Fence,
+        '/' | '!' | '.' | '?' | '\'' | '@' => SymbolKind::Ordinary,
+        _ => return None,
+    })
 }
 
 /// The atom class a glyph has where nothing but the glyph says so (a
@@ -984,10 +1000,15 @@ pub(crate) fn glyph_class(ch: char) -> Option<SymbolKind> {
         '\u{22A5}' => SymbolKind::Relation,
         // Symmetric delimiters, whatever `\lvert` and `\rvert` say.
         '|' | '\u{2016}' => SymbolKind::Fence,
-        '+' | '-' | '*' | '\u{2212}' | '\u{2022}' => SymbolKind::BinaryOp,
-        '=' | '<' | '>' | ':' => SymbolKind::Relation,
-        ',' | ';' => SymbolKind::Punctuation,
-        _ if ch.is_ascii() => return None,
+        '\u{2212}' | '\u{2022}' => SymbolKind::BinaryOp,
+        _ if ch.is_ascii() => {
+            return ascii_class(ch).filter(|kind| {
+                matches!(
+                    kind,
+                    SymbolKind::BinaryOp | SymbolKind::Relation | SymbolKind::Punctuation
+                )
+            });
+        },
         _ => match mapped_symbol_kind(ch) {
             Some(kind) => kind,
             None => match other_glyph_classes().get(&ch) {

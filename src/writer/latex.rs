@@ -2804,6 +2804,11 @@ fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
             _ => {},
         }
     }
+    // A colon is a relation unless braced.
+    if kind == SymbolKind::Ordinary && s == ":" && !buf.in_operator_name {
+        buf.push_str("{:}");
+        return;
+    }
     if kind == SymbolKind::Ordinary
         && let [byte] = s.as_bytes()
         && needs_escape(char::from(*byte), Place::Ordinary)
@@ -2961,6 +2966,10 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
             '&' if kind == SymbolKind::BinaryOp => buf.push_str("\\And"),
             // A full stop is ordinary in math; `\ldotp` is its punctuation form.
             '.' if kind == SymbolKind::Punctuation => buf.push_str("\\ldotp"),
+            ':' if kind == SymbolKind::Punctuation => buf.push_str("\\colon"),
+            // A `/` is ordinary in math, a `:` a relation.
+            '/' => write_class_char(buf, kind, ch),
+            ':' if kind != SymbolKind::Relation => write_class_char(buf, kind, ch),
             '\'' | '`' | '\\' | '^' | '_' | '~' | '\0'..=' ' | '\u{7F}' => {
                 write_class_char(buf, kind, ch)
             },
