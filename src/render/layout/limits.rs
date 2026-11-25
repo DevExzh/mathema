@@ -319,6 +319,12 @@ pub(super) fn layout_nary(
 ) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+    // The space is between the operator and its operand.
+    let thin_space = if matches!(body, MathNode::Row(nodes) if nodes.is_empty()) {
+        0.0
+    } else {
+        3.0 / 18.0 * size
+    };
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
     let (op_size, m) = if ctx.branch_style().is_display() {
@@ -412,7 +418,6 @@ pub(super) fn layout_nary(
 
         // Body follows
         let nary_width = max_w;
-        let thin_space = 3.0 / 18.0 * size;
         children.push(PositionedBox::new(nary_width + thin_space, 0.0, body_box));
         LayoutBox {
             width: nary_width + thin_space + body_w,
@@ -422,7 +427,6 @@ pub(super) fn layout_nary(
         }
     } else {
         // As sub/superscripts — use the already-scaled op_box
-        let thin_space = 3.0 / 18.0 * size;
 
         // Wrap large-op glyph in HBox so is_char_box returns false in subsup layout.
         // KaTeX does not treat large operator symbols as character boxes, allowing
@@ -1006,6 +1010,12 @@ pub(super) fn layout_nary_arena(
 ) -> LayoutBoxId {
     let p = &ctx.params;
     let size = ctx.size();
+    // The space is between the operator and its operand.
+    let thin_space = if matches!(*ast.node(body), CompactNode::Row(span) if span.is_empty()) {
+        0.0
+    } else {
+        3.0 / 18.0 * size
+    };
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
     let (op_size, m) = if ctx.branch_style().is_display() {
@@ -1136,7 +1146,6 @@ pub(super) fn layout_nary_arena(
 
         // Body follows
         let nary_width = max_w;
-        let thin_space = 3.0 / 18.0 * size;
         arena.push_child(ArenaPositionedBox {
             dx: nary_width + thin_space,
             dy: 0.0,
@@ -1152,7 +1161,6 @@ pub(super) fn layout_nary_arena(
         })
     } else {
         // As sub/superscripts
-        let thin_space = 3.0 / 18.0 * size;
 
         // Wrap large-op glyph in HBox so is_char_box returns false in subsup layout.
         // KaTeX does not treat large operator symbols as character boxes, allowing

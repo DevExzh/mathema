@@ -6107,10 +6107,36 @@ impl LatexCompactParser {
         })
     }
 
+    /// The content of a color. An operator alone in the group is the symbol: no
+    /// operand belongs to it. (Text that names no color is dropped from LaTeX
+    /// output, and the group with it.)
+    fn parse_color_content<'a>(&mut self, input: &'a str, color: &str) -> IResult<&'a str, NodeId> {
+        let (input, content) = self.parse_required_group(input)?;
+        let named = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'#' | b'!');
+        if !color.is_empty()
+            && color.bytes().all(named)
+            && let CompactNode::Nary {
+                op,
+                sub,
+                sup,
+                body,
+                limits: LimitStyle::Default,
+            } = *self.arena.node(content)
+            && !sub.is_some()
+            && !sup.is_some()
+            && self.is_empty_row(body)
+        {
+            let sid = self.push_char_str(op);
+            let symbol = CompactNode::Symbol(SymbolKind::LargeOp, sid);
+            return Ok((input, self.arena.push_node(symbol)));
+        }
+        Ok((input, content))
+    }
+
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, color_str) = self.parse_color_arg(input)?;
         let color_sid = self.arena.push_str(&color_str);
-        let (input, content_id) = self.parse_required_group(input)?;
+        let (input, content_id) = self.parse_color_content(input, &color_str)?;
         Ok((
             input,
             self.arena.push_node(CompactNode::Color {
@@ -6591,7 +6617,7 @@ impl LatexCompactParser {
         let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, color) = braced_text(input)?;
-        let (input, content_id) = self.parse_required_group(input)?;
+        let (input, content_id) = self.parse_color_content(input, color)?;
         let bg_color = self.resolve_box_color(model.as_deref(), color);
         let bg_sid = self.arena.push_str(&bg_color);
         let border_sid = self.arena.push_str("");
@@ -6615,7 +6641,7 @@ impl LatexCompactParser {
         let (input, frame_color) = braced_text(input)?;
         let (input, _) = ws(input)?;
         let (input, bg_color) = braced_text(input)?;
-        let (input, content_id) = self.parse_required_group(input)?;
+        let (input, content_id) = self.parse_color_content(input, bg_color)?;
         let bg = self.resolve_box_color(model.as_deref(), bg_color);
         let frame = self.resolve_box_color(model.as_deref(), frame_color);
         let bg_sid = self.arena.push_str(&bg);
