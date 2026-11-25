@@ -102,7 +102,7 @@ pub struct AstArena {
     /// Sparse provenance for explicitly typed spaces and parsed table forms.
     provenance: ProvenanceStore,
     /// Typesetting attributes of the nodes that have any.
-    attrs: Option<Box<HashMap<NodeId, NodeAttrs>>>,
+    attrs: Option<HashMap<NodeId, NodeAttrs>>,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -341,8 +341,25 @@ impl AstArena {
     }
 
     /// Return a mutable reference to the node identified by `id`.
+    ///
+    /// What is written there can be another node altogether, so the node's
+    /// typesetting attributes are removed; see [`attrs`](Self::attrs) and
+    /// [`add_attrs`](Self::add_attrs) to keep them.
     #[inline]
     pub fn node_mut(&mut self, id: NodeId) -> &mut CompactNode {
+        if let Some(store) = &mut self.attrs {
+            store.remove(&id);
+            if store.is_empty() {
+                self.attrs = None;
+            }
+        }
+        self.node_mut_in_place(id)
+    }
+
+    /// Like [`node_mut`](Self::node_mut) for an edit that leaves the node
+    /// what it is.
+    #[inline]
+    pub(crate) fn node_mut_in_place(&mut self, id: NodeId) -> &mut CompactNode {
         &mut self.nodes[id.index()]
     }
 
@@ -352,8 +369,9 @@ impl AstArena {
         &self.nodes
     }
 
-    /// Replace a node by an existing node, preserving its source metadata
-    /// when normalization unwraps a group or elides an empty script field.
+    /// Replace a node by an existing node that it held or stands for,
+    /// preserving its source metadata when normalization unwraps a group or
+    /// elides an empty script field.
     pub(crate) fn replace_from(&mut self, destination: NodeId, source: NodeId) {
         if destination == source {
             return;
@@ -361,9 +379,10 @@ impl AstArena {
         self.nodes[destination.index()] = self.nodes[source.index()];
         if self.attrs.is_some() {
             // The wrapper's attributes applied to what it held.
-            let outer = self.attrs(destination).cloned();
+            let mut outer = self.attrs(destination).cloned().unwrap_or_default();
+            outer.glyph_size = None;
             let inner = self.attrs(source).cloned().unwrap_or_default();
-            let merged = inner.or(&outer.unwrap_or_default());
+            let merged = inner.or(&outer);
             if let Some(store) = &mut self.attrs {
                 store.remove(&destination);
             }
@@ -403,10 +422,23 @@ impl AstArena {
         if attrs.is_empty() || self.size_overflow {
             return;
         }
-        let mut pending = vec![id];
-        while let Some(id) = pending.pop() {
+        // A sign's size is not that of what a list or cell holds.
+        let inner = NodeAttrs {
+            glyph_size: None,
+            ..attrs.clone()
+        };
+        let mut pending = vec![(id, attrs)];
+        while let Some((id, attrs)) = pending.pop() {
+            if attrs.is_empty() {
+                continue;
+            }
             match *self.node(id) {
-                CompactNode::Row(span) => pending.extend_from_slice(self.children(span)),
+                CompactNode::Row(span) => {
+                    pending.extend(self.children(span).iter().map(|&id| (id, &inner)));
+                },
+                // The wrapper of a table cell, which writers look for.
+                CompactNode::AlignedCell { content, .. }
+                | CompactNode::SpannedCell { content, .. } => pending.push((content, &inner)),
                 // These draw nothing and stand for no text.
                 CompactNode::StyleSwitch(_)
                 | CompactNode::SizeScale(_)
@@ -428,6 +460,27 @@ impl AstArena {
             && let Some(attrs) = store.remove(&id)
         {
             self.add_attrs(id, &attrs);
+        }
+    }
+
+    /// Remove the typesetting attributes of a node, if they are `attrs`.
+    pub(crate) fn remove_attrs(&mut self, id: NodeId, attrs: &NodeAttrs) {
+        if let Some(store) = &mut self.attrs
+            && store.get(&id) == Some(attrs)
+        {
+            store.remove(&id);
+        }
+        if self.attrs.as_ref().is_some_and(|store| store.is_empty()) {
+            self.attrs = None;
+        }
+    }
+
+    /// Give a node made from another one its source metadata.
+    pub(crate) fn copy_provenance(&mut self, from: NodeId, to: NodeId) {
+        if !self.size_overflow
+            && let Some(provenance) = self.provenance.get(from)
+        {
+            self.provenance.insert(to, provenance);
         }
     }
 

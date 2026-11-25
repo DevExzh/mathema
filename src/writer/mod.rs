@@ -2,6 +2,7 @@ pub mod latex;
 pub mod mathml;
 pub mod mtef;
 pub mod omml;
+mod sizes;
 pub mod unicode_math;
 
 use crate::ast::MathExpr;

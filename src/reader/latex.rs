@@ -420,7 +420,7 @@ mod tests {
         let root = compact.arena.children(compact.roots)[0];
         if let CompactNode::Array {
             arraystretch_pct, ..
-        } = compact.arena.node_mut(root)
+        } = compact.arena.node_mut_in_place(root)
         {
             *arraystretch_pct = 80;
         } else {

@@ -1026,6 +1026,7 @@ pub(super) fn layout_nary_arena(
     } else {
         (size, metrics::glyph_metrics(op))
     };
+    let op_size = op_size * ctx.glyph_scale;
     let op_id = alloc_glyph_with_metrics(arena, op, m, op_size, false);
 
     // TeX: center the large operator on the math axis.

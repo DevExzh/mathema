@@ -545,7 +545,7 @@ pub enum MathNode {
     /// [`compact::CompactNode::Newline`].
     LineBreak,
     /// A node with typesetting attributes, which the compact representation
-    /// keeps beside its nodes ([`arena::AstArena::attrs`]). Attributes of a
+    /// keeps beside its nodes ([`AstArena::attrs`](crate::AstArena::attrs)). Attributes of a
     /// `Row` are those of its children there, so converting to the compact
     /// representation and back moves them to each child.
     Attributed {

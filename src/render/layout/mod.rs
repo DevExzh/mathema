@@ -1268,6 +1268,7 @@ impl<'a> LayoutBuilder<'a> {
             depth: 0,
             size_scale: 1.0,
             base_pt: crate::ast::attrs::base_size_pt(expr.meta.as_deref()) as f32,
+            glyph_scale: 1.0,
             spacing_style: None,
             display_choice: false,
             styled_face: None,
@@ -1285,6 +1286,8 @@ struct ArenaLayoutCtx<'a> {
     size_scale: f64,
     /// The size of ordinary text in points, for sizes in points.
     base_pt: f32,
+    /// The size of the node's own sign, as a multiple of its text.
+    glyph_scale: f64,
     /// When set, use this style for inter-atom spacing calculations instead of
     /// `self.style`.  See `LayoutCtx::spacing_style` for rationale.
     spacing_style: Option<MathStyle>,
@@ -1310,6 +1313,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             depth: self.depth,
             size_scale: self.size_scale,
             base_pt: self.base_pt,
+            glyph_scale: 1.0,
             spacing_style: self.spacing_style,
             display_choice: false,
             styled_face: self.styled_face,
@@ -1343,6 +1347,9 @@ impl<'a> ArenaLayoutCtx<'a> {
         if let Some(size) = attrs.size {
             next.size_scale = size.scale(f64::from(self.base_pt)) / self.style.size_multiplier();
         }
+        next.glyph_scale = attrs.glyph_size.map_or(1.0, |size| {
+            size.scale(f64::from(self.base_pt)) / next.size()
+        });
         next
     }
 
@@ -1360,6 +1367,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             depth: self.depth + 1,
             size_scale: self.size_scale,
             base_pt: self.base_pt,
+            glyph_scale: 1.0,
             spacing_style: self.spacing_style,
             display_choice: self.display_choice,
             styled_face: self.styled_face,
@@ -1792,15 +1800,11 @@ fn layout_node_arena(
     if ctx.depth >= MAX_LAYOUT_DEPTH {
         return arena.alloc(ArenaLayoutBox::kern(0.0));
     }
-    let sized;
-    let ctx = match ast.attrs(id) {
-        Some(attrs) => {
-            sized = ctx.with_attrs(attrs);
-            &sized
-        },
-        None => ctx,
-    };
-    let ctx = &ctx.deeper();
+    let mut ctx = ctx.deeper();
+    if let Some(attrs) = ast.attrs(id) {
+        ctx = ctx.with_attrs(attrs);
+    }
+    let ctx = &ctx;
     match *ast.node(id) {
         CompactNode::Number(sid) => match ctx.styled_face {
             Some(style) => layout_styled_node_arena(style, ast, id, arena, ctx),

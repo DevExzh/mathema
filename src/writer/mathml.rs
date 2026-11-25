@@ -145,6 +145,188 @@ impl MathWriter for MathmlWriter {
     }
 }
 
+/// Sizes in points are seen against the size of ordinary text: say that on
+/// the `<math>` tag, just written, when it is known.
+#[cold]
+fn write_base_size(buf: &mut XmlBuffer, expr: &CompactExpr) {
+    buf.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
+    if let Some(base) = expr.meta.as_deref().and_then(|meta| meta.base_size_pt) {
+        let tag = buf.len() - 1;
+        buf.truncate(tag);
+        buf.push_str(" mathsize=\"");
+        base.write_scaled_decimal(buf, 1);
+        buf.push_str("pt\">");
+    }
+}
+
+/// The attributes that give an element a font size: where it is one of
+/// MathType's logical sizes, with the size itself for the reader.
+pub(crate) fn size_attributes(size: FontSize, base_pt: f64) -> String {
+    let mut out = String::new();
+    let points = |out: &mut String, points: f64| {
+        use std::fmt::Write as _;
+        // Thousandths of a point.
+        let _ = write!(
+            out,
+            " mathsize=\"{}pt\"",
+            (points * 1000.0).round() / 1000.0
+        );
+    };
+    match size {
+        FontSize::Points(size) => {
+            out.push_str(" mathsize=\"");
+            size.write_scaled_decimal(&mut out, 1);
+            out.push_str("pt\"");
+        },
+        FontSize::Logical { level, delta_pt } => {
+            let script_level = match level {
+                TypeSize::Full => Some('0'),
+                TypeSize::Sub => Some('1'),
+                TypeSize::Sub2 => Some('2'),
+                _ => None,
+            };
+            match script_level {
+                Some(level) if delta_pt.num == 0 => {
+                    out.push_str(" scriptlevel=\"");
+                    out.push(level);
+                    out.push('"');
+                },
+                _ => points(&mut out, size.scale(base_pt) * base_pt),
+            }
+            out.push(' ');
+            out.push_str(SIZE_ATTRIBUTE);
+            out.push_str("=\"");
+            out.push_str(logical_size_name(level));
+            if delta_pt.num != 0 {
+                if delta_pt.num > 0 {
+                    out.push('+');
+                }
+                delta_pt.write_scaled_decimal(&mut out, 1);
+            }
+            out.push('"');
+        },
+    }
+    out
+}
+
+/// A MathType logical size, with the points added to it (`sub+2`).
+pub(crate) const SIZE_ATTRIBUTE: &str = "data-mathema-size";
+
+pub(crate) const LOGICAL_SIZES: [(TypeSize, &str); 7] = [
+    (TypeSize::Full, "full"),
+    (TypeSize::Sub, "sub"),
+    (TypeSize::Sub2, "sub2"),
+    (TypeSize::Sym, "sym"),
+    (TypeSize::SubSym, "subsym"),
+    (TypeSize::User1, "user1"),
+    (TypeSize::User2, "user2"),
+];
+
+fn logical_size_name(level: TypeSize) -> &'static str {
+    LOGICAL_SIZES
+        .iter()
+        .find(|(size, _)| *size == level)
+        .map_or("full", |(_, name)| name)
+}
+
+/// Write a node with a font size: on its own tag when it is one token that
+/// may have it, else on an `mstyle` around it.
+#[cold]
+#[inline(never)]
+fn write_attributed_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    single_argument: bool,
+    display_style: MathStyle,
+) {
+    write_sized(buf, arena, id, display_style, |buf| {
+        write_bare_node_fast(buf, arena, id, single_argument, display_style);
+    });
+}
+
+/// Give the `<mo>` that `write` writes for a node's sign the sign's size.
+#[inline(always)]
+fn write_sign(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    write: impl FnOnce(&mut XmlBuffer),
+) {
+    let start = buf.len();
+    write(buf);
+    if arena.has_attrs() {
+        size_sign(buf, arena, id, start);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn size_sign(buf: &mut XmlBuffer, arena: &AstArena, id: NodeId, start: usize) {
+    if let Some(size) = arena.attrs(id).and_then(|attrs| attrs.glyph_size) {
+        let points = (size.scale(buf.base_pt) * buf.base_pt * 1000.0).round() / 1000.0;
+        buf.insert_str(start + "<mo".len(), &format!(" mathsize=\"{points}pt\""));
+    }
+}
+
+/// Give what `write` writes for a node the node's size.
+fn write_sized(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    display_style: MathStyle,
+    write: impl FnOnce(&mut XmlBuffer),
+) {
+    let Some(size) = arena.attrs(id).and_then(|attrs| attrs.size) else {
+        return write(buf);
+    };
+    let start = buf.len();
+    let outer = buf.size_per_mille;
+    let level = [1.0, 0.7, 0.5][display_style.size_class().min(2)];
+    let scale = size.scale(buf.base_pt) / level * 1000.0;
+    buf.size_per_mille = scale.round().clamp(1.0, f64::from(u16::MAX)) as u16;
+    write(buf);
+    buf.size_per_mille = outer;
+    if buf.len() == start {
+        return;
+    }
+    let attributes = size_attributes(size, buf.base_pt);
+    // A delimiter keeps its tag plain: the reader tells fences by theirs.
+    let is_token = match *arena.node(id) {
+        CompactNode::Symbol(kind, _) => !matches!(
+            kind,
+            SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence
+        ),
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Text(..)
+        | CompactNode::Space(_) => true,
+        _ => false,
+    };
+    let tag_len = is_token
+        .then(|| token_tag_len(&buf[start..]))
+        .flatten()
+        .filter(|_| !attributes.starts_with(" scriptlevel"));
+    match tag_len {
+        Some(len) => buf.insert_str(start + len, &attributes),
+        None => {
+            buf.insert_str(start, &format!("<mstyle{attributes}>"));
+            buf.push_str("</mstyle>");
+        },
+    }
+}
+
+/// The length of the opening tag's name when `element` is one token element.
+fn token_tag_len(element: &str) -> Option<usize> {
+    let name = element
+        .strip_prefix('<')?
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .next()?;
+    let one = element.matches('<').count() <= 2 && !element.contains(" mathsize=");
+    (one && matches!(name, "mi" | "mn" | "mo" | "mtext" | "mspace")).then_some(name.len() + 1)
+}
+
 fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
     let arena = &expr.arena;
     let mut buf = MathOutput::new(String::with_capacity(512));
@@ -154,6 +336,9 @@ fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
         buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">");
     } else {
         buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">");
+    }
+    if arena.has_attrs() || expr.meta.is_some() {
+        write_base_size(&mut buf, expr);
     }
 
     write_nodes_fast(
@@ -173,6 +358,8 @@ fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
 struct MathOutput<T> {
     target: T,
     operator_font: Option<TextStyle>,
+    /// The size of ordinary text in points.
+    base_pt: f64,
     /// Text size in force from enclosing `mathsize`, in thousandths of the
     /// normal size. MathML sizes are relative to it, TeX's are not.
     size_per_mille: u16,
@@ -193,6 +380,7 @@ impl<T> MathOutput<T> {
         Self {
             target,
             operator_font: None,
+            base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
             size_per_mille: 1000,
             has_sizes: false,
             missed_size: false,
@@ -866,20 +1054,29 @@ fn write_nary_head(
 
 /// Compact counterpart of [`write_nary_head`].
 fn write_nary_head_fast(
-    buf: &mut MathOutput<String>,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
-    op: char,
-    sub: NodeId,
-    sup: NodeId,
-    limits: LimitStyle,
+    id: NodeId,
     display_style: MathStyle,
 ) {
+    let CompactNode::Nary {
+        op,
+        sub,
+        sup,
+        limits,
+        ..
+    } = *arena.node(id)
+    else {
+        return;
+    };
     let Some((tag, movable)) = nary_script_tag(op, limits, sub.is_some(), sup.is_some()) else {
-        write_mo_char_fast(buf, op, None);
+        write_sign(buf, arena, id, |buf| write_mo_char_fast(buf, op, None));
         return;
     };
     open_tag(buf, tag);
-    write_mo_char_fast(buf, op, Some(movable));
+    write_sign(buf, arena, id, |buf| {
+        write_mo_char_fast(buf, op, Some(movable));
+    });
     if sub.is_some() {
         write_argument_fast(buf, arena, sub, display_style.sub());
     }
@@ -2237,6 +2434,20 @@ fn write_node_fast_in(
     single_argument: bool,
     display_style: MathStyle,
 ) {
+    if arena.has_attrs() {
+        return write_attributed_fast(buf, arena, id, single_argument, display_style);
+    }
+    write_bare_node_fast(buf, arena, id, single_argument, display_style);
+}
+
+#[inline(always)]
+fn write_bare_node_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    single_argument: bool,
+    display_style: MathStyle,
+) {
     match *arena.node(id) {
         CompactNode::Number(sid) => simple_element(buf, "mn", arena.str_val(sid)),
         CompactNode::Identifier(sid) => write_mi_fast(buf, arena.str_val(sid)),
@@ -2335,13 +2546,13 @@ fn write_node_fast_in(
         } => {
             // The scripts are the n-ary operator's, not its n-aryand's.
             let nary = match *arena.node(base) {
-                CompactNode::Nary {
-                    op,
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                } if !is_empty_compact_node(arena, body) => Some((op, sub, sup, body, limits)),
+                // One with a size has it as a whole.
+                CompactNode::Nary { body, .. }
+                    if !is_empty_compact_node(arena, body)
+                        && arena.attrs(base).is_none_or(|attrs| attrs.size.is_none()) =>
+                {
+                    Some(body)
+                },
                 _ => None,
             };
             let group = single_argument && nary.is_some();
@@ -2350,9 +2561,7 @@ fn write_node_fast_in(
             }
             buf.push_str("<mmultiscripts>");
             match nary {
-                Some((op, sub, sup, _, limits)) => {
-                    write_nary_head_fast(buf, arena, op, sub, sup, limits, display_style);
-                },
+                Some(_) => write_nary_head_fast(buf, arena, base, display_style),
                 None => write_argument_fast(buf, arena, base, display_style),
             }
             buf.push_str("<mprescripts/>");
@@ -2367,7 +2576,7 @@ fn write_node_fast_in(
                 buf.push_str("<none/>");
             }
             buf.push_str("</mmultiscripts>");
-            if let Some((_, _, _, body, _)) = nary {
+            if let Some(body) = nary {
                 write_node_fast(buf, arena, body, display_style);
             }
             if group {
@@ -2448,19 +2657,13 @@ fn write_node_fast_in(
             buf.push_str("</mroot>");
         },
 
-        CompactNode::Nary {
-            op,
-            sub,
-            sup,
-            body,
-            limits,
-        } => {
+        CompactNode::Nary { body, .. } => {
             let has_body = !is_empty_compact_node(arena, body);
             let group = single_argument && has_body;
             if group {
                 open_tag(buf, "mrow");
             }
-            write_nary_head_fast(buf, arena, op, sub, sup, limits, display_style);
+            write_nary_head_fast(buf, arena, id, display_style);
             if has_body {
                 write_node_fast(buf, arena, body, display_style);
             }
@@ -2491,12 +2694,14 @@ fn write_node_fast_in(
             buf.push('>');
             write_argument_fast(buf, arena, base, display_style);
             let glyph = mathml_accent_glyph(accent);
-            buf.push_str("<mo stretchy=\"");
-            buf.push_str(if wide { "true" } else { "false" });
-            buf.push_str("\">");
-            let mut encoded = [0; 4];
-            xml_escape_into(buf, glyph.encode_utf8(&mut encoded));
-            buf.push_str("</mo>");
+            write_sign(buf, arena, id, |buf| {
+                buf.push_str("<mo stretchy=\"");
+                buf.push_str(if wide { "true" } else { "false" });
+                buf.push_str("\">");
+                let mut encoded = [0; 4];
+                xml_escape_into(buf, glyph.encode_utf8(&mut encoded));
+                buf.push_str("</mo>");
+            });
             close_tag(buf, tag);
         },
 
@@ -3305,9 +3510,17 @@ fn write_scripts_fast(
     }
     buf.push('>');
     if let Some(movable) = place.base_movable {
-        write_limit_base_fast(buf, arena, base, movable, display);
+        if arena.has_attrs() && writes_own_tag(arena, base, movable) {
+            write_sized(buf, arena, base, display, |buf| {
+                write_limit_base_fast(buf, arena, base, movable, display);
+            });
+        } else {
+            write_limit_base_fast(buf, arena, base, movable, display);
+        }
     } else if let CompactNode::Operator { name, limits } = *arena.node(base) {
-        write_named_operator_fast(buf, arena.str_val(name), limits, true);
+        write_sized(buf, arena, base, display, |buf| {
+            write_named_operator_fast(buf, arena.str_val(name), limits, true);
+        });
     } else {
         write_argument_fast(buf, arena, base, display);
     }
@@ -3380,6 +3593,23 @@ fn write_mo_char_fast(buf: &mut XmlBuffer, ch: char, movable: Option<bool>) {
     let mut glyph = [0; 4];
     xml_escape_into(buf, ch.encode_utf8(&mut glyph));
     buf.push_str("</mo>");
+}
+
+/// Whether [`write_limit_base_fast`] writes the node's element itself, without
+/// the code that adds the node's size.
+fn writes_own_tag(arena: &AstArena, id: NodeId, movable: bool) -> bool {
+    match *arena.node(id) {
+        CompactNode::Operator { .. }
+        | CompactNode::StructuredOperator { .. }
+        | CompactNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            ..
+        } => true,
+        CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
+            movable && single_operator_char(arena.str_val(sid)).is_some()
+        },
+        _ => false,
+    }
 }
 
 fn write_limit_base_fast(

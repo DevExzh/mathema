@@ -1,7 +1,7 @@
 use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
 use crate::unicode::fonts::style_to_latex_font;
 use crate::unicode::symbols::{
     latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
@@ -83,8 +83,13 @@ fn write_expr(
 fn write_colored(
     expr: &CompactExpr,
     config: &Config,
-    report: LossReport,
+    mut report: LossReport,
 ) -> Result<(String, LossReport)> {
+    if expr.arena.has_attrs() {
+        let lowered = super::sizes::lower_sizes(expr)?;
+        report.sizes(&lowered, config.typesetting);
+        return write_colored(&lowered.expr, config, report);
+    }
     let mut buf = LatexBuffer {
         text: String::with_capacity(256),
         in_operator_name: false,
@@ -154,6 +159,33 @@ impl LossReport {
             let more = if quoted.len() < spec.len() { "…" } else { "" };
             format!("{quoted:?}{more} is not a color; it was dropped")
         });
+    }
+
+    /// Font sizes that no size command draws.
+    #[cold]
+    fn sizes(&mut self, lowered: &super::sizes::Lowered, policy: TypesettingPolicy) {
+        let Some(losses) = self.0.as_deref_mut() else {
+            return;
+        };
+        let mut info = |count: usize, what: &str| {
+            if count > 0 {
+                losses.diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::Info,
+                    message: format!("{count} font sizes were {what}"),
+                    span: None,
+                });
+            }
+        };
+        info(
+            lowered.dropped,
+            "dropped: no LaTeX size command draws them there",
+        );
+        if policy == TypesettingPolicy::Preserve {
+            info(
+                lowered.approximated,
+                "approximated by the nearest LaTeX size command",
+            );
+        }
     }
 
     /// A character that cannot be written in text was dropped.

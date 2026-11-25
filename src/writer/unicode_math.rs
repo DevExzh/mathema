@@ -4,7 +4,7 @@ use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
 use crate::writer::Writer as MathWriter;
 
 /// Classifies a compact node that the UnicodeMath writer cannot fully or
@@ -119,7 +119,14 @@ impl MathWriter for UnicodeMathWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let out = Self::write_compact(expr, config)?;
-        let diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        let mut diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        if expr.arena.has_attrs() && config.typesetting == TypesettingPolicy::Preserve {
+            diags.push(Diagnostic {
+                kind: DiagnosticKind::Info,
+                message: "UnicodeMath has no font sizes; they were dropped".into(),
+                span: None,
+            });
+        }
         Ok((out, diags))
     }
 

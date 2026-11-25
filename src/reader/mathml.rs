@@ -11,7 +11,7 @@ use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
 use crate::reader::Reader as MathReader;
-use crate::writer::mathml::KERN_ATTRIBUTE;
+use crate::writer::mathml::{KERN_ATTRIBUTE, LOGICAL_SIZES, SIZE_ATTRIBUTE, size_attributes};
 
 mod content;
 
@@ -57,8 +57,11 @@ impl MathReader for MathmlReader {
                 let display = parser.display.unwrap_or(config.display);
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
+                let base_size = parser.base_size.take();
+                let mut expr = CompactExpr::new(parser.arena, roots, display);
+                expr.set_base_size(base_size);
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, display),
+                    expr,
                     parser.diagnostics,
                 ))
             },
@@ -130,6 +133,13 @@ struct MathmlCompactParser<'a> {
     /// Text size in force from enclosing `mathsize`, as a multiple of the
     /// normal size: MathML sizes are relative, `SizeScale` is not.
     text_size: f64,
+    /// The text size in points inside an element with an absolute `mathsize`,
+    /// where every relative one is absolute too.
+    text_points: Option<Rational>,
+    /// The size of ordinary text, from the `mathsize` of `math`.
+    base_size: Option<Rational>,
+    /// Set when an operator has a `mathsize`.
+    sized_operator: bool,
     /// Set for an element whose `mathsize` is already read.
     size_checked: bool,
     /// Whether to recover lengths that are not valid MathML.
@@ -176,6 +186,9 @@ impl<'a> MathmlCompactParser<'a> {
             fence_depth: None,
             fence_marks: SmallVec::new(),
             text_size: 1.0,
+            text_points: None,
+            base_size: None,
+            sized_operator: false,
             size_checked: false,
             lenient: false,
             size_runs: SmallVec::new(),
@@ -208,7 +221,12 @@ impl<'a> MathmlCompactParser<'a> {
                         DisplayStyle::Inline
                     });
                 } else if attr.key.as_ref() == "mathsize" {
-                    size = self.mathsize_scale(&attr_text(attr.value));
+                    let value = attr_text(attr.value);
+                    if let Some(points) = length_points(&value).filter(|points| points.num > 0) {
+                        self.base_size = Some(points);
+                    } else {
+                        size = self.mathsize_scale(&value);
+                    }
                 }
             }
             if let Some(display) = self.display {
@@ -753,7 +771,24 @@ impl<'a> MathmlCompactParser<'a> {
     /// two declarations takes the nearer one with a warning.
     #[cold]
     fn mathsize_scale(&mut self, value: &str) -> Option<(Option<u8>, f64)> {
+        match self.mathsize(value)? {
+            MathSize::Scale(index, size) => Some((index, size)),
+            MathSize::Points(_) => None,
+        }
+    }
+
+    #[cold]
+    fn mathsize(&mut self, value: &str) -> Option<MathSize> {
         let value = value.trim();
+        if let Some(points) = self.absolute_size(value) {
+            if points.num > 0 {
+                return Some(MathSize::Points(points));
+            }
+            self.style_warning(format!(
+                "mathsize=\"{value}\" is not a positive size; it was ignored"
+            ));
+            return None;
+        }
         let factor = match value {
             "small" => 0.9,
             "normal" => return None,
@@ -764,12 +799,8 @@ impl<'a> MathmlCompactParser<'a> {
                     | MathLength::Multiple(factor)
                     | MathLength::FontRelative(factor),
                 ) => factor.as_f64(),
-                Some(MathLength::Absolute(_)) => {
-                    self.style_warning(format!(
-                        "mathsize=\"{value}\": absolute font sizes are not supported; the size was dropped"
-                    ));
-                    return None;
-                },
+                // Read above.
+                Some(MathLength::Absolute(_)) => return None,
                 None => {
                     self.style_warning(format!(
                         "mathsize=\"{value}\" is not a valid size; it was ignored"
@@ -798,10 +829,91 @@ impl<'a> MathmlCompactParser<'a> {
         }
         // Dropping the rounding of the percentages of an exact size keeps it
         // from adding up in nested elements.
-        Some((
+        Some(MathSize::Scale(
             (inherited != Some(index)).then_some(index),
             if exact { nearest } else { size },
         ))
+    }
+
+    /// The size in points that a `mathsize` selects: an absolute length, or
+    /// any size inside an element with one. `None` for a relative size
+    /// elsewhere, and for one that changes nothing or is not a size.
+    fn absolute_size(&self, value: &str) -> Option<Rational> {
+        if let Some(points) = length_points(value) {
+            return Some(points);
+        }
+        let factor = match value {
+            "small" => Rational::new(9, 10),
+            "big" => Rational::new(6, 5),
+            _ => match self.length(value)? {
+                MathLength::Percent(factor)
+                | MathLength::Multiple(factor)
+                | MathLength::FontRelative(factor) => factor,
+                MathLength::Absolute(_) => return None,
+            },
+        };
+        let points = self.text_points?.as_f64() * factor.as_f64();
+        Rational::from_scaled_decimal(&format!("{points:.4}"), Rational::one())
+    }
+
+    /// The font size of an element from its attributes: one of MathType's
+    /// logical sizes, if its `mathsize` or `scriptlevel` still is the
+    /// writer's, or points.
+    #[cold]
+    fn font_size(
+        &mut self,
+        mathsize: Option<&str>,
+        scriptlevel: Option<&str>,
+        logical: Option<&str>,
+    ) -> Option<FontSize> {
+        if let Some(size) = logical.and_then(logical_size) {
+            let spelled = match (mathsize, scriptlevel) {
+                (Some(size), None) => format!(" mathsize=\"{size}\""),
+                (None, Some(level)) => format!(" scriptlevel=\"{level}\""),
+                _ => String::new(),
+            };
+            let written = size_attributes(size, self.base_pt());
+            if !spelled.is_empty() && written.starts_with(&spelled) {
+                return Some(size);
+            }
+        }
+        match self.mathsize(mathsize?)? {
+            MathSize::Points(points) => Some(FontSize::Points(points)),
+            MathSize::Scale(..) => None,
+        }
+    }
+
+    fn base_pt(&self) -> f64 {
+        self.base_size.map_or(
+            f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
+            Rational::as_f64,
+        )
+    }
+
+    /// Read the content of an element with a font size: sizes inside are seen
+    /// against it.
+    fn enter_font_size(&mut self, size: FontSize) -> (f64, Option<Rational>) {
+        let previous = (self.text_size, self.text_points);
+        let level = match self.style_level {
+            ..=0 => 1.0,
+            1 => 0.7,
+            _ => 0.5,
+        };
+        let scale = size.scale(self.base_pt());
+        self.text_size = scale / level;
+        let points = match size {
+            FontSize::Points(points) => Some(points),
+            _ => Rational::from_scaled_decimal(
+                &format!("{:.4}", scale * self.base_pt()),
+                Rational::one(),
+            ),
+        };
+        self.text_points = points;
+        previous
+    }
+
+    fn leave_font_size(&mut self, previous: (f64, Option<Rational>)) {
+        (self.text_size, self.text_points) = previous;
     }
 
     /// Parse a length. Lenient reading also takes a space before the unit.
@@ -867,6 +979,18 @@ impl<'a> MathmlCompactParser<'a> {
         mathsize: &str,
     ) -> Result<NodeId> {
         self.size_checked = true;
+        let logical = get_attr(start, SIZE_ATTRIBUTE);
+        if logical.is_some() || self.absolute_size(mathsize.trim()).is_some() {
+            let Some(size) = self.font_size(Some(mathsize), None, logical.as_deref()) else {
+                return self.parse_element_by_name(name, start);
+            };
+            let previous = self.enter_font_size(size);
+            let id = self.parse_element_by_name(name, start);
+            self.leave_font_size(previous);
+            let id = id?;
+            self.arena.add_attrs(id, &NodeAttrs::with_size(size));
+            return Ok(id);
+        }
         let id = self.parse_element_by_name(name, start)?;
         let takes_size = match *self.arena.node(id) {
             CompactNode::Identifier(sid) => {
@@ -932,21 +1056,44 @@ impl<'a> MathmlCompactParser<'a> {
         if variant.is_some() {
             self.mathvariant_style = variant;
         }
-        let scoped = self.scoped_style(attrs.display.as_deref(), attrs.level.as_deref());
+        let font_size = if attrs.logical.is_some()
+            || attrs
+                .size
+                .as_deref()
+                .is_some_and(|size| self.absolute_size(size.trim()).is_some())
+        {
+            self.font_size(
+                attrs.size.as_deref(),
+                attrs.level.as_deref(),
+                attrs.logical.as_deref(),
+            )
+        } else {
+            None
+        };
+        let logical = matches!(font_size, Some(FontSize::Logical { .. }));
+        // The level of a logical size is the size, not a style.
+        let scoped = self
+            .scoped_style(attrs.display.as_deref(), attrs.level.as_deref())
+            .filter(|_| !logical);
         if let Some((display, level)) = scoped {
             self.style_display = display;
             self.style_level = level;
         }
-        let size = attrs
-            .size
-            .as_deref()
-            .and_then(|size| self.mathsize_scale(size));
-        let previous_size = self.text_size;
-        if let Some((_, text_size)) = size {
+        let size = match font_size {
+            Some(_) => None,
+            None => attrs
+                .size
+                .as_deref()
+                .and_then(|size| self.mathsize_scale(size)),
+        };
+        let previous_size = (self.text_size, self.text_points);
+        if let Some(size) = font_size {
+            self.enter_font_size(size);
+        } else if let Some((_, text_size)) = size {
             self.text_size = text_size;
         }
         let mut children = self.parse_children("mstyle")?;
-        self.text_size = previous_size;
+        self.leave_font_size(previous_size);
         // A size that its whole content replaces has nothing to apply to, and
         // neither has one that takes the content back to the size outside.
         let replaced = children.first().and_then(|&id| match *self.arena.node(id) {
@@ -990,6 +1137,9 @@ impl<'a> MathmlCompactParser<'a> {
         }
         scoped_children.extend(children);
         let content = self.flatten_ids(&scoped_children);
+        if let Some(size) = font_size {
+            self.arena.add_attrs(content, &NodeAttrs::with_size(size));
+        }
         let content = if let Some(color) = attrs.color.filter(|color| !color.trim().is_empty()) {
             let color = self.arena.push_str(color.trim());
             self.arena.push_node(CompactNode::Color { color, content })
@@ -1144,6 +1294,32 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn operator_token(&mut self, text: &str, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
+        let id = self.bare_operator_token(text, start);
+        if std::mem::take(&mut self.sized_operator) {
+            self.size_operator(id, start);
+        }
+        id
+    }
+
+    #[cold]
+    fn size_operator(&mut self, id: NodeId, start: &quick_xml::events::BytesStart<'_>) {
+        let Some(mathsize) = get_attr(start, "mathsize") else {
+            return;
+        };
+        let logical = get_attr(start, SIZE_ATTRIBUTE);
+        if logical.is_none() && self.absolute_size(mathsize.trim()).is_none() {
+            return self.unsupported_size("mo");
+        }
+        if let Some(size) = self.font_size(Some(&mathsize), None, logical.as_deref()) {
+            self.arena.add_attrs(id, &NodeAttrs::with_size(size));
+        }
+    }
+
+    fn bare_operator_token(
+        &mut self,
+        text: &str,
+        start: &quick_xml::events::BytesStart<'_>,
+    ) -> NodeId {
         let class = crate::unicode::operators::mo_class(text);
         let mut kind = class.kind;
         let name = text.trim();
@@ -1152,9 +1328,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mark_fences = self.fence_depth == Some(self.depth);
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
-        if attrs.has_size {
-            self.unsupported_size("mo");
-        }
+        self.sized_operator |= attrs.has_size;
         // MathJax writes `\big(` as an `<mo>` fixed at one of the TeX sizes.
         if let Some(factor) = attrs.big_delim_factor()
             && big_delim_glyph(name)
@@ -1718,7 +1892,7 @@ impl<'a> MathmlCompactParser<'a> {
                         | CompactNode::Underscript { base: inner, .. }
                         | CompactNode::UnderOver { base: inner, .. } => base = inner,
                         CompactNode::Symbol(_, sid) => {
-                            *self.arena.node_mut(base) = CompactNode::Symbol(class, sid);
+                            *self.arena.node_mut_in_place(base) = CompactNode::Symbol(class, sid);
                             return None;
                         },
                         _ => return None,
@@ -1764,9 +1938,21 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<NodeId> {
         if name != "mo"
             && start.attributes_raw().contains('z')
-            && element_mathsize(name, start).is_some()
+            && let Some(mathsize) = element_mathsize(name, start)
+            && !std::mem::take(&mut self.size_checked)
         {
-            self.unsupported_size(name);
+            let logical = get_attr(start, SIZE_ATTRIBUTE);
+            if logical.is_none() && self.absolute_size(mathsize.trim()).is_none() {
+                self.unsupported_size(name);
+            } else if let Some(size) = self.font_size(Some(&mathsize), None, logical.as_deref()) {
+                let previous = self.enter_font_size(size);
+                self.size_checked = true;
+                let id = self.parse_empty_element(name, start);
+                self.leave_font_size(previous);
+                let id = id?;
+                self.arena.add_attrs(id, &NodeAttrs::with_size(size));
+                return Ok(id);
+            }
         }
         match name {
             "mtable" => self.finish_table(start, MathmlTable::default()),
@@ -2318,17 +2504,22 @@ impl<'a> MathmlCompactParser<'a> {
             core = only;
         }
         if self.movable_limit_operators.get(&core) != Some(&true)
-            && let CompactNode::Operator { limits, .. } = self.arena.node_mut(core)
+            && let CompactNode::Operator { limits, .. } = self.arena.node_mut_in_place(core)
             && *limits == LimitStyle::Default
         {
             *limits = LimitStyle::AboveBelow;
         }
-        Some(self.arena.push_node(CompactNode::Accent {
+        let mark = self.arena.attrs(script).and_then(|attrs| attrs.size);
+        let id = self.arena.push_node(CompactNode::Accent {
             base,
             accent: ch,
             position,
             wide: self.wide_accents.contains(&script),
-        }))
+        });
+        if let Some(size) = mark {
+            self.arena.add_attrs(id, &NodeAttrs::with_glyph_size(size));
+        }
+        Some(id)
     }
 
     /// Script elements place their bounds at the side. Under/over elements
@@ -2356,7 +2547,7 @@ impl<'a> MathmlCompactParser<'a> {
                 } else {
                     LimitStyle::AboveBelow
                 };
-                *self.arena.node_mut(base) = CompactNode::Operator { name, limits };
+                *self.arena.node_mut_in_place(base) = CompactNode::Operator { name, limits };
                 Some(self.make_script_pair(base, sub, sup))
             },
             CompactNode::MathAtom {
@@ -2404,7 +2595,7 @@ impl<'a> MathmlCompactParser<'a> {
                     } else {
                         LimitStyle::SubSup
                     };
-                    *self.arena.node_mut(base) = CompactNode::StructuredOperator {
+                    *self.arena.node_mut_in_place(base) = CompactNode::StructuredOperator {
                         content,
                         form: OperatorNameForm::Starred(effective),
                     };
@@ -2434,7 +2625,12 @@ impl<'a> MathmlCompactParser<'a> {
                 } else {
                     LimitStyle::Default
                 };
-                Some(self.make_nary(op, sub, sup, limits))
+                let sign = self.arena.attrs(base).and_then(|attrs| attrs.size);
+                let id = self.make_nary(op, sub, sup, limits);
+                if let Some(size) = sign {
+                    self.arena.add_attrs(id, &NodeAttrs::with_glyph_size(size));
+                }
+                Some(id)
             },
             _ => None,
         }
@@ -3365,6 +3561,7 @@ struct MstyleAttributes<'a> {
     variant: Option<Cow<'a, str>>,
     color: Option<Cow<'a, str>>,
     size: Option<Cow<'a, str>>,
+    logical: Option<Cow<'a, str>>,
 }
 
 impl<'a> MstyleAttributes<'a> {
@@ -3377,6 +3574,7 @@ impl<'a> MstyleAttributes<'a> {
                 "mathvariant" => &mut attrs.variant,
                 "mathcolor" => &mut attrs.color,
                 "mathsize" => &mut attrs.size,
+                SIZE_ATTRIBUTE => &mut attrs.logical,
                 _ => continue,
             };
             if slot.is_none() {
@@ -3435,6 +3633,52 @@ fn number_len(text: &str) -> usize {
         }
     }
     end
+}
+
+/// What a `mathsize` selects.
+enum MathSize {
+    /// The `SizeScale` index, `None` when that is the inherited one, and the
+    /// multiple of the normal size it stands for.
+    Scale(Option<u8>, f64),
+    /// A size in points.
+    Points(Rational),
+}
+
+/// An absolute length in points, exactly.
+fn length_points(value: &str) -> Option<Rational> {
+    let value = value.trim();
+    let (number, unit) = value.split_at(number_len(value));
+    if number.is_empty() {
+        return None;
+    }
+    let (num, den) = match unit.to_ascii_lowercase().as_str() {
+        "pt" => (1, 1),
+        "px" => (3, 4),
+        "pc" => (12, 1),
+        "in" => (72, 1),
+        "cm" => (3600, 127),
+        "mm" => (360, 127),
+        _ => return None,
+    };
+    Rational::from_scaled_decimal(number, Rational::new(num, den))
+}
+
+/// A MathType logical size as the writer spells it: `sub`, `full+2`.
+fn logical_size(value: &str) -> Option<FontSize> {
+    let split = value.find(['+', '-']).unwrap_or(value.len());
+    let (name, delta) = value.split_at(split);
+    let (level, _) = LOGICAL_SIZES.iter().find(|(_, spelled)| *spelled == name)?;
+    let delta_pt = if delta.is_empty() {
+        Rational::zero()
+    } else {
+        (number_len(delta) == delta.len())
+            .then(|| Rational::from_scaled_decimal(delta, Rational::one()))
+            .flatten()?
+    };
+    Some(FontSize::Logical {
+        level: *level,
+        delta_pt,
+    })
 }
 
 /// A MathML 3 length (§2.1.5.2), resolved at the converter's nominal
@@ -3856,7 +4100,7 @@ mod tests {
         let parsed = crate::from_latex(r"\scriptstyle x").unwrap();
         let mut expr = parsed.compact_expr().clone();
         let id = expr.arena.children(expr.roots)[0];
-        *expr.arena.node_mut(id) = CompactNode::SizeScale(5);
+        *expr.arena.node_mut_in_place(id) = CompactNode::SizeScale(5);
         let mathml =
             crate::writer::mathml::MathmlWriter::write_compact(&expr, &Config::default()).unwrap();
         assert!(
@@ -3981,10 +4225,6 @@ mod tests {
 
     #[test]
     fn unsupported_mathsize_values_warn() {
-        let absolute = r#"<math><mstyle mathsize="12pt"><mi>x</mi></mstyle></math>"#;
-        assert_eq!(parse_one(absolute), MathNode::Identifier("x".into()));
-        assert!(warnings(absolute)[0].contains("absolute font sizes"));
-
         let between = r#"<math><mstyle mathsize="300%"><mi>x</mi></mstyle></math>"#;
         assert_eq!(
             parse_one(between),

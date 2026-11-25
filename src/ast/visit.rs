@@ -529,7 +529,7 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
 /// Mutable visitor for compact arena-based AST transformation.
 ///
 /// Because `CompactNode` is `Copy`, the mutable visitor copies the node,
-/// recurses into children, and can replace nodes via `arena.node_mut(id)`.
+/// recurses into children, and can replace nodes via `arena.node_mut_in_place(id)`.
 pub trait CompactMutVisitor {
     /// Visit a compact node mutably by id; by default walks its children in the arena.
     fn visit_node_mut(&mut self, arena: &mut AstArena, id: NodeId) {
@@ -812,7 +812,7 @@ mod tests {
                     if let Ok(n) = s.parse::<i64>() {
                         let doubled = (n * 2).to_string();
                         let new_sid = arena.push_str(&doubled);
-                        *arena.node_mut(id) = CompactNode::Number(new_sid);
+                        *arena.node_mut_in_place(id) = CompactNode::Number(new_sid);
                     }
                 }
                 walk_compact_node_mut(self, arena, id);

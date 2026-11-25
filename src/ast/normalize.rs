@@ -940,7 +940,7 @@ fn merge_runs(
                 }
             }
             let sid = arena.push_str(&combined);
-            *arena.node_mut(first) = match kind {
+            *arena.node_mut_in_place(first) = match kind {
                 MergeKind::Text(style) => CompactNode::Text(style, sid),
                 MergeKind::Number => CompactNode::Number(sid),
                 MergeKind::Identifier => CompactNode::Identifier(sid),
@@ -984,7 +984,7 @@ fn normalize_compact_node_with_identifiers(
                 },
                 _ => new_span,
             };
-            *arena.node_mut(id) = CompactNode::Styled(style, new_span);
+            *arena.node_mut_in_place(id) = CompactNode::Styled(style, new_span);
         },
 
         CompactNode::Fenced {
@@ -998,7 +998,7 @@ fn normalize_compact_node_with_identifiers(
             // leaves and pass through untouched.
             let new_content =
                 normalize_compact_span_with_identifiers(arena, content, d, merge_identifiers)?;
-            *arena.node_mut(id) = CompactNode::Fenced {
+            *arena.node_mut_in_place(id) = CompactNode::Fenced {
                 open,
                 close,
                 content: new_content,
@@ -1066,7 +1066,7 @@ fn normalize_compact_node_with_identifiers(
                     sup,
                 },
             };
-            *arena.node_mut(id) = replacement;
+            *arena.node_mut_in_place(id) = replacement;
         },
 
         CompactNode::Overscript { base, over, .. } => {
@@ -1130,7 +1130,7 @@ fn normalize_compact_node_with_identifiers(
                 new_cells.push(new_id);
             }
             let new_cells_span = arena.push_children(&new_cells)?;
-            if let CompactNode::Array { cells: c, .. } = arena.node_mut(id) {
+            if let CompactNode::Array { cells: c, .. } = arena.node_mut_in_place(id) {
                 *c = new_cells_span;
             }
         },
@@ -1141,7 +1141,7 @@ fn normalize_compact_node_with_identifiers(
             // attachment.
             if let CompactNode::Row(span) = *arena.node(content) {
                 let new_span = normalize_compact_span_with_identifiers(arena, span, d, false)?;
-                *arena.node_mut(content) = CompactNode::Row(new_span);
+                *arena.node_mut_in_place(content) = CompactNode::Row(new_span);
             } else {
                 normalize_compact_node_with_identifiers(arena, content, d, false)?;
             }
@@ -1174,7 +1174,7 @@ fn normalize_compact_node_with_identifiers(
                 CompactNode::Row(span) => {
                     let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
                     let new_span = arena.push_children(&children)?;
-                    *arena.node_mut(id) = CompactNode::Row(new_span);
+                    *arena.node_mut_in_place(id) = CompactNode::Row(new_span);
                     arena.settle_attrs(id);
                 },
                 _ => {
@@ -1207,7 +1207,7 @@ fn normalize_compact_node_with_identifiers(
                 if let CompactNode::Row(span) = *arena.node(group) {
                     let span =
                         normalize_compact_span_with_identifiers(arena, span, d, merge_identifiers)?;
-                    *arena.node_mut(group) = CompactNode::Row(span);
+                    *arena.node_mut_in_place(group) = CompactNode::Row(span);
                 }
             }
         },
@@ -1357,7 +1357,7 @@ fn normalize_row_node(
         // Unwrap single-child Row: replace this node with its child
         arena.replace_from(id, *only);
     } else {
-        *arena.node_mut(id) = CompactNode::Row(new_span);
+        *arena.node_mut_in_place(id) = CompactNode::Row(new_span);
     }
     Ok(())
 }

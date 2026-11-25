@@ -71,6 +71,7 @@ pub(crate) fn to_groups(expr: &mut CompactExpr) {
         return;
     }
     let arena = &mut expr.arena;
+    settle_attrs(arena);
     let nodes = arena.node_count() as u32;
     for index in 0..nodes {
         match *arena.node(NodeId::new(index)) {
@@ -85,7 +86,7 @@ pub(crate) fn to_groups(expr: &mut CompactExpr) {
                         _ => cell,
                     };
                     if let Some(content) = uncolored_content(arena, arena.node(cell)) {
-                        *arena.node_mut(cell) = ordinary(content);
+                        *arena.node_mut_in_place(cell) = ordinary(content);
                     }
                 }
             },
@@ -104,7 +105,7 @@ pub(crate) fn to_groups(expr: &mut CompactExpr) {
                             }
                     )
                 {
-                    *arena.node_mut(base) = ordinary(content);
+                    *arena.node_mut_in_place(base) = ordinary(content);
                 }
             },
             _ => {},
@@ -112,6 +113,39 @@ pub(crate) fn to_groups(expr: &mut CompactExpr) {
     }
     for index in 0..nodes {
         group(arena, NodeId::new(index));
+    }
+}
+
+/// Give what uncolored nodes hold their typesetting attributes, which the
+/// nodes lose with their place. The inner attributes win.
+fn settle_attrs(arena: &mut AstArena) {
+    // A color in a row in a color takes as many passes as they nest.
+    while arena.has_attrs() {
+        let mut held: Vec<(usize, NodeId)> = (0..arena.node_count() as u32)
+            .map(NodeId::new)
+            .filter(|&id| {
+                arena.attrs(id).is_some() && uncolored_content(arena, arena.node(id)).is_some()
+            })
+            .map(|id| {
+                let mut layers = 0;
+                let mut inner = id;
+                while let Some(content) = uncolored_content(arena, arena.node(inner)) {
+                    inner = content;
+                    layers += 1;
+                }
+                (layers, id)
+            })
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        held.sort_by_key(|&(layers, _)| layers);
+        for (_, id) in held {
+            if let (Some(content), Some(attrs)) = (innermost(arena, id), arena.attrs(id).cloned()) {
+                arena.remove_attrs(id, &attrs);
+                arena.add_attrs(content, &attrs);
+            }
+        }
     }
 }
 
@@ -142,7 +176,7 @@ fn group(arena: &mut AstArena, id: NodeId) {
     match *arena.node(content) {
         // Alone, it would apply to what follows.
         CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {
-            *arena.node_mut(id) = ordinary(content);
+            *arena.node_mut_in_place(id) = ordinary(content);
         },
         _ => arena.replace_from(id, content),
     }
@@ -169,6 +203,7 @@ pub(super) fn with_ordinary_atoms(expr: &CompactExpr) -> Option<CompactExpr> {
     let mut expr = expr.clone();
     let roots = expr.roots;
     let arena = &mut expr.arena;
+    settle_attrs(arena);
     let nodes = arena.node_count() as u32;
     // Whether a node has neighbours its content could meet.
     let mut beside = vec![false; nodes as usize];
@@ -208,16 +243,18 @@ pub(super) fn with_ordinary_atoms(expr: &CompactExpr) -> Option<CompactExpr> {
     for index in 0..nodes {
         let id = NodeId::new(index);
         match *arena.node(id) {
-            CompactNode::Row(span) => *arena.node_mut(id) = CompactNode::Row(own_list(arena, span)),
+            CompactNode::Row(span) => {
+                *arena.node_mut_in_place(id) = CompactNode::Row(own_list(arena, span))
+            },
             CompactNode::Styled(style, span) => {
-                *arena.node_mut(id) = CompactNode::Styled(style, own_list(arena, span));
+                *arena.node_mut_in_place(id) = CompactNode::Styled(style, own_list(arena, span));
             },
             CompactNode::Fenced {
                 open,
                 close,
                 content,
             } => {
-                *arena.node_mut(id) = CompactNode::Fenced {
+                *arena.node_mut_in_place(id) = CompactNode::Fenced {
                     open,
                     close,
                     content: own_list(arena, content),
@@ -231,7 +268,7 @@ pub(super) fn with_ordinary_atoms(expr: &CompactExpr) -> Option<CompactExpr> {
         if !beside[id.index()] {
             group(arena, id);
         } else if let Some(content) = innermost(arena, id) {
-            *arena.node_mut(id) = ordinary(content);
+            *arena.node_mut_in_place(id) = ordinary(content);
         }
     }
     Some(expr)

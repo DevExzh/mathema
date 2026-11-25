@@ -958,7 +958,7 @@ pub(super) fn layout_accent_arena(
 
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_id = if is_stretchy_accent(accent) && base_w > 0.0 {
-        let size = ctx.size();
+        let size = ctx.size() * ctx.glyph_scale;
 
         // For non-wide accents (\hat, \tilde, \check), use a fixed-size accent
         // instead of stretching to base width when the base is narrow (single char).
@@ -1243,7 +1243,7 @@ pub(super) fn layout_accent_arena(
             },
         }
     } else {
-        alloc_glyph(arena, accent, ctx.size(), false)
+        alloc_glyph(arena, accent, ctx.size() * ctx.glyph_scale, false)
     };
 
     let accent_w = arena.get(accent_id).width;

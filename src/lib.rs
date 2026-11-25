@@ -72,7 +72,7 @@ pub use convert::{
 };
 pub use error::{
     Config, Diagnostic, DiagnosticKind, Error, Format, LimitKind, ParseResult, Result, Strictness,
-    UndefinedCommands,
+    TypesettingPolicy, UndefinedCommands,
 };
 pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
 pub use reader::omml::{OmmlJustification, OmmlParagraph};

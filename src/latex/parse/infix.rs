@@ -677,7 +677,7 @@ impl LatexCompactParser {
             },
         }
         if node != original {
-            *self.arena.node_mut(id) = node;
+            *self.arena.node_mut_in_place(id) = node;
         }
     }
 

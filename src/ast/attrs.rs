@@ -2,7 +2,7 @@
 //! does not change its mathematics.
 //!
 //! The compact arena keeps them beside its nodes
-//! ([`AstArena::attrs`](super::arena::AstArena::attrs)), so a tree with
+//! ([`AstArena::attrs`](crate::AstArena::attrs)), so a tree with
 //! attributes has the same nodes as one without. The heap AST wraps a node in
 //! [`MathNode::Attributed`](super::MathNode::Attributed).
 //!
@@ -22,19 +22,40 @@ pub struct NodeAttrs {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub size: Option<FontSize>,
+    /// The size of the node's own sign and not of what is in it: the operator
+    /// of an n-ary node, the mark of an accent. It is measured as the size of
+    /// text there is; how much larger than text a big operator is stays the
+    /// layout's choice. Other nodes ignore it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub glyph_size: Option<FontSize>,
 }
 
 impl NodeAttrs {
     /// Attributes holding only a font size.
     #[must_use]
     pub fn with_size(size: FontSize) -> Self {
-        Self { size: Some(size) }
+        Self {
+            size: Some(size),
+            glyph_size: None,
+        }
+    }
+
+    /// Attributes holding only the size of the node's sign.
+    #[must_use]
+    pub fn with_glyph_size(size: FontSize) -> Self {
+        Self {
+            size: None,
+            glyph_size: Some(size),
+        }
     }
 
     /// Whether no attribute is set.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.size.is_none()
+        self.size.is_none() && self.glyph_size.is_none()
     }
 
     /// Take from `outer` what is not set here: the inner attribute wins.
@@ -42,6 +63,7 @@ impl NodeAttrs {
     pub fn or(self, outer: &Self) -> Self {
         Self {
             size: self.size.or(outer.size),
+            glyph_size: self.glyph_size.or(outer.glyph_size),
         }
     }
 }
@@ -138,6 +160,13 @@ pub(crate) fn base_size_pt(meta: Option<&ExprMeta>) -> f64 {
 }
 
 impl FontSize {
+    /// The size of a script of text in this size, in 32nds of a point (the
+    /// unit of MTEF).
+    pub(crate) fn script(self, base_pt: f64) -> Self {
+        let units = self.scale(base_pt) * base_pt * 0.7 * 32.0;
+        Self::Points(Rational::new(units.round().clamp(1.0, 32767.0) as i32, 32))
+    }
+
     /// The size as a multiple of a base size in points.
     pub(crate) fn scale(self, base_pt: f64) -> f64 {
         let scale = match self {

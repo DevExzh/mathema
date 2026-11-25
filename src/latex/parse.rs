@@ -2283,7 +2283,7 @@ impl LatexCompactParser {
         let mut nodes = SmallVec::from_slice(nodes);
         edit(self, &mut nodes);
         let updated = self.flatten_single(&nodes);
-        match self.arena.node_mut(wrapper) {
+        match self.arena.node_mut_in_place(wrapper) {
             CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
                 *content = updated
             },
@@ -5443,7 +5443,7 @@ impl LatexCompactParser {
     /// A TeX accent stays attached to its base even in inline math. In
     /// native MathML a movable <mo> would move the accent to a side script.
     fn fix_accent_base(&mut self, base: NodeId) {
-        if let CompactNode::Operator { limits, .. } = self.arena.node_mut(base)
+        if let CompactNode::Operator { limits, .. } = self.arena.node_mut_in_place(base)
             && *limits == LimitStyle::Default
         {
             *limits = LimitStyle::AboveBelow;

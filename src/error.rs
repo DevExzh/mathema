@@ -297,6 +297,25 @@ pub enum UndefinedCommands {
     Keep,
 }
 
+/// What writers of mathematical notation, LaTeX and UnicodeMath, do with
+/// typesetting that has no mathematical meaning
+/// ([`NodeAttrs`](crate::ast::NodeAttrs)). MathML, OMML and MTEF always keep
+/// what they can express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum TypesettingPolicy {
+    /// Keep what the format has a plain command for: a font size becomes the
+    /// nearest LaTeX size command where TeX and KaTeX draw it, and is
+    /// otherwise dropped, which the LaTeX writer reports as
+    /// [`DiagnosticKind::Info`]. UnicodeMath drops sizes silently. The
+    /// default.
+    #[default]
+    Semantic,
+    /// Keep what can be expressed, and report as [`DiagnosticKind::Info`]
+    /// what is only approximated or lost.
+    Preserve,
+}
+
 /// Default upper bound on reader input size (4 MiB). Math formulas are
 /// kilobytes at most; this guards against adversarial multi-megabyte inputs
 /// that would otherwise be fully tokenized and parsed.
@@ -342,6 +361,9 @@ pub struct Config {
     /// How the LaTeX writer spells an undefined control sequence (default:
     /// [`UndefinedCommands::Escape`], never live LaTeX).
     pub undefined_commands: UndefinedCommands,
+    /// What the LaTeX and UnicodeMath writers do with typesetting (default:
+    /// [`TypesettingPolicy::Semantic`]).
+    pub typesetting: TypesettingPolicy,
 }
 
 impl Default for Config {
@@ -353,6 +375,7 @@ impl Default for Config {
             max_nodes: Some(DEFAULT_MAX_NODES),
             max_depth: DEFAULT_MAX_DEPTH,
             undefined_commands: UndefinedCommands::Escape,
+            typesetting: TypesettingPolicy::Semantic,
         }
     }
 }
@@ -400,6 +423,13 @@ impl Config {
     #[must_use]
     pub fn with_undefined_commands(mut self, undefined_commands: UndefinedCommands) -> Self {
         self.undefined_commands = undefined_commands;
+        self
+    }
+
+    /// Builder: set what the LaTeX and UnicodeMath writers do with typesetting.
+    #[must_use]
+    pub fn with_typesetting(mut self, typesetting: TypesettingPolicy) -> Self {
+        self.typesetting = typesetting;
         self
     }
 

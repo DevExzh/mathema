@@ -481,6 +481,13 @@ impl CompactExpr {
         }
     }
 
+    /// Record the size of ordinary text in points, if it is known.
+    pub(crate) fn set_base_size(&mut self, points: Option<Rational>) {
+        if points.is_some() {
+            self.meta.get_or_insert_default().base_size_pt = points;
+        }
+    }
+
     /// Build a `CompactExpr` from a `MathExpr`, interning all data into an arena.
     ///
     /// # Errors
@@ -1641,7 +1648,7 @@ mod tests {
         let root = compact.arena.children(compact.roots)[0];
         let CompactNode::Array {
             arraystretch_pct, ..
-        } = compact.arena.node_mut(root)
+        } = compact.arena.node_mut_in_place(root)
         else {
             panic!("matrix did not compact to an array node")
         };

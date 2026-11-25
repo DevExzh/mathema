@@ -118,7 +118,7 @@ impl ConvertResult {
     }
 
     /// Serialize to LaTeX, also returning writer-side loss diagnostics: text
-    /// that is no color in a color, control characters in text.
+    /// that is no color in a color, control characters in text, font sizes.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_latex_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
         LatexWriter::write_read_with_diagnostics(&self.compact.expr, &self.config)
@@ -645,7 +645,7 @@ mod tests {
         else {
             panic!("expected span")
         };
-        *shrunk.arena.node_mut(cell) = CompactNode::SpannedCell {
+        *shrunk.arena.node_mut_in_place(cell) = CompactNode::SpannedCell {
             alignment,
             span: 1,
             left_boundaries: StrId::EMPTY,
@@ -663,7 +663,7 @@ mod tests {
         assert_routes(&shrunk, &shrunk_heap, 3);
 
         let content_span = shrunk.arena.push_children(&[content]).unwrap();
-        *shrunk.arena.node_mut(cell) = CompactNode::Row(content_span);
+        *shrunk.arena.node_mut_in_place(cell) = CompactNode::Row(content_span);
         let ordinary_heap = shrunk.to_math_expr();
         assert_routes(&shrunk, &ordinary_heap, 3);
         assert!(
@@ -705,7 +705,7 @@ mod tests {
         else {
             panic!("expected span")
         };
-        *partial_compact.arena.node_mut(cell) = CompactNode::SpannedCell {
+        *partial_compact.arena.node_mut_in_place(cell) = CompactNode::SpannedCell {
             alignment,
             span: 3,
             left_boundaries: StrId::EMPTY,
@@ -741,7 +741,7 @@ mod tests {
             } => (alignment, content),
             _ => panic!("expected span wrapper"),
         };
-        *contradictory.arena.node_mut(cell) = CompactNode::SpannedCell {
+        *contradictory.arena.node_mut_in_place(cell) = CompactNode::SpannedCell {
             alignment,
             span: 2,
             left_boundaries: StrId::EMPTY,
