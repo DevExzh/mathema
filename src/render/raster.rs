@@ -615,65 +615,9 @@ fn emit_raster_box(
             bg_color,
             border_color,
         } => {
-            // Background fill
-            if let Some(bg) = bg_color {
-                let w_px = (layout.width * em) as f32;
-                let h_px = ((layout.height + layout.depth) * em) as f32;
-                let ry = (y - layout.height * em) as f32;
-
-                if let Some(rect) = Rect::from_xywh(x as f32, ry, w_px, h_px) {
-                    let mut paint = Paint::default();
-                    let rgb = parse_color(bg);
-                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
-                    paint.anti_alias = true;
-                    pixmap.fill_rect(
-                        rect,
-                        &paint,
-                        Transform::from_row(
-                            xform.sign as f32,
-                            0.0,
-                            0.0,
-                            1.0,
-                            xform.offset as f32,
-                            0.0,
-                        ),
-                        None,
-                    );
-                }
-            }
-
-            // Border rectangle
-            let w_px = (layout.width * em) as f32;
-            let h_px = ((layout.height + layout.depth) * em) as f32;
-            let ry = (y - layout.height * em) as f32;
-
-            let mut pb = PathBuilder::new();
-            pb.move_to(x as f32, ry);
-            pb.line_to(x as f32 + w_px, ry);
-            pb.line_to(x as f32 + w_px, ry + h_px);
-            pb.line_to(x as f32, ry + h_px);
-            pb.close();
-            if let Some(path) = pb.finish() {
-                let mut paint = Paint::default();
-                if let Some(bc) = border_color {
-                    let rgb = parse_color(bc);
-                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
-                } else {
-                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
-                }
-                paint.anti_alias = true;
-                let stroke = Stroke {
-                    width: (0.04 * em) as f32, // proportional to font size, matches SVG path
-                    ..Stroke::default()
-                };
-                pixmap.stroke_path(
-                    &path,
-                    &paint,
-                    &stroke,
-                    Transform::from_row(xform.sign as f32, 0.0, 0.0, 1.0, xform.offset as f32, 0.0),
-                    None,
-                );
-            }
+            let extent = (layout.width, layout.height, layout.depth);
+            let colors = (bg_color.as_deref(), border_color.as_deref());
+            draw_box(pixmap, (x, y), extent, em, colors, fg, xform);
 
             // Content
             let cx = x + child.dx * em;
@@ -686,6 +630,54 @@ fn emit_raster_box(
             let cy = y - child.dy * em;
             emit_raster_box(pixmap, ctx, &child.layout, cx, cy, reflected);
         },
+    }
+}
+
+/// The background and frame of a `Boxed` node, as `emit::push_box` writes it.
+fn draw_box(
+    pixmap: &mut Pixmap,
+    (x, y): (f64, f64),
+    (width, height, depth): (f64, f64, f64),
+    em: f64,
+    (background, border): (Option<&str>, Option<&str>),
+    fg: [u8; 3],
+    xform: HorizontalTransform,
+) {
+    let framed = super::layout::is_framed(background.is_some(), border.is_some());
+    let stroke = super::layout::BOX_RULE_EM * em;
+    let inset = if framed { stroke / 2.0 } else { 0.0 };
+    let Some(rect) = Rect::from_xywh(
+        (x + inset) as f32,
+        (y - height * em + inset) as f32,
+        (width * em - 2.0 * inset) as f32,
+        ((height + depth) * em - 2.0 * inset) as f32,
+    ) else {
+        return;
+    };
+    let transform = Transform::from_row(xform.sign as f32, 0.0, 0.0, 1.0, xform.offset as f32, 0.0);
+    let mut paint = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    if let Some(background) = background {
+        let [r, g, b] = parse_color(background);
+        paint.set_color_rgba8(r, g, b, 255);
+        pixmap.fill_rect(rect, &paint, transform, None);
+    }
+    if framed {
+        let [r, g, b] = border.map_or(fg, parse_color);
+        paint.set_color_rgba8(r, g, b, 255);
+        let stroke = Stroke {
+            width: stroke as f32,
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(
+            &PathBuilder::from_rect(rect),
+            &paint,
+            &stroke,
+            transform,
+            None,
+        );
     }
 }
 
@@ -936,65 +928,9 @@ fn emit_raster_box_arena(
             bg_color,
             border_color,
         } => {
-            // Background fill
-            if let Some(bg) = bg_color {
-                let w_px = (layout.width * em) as f32;
-                let h_px = ((layout.height + layout.depth) * em) as f32;
-                let ry = (y - layout.height * em) as f32;
-
-                if let Some(rect) = Rect::from_xywh(x as f32, ry, w_px, h_px) {
-                    let mut paint = Paint::default();
-                    let rgb = parse_color(bg);
-                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
-                    paint.anti_alias = true;
-                    pixmap.fill_rect(
-                        rect,
-                        &paint,
-                        Transform::from_row(
-                            xform.sign as f32,
-                            0.0,
-                            0.0,
-                            1.0,
-                            xform.offset as f32,
-                            0.0,
-                        ),
-                        None,
-                    );
-                }
-            }
-
-            // Border rectangle
-            let w_px = (layout.width * em) as f32;
-            let h_px = ((layout.height + layout.depth) * em) as f32;
-            let ry = (y - layout.height * em) as f32;
-
-            let mut pb = PathBuilder::new();
-            pb.move_to(x as f32, ry);
-            pb.line_to(x as f32 + w_px, ry);
-            pb.line_to(x as f32 + w_px, ry + h_px);
-            pb.line_to(x as f32, ry + h_px);
-            pb.close();
-            if let Some(path) = pb.finish() {
-                let mut paint = Paint::default();
-                if let Some(bc) = border_color {
-                    let rgb = parse_color(bc);
-                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
-                } else {
-                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
-                }
-                paint.anti_alias = true;
-                let stroke = Stroke {
-                    width: (0.04 * em) as f32, // proportional to font size, matches SVG path
-                    ..Stroke::default()
-                };
-                pixmap.stroke_path(
-                    &path,
-                    &paint,
-                    &stroke,
-                    Transform::from_row(xform.sign as f32, 0.0, 0.0, 1.0, xform.offset as f32, 0.0),
-                    None,
-                );
-            }
+            let extent = (layout.width, layout.height, layout.depth);
+            let colors = (bg_color.as_deref(), border_color.as_deref());
+            draw_box(pixmap, (x, y), extent, em, colors, fg, xform);
 
             // Content — arena stores the child without a position offset, so we
             // apply the box padding here (heap version stored dx=padding).

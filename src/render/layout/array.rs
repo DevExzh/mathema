@@ -442,7 +442,7 @@ pub(super) fn layout_array(
                 cell.as_slice(),
                 [MathNode::SpannedCell { .. } | MathNode::AlignedCell { .. }]
             );
-            row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
+            row_layouts.push(layout_table_cell(cell, &cell_ctx));
         }
         cell_layouts.push(row_layouts);
     }
@@ -647,7 +647,7 @@ pub(super) fn layout_array_arena(
         );
         match *ast.node(cell_id) {
             CompactNode::Row(span) => {
-                cell_layout_ids.push(layout_row_arena(ast, span, arena, &cell_ctx));
+                cell_layout_ids.push(layout_table_cell_arena(ast, span, arena, &cell_ctx));
             },
             _ => {
                 cell_layout_ids.push(layout_node_arena(ast, cell_id, arena, &cell_ctx));

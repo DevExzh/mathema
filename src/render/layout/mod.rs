@@ -33,6 +33,7 @@ use radical::*;
 use scripts::*;
 use stretchy::*;
 use styled::*;
+pub(super) use styled::{BOX_RULE_EM, is_framed};
 
 /// A positioned layout box in the rendering tree.
 #[derive(Debug, Clone)]

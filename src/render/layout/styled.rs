@@ -46,14 +46,62 @@ pub(super) fn layout_phantom(content: &MathNode, kind: PhantomKind, ctx: &Layout
     }
 }
 
+/// LaTeX's `\fboxsep` and `\fboxrule`, 3pt and 0.4pt.
+const BOX_SEP_EM: f64 = 0.3;
+pub(in crate::render) const BOX_RULE_EM: f64 = 0.04;
+
+/// Whether a box has a frame: `\boxed` and `\fcolorbox`, not `\colorbox`.
+pub(in crate::render) fn is_framed(background: bool, border: bool) -> bool {
+    border || !background
+}
+
+/// The space between the edge of a box and its content.
+fn box_padding(background: bool, border: bool, size: f64) -> f64 {
+    let rule = if is_framed(background, border) {
+        BOX_RULE_EM
+    } else {
+        0.0
+    };
+    BOX_SEP_EM * size + rule
+}
+
+/// What `\cellcolor` reaches past the content of its cell.
+const CELL_COLOR_SEP_EM: f64 = 0.1;
+
+/// A cell that is all a coloured box: `\cellcolor` takes no space in TeX, and
+/// is drawn around the content.
+pub(super) fn layout_table_cell(cell: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
+    if let [
+        MathNode::Boxed {
+            content,
+            bg_color: Some(bg),
+            border_color: None,
+        },
+    ] = cell
+    {
+        return boxed(content, Some(bg), None, CELL_COLOR_SEP_EM * ctx.size(), ctx);
+    }
+    layout_row(crate::ast::table_cell_parts(cell).1, ctx)
+}
+
 pub(super) fn layout_boxed(
     content: &MathNode,
     bg_color: Option<&str>,
     border_color: Option<&str>,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
-    let size = ctx.size();
-    let padding = 0.1 * size;
+    let some = |color: Option<&str>| color.is_some_and(|color| !color.is_empty());
+    let padding = box_padding(some(bg_color), some(border_color), ctx.size());
+    boxed(content, bg_color, border_color, padding, ctx)
+}
+
+fn boxed(
+    content: &MathNode,
+    bg_color: Option<&str>,
+    border_color: Option<&str>,
+    padding: f64,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let inner = layout_node(content, ctx);
 
     LayoutBox {
@@ -471,8 +519,42 @@ pub(super) fn layout_boxed_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    let size = ctx.size();
-    let padding = 0.1 * size;
+    let padding = box_padding(bg_color.is_some(), border_color.is_some(), ctx.size());
+    boxed_arena(ast, content, (bg_color, border_color), padding, arena, ctx)
+}
+
+/// Arena counterpart of [`layout_table_cell`].
+pub(super) fn layout_table_cell_arena(
+    ast: &AstArena,
+    span: NodeSpan,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    if let [only] = *ast.children(span)
+        && let CompactNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        } = *ast.node(only)
+        && !ast.str_val(bg_color).is_empty()
+        && ast.str_val(border_color).is_empty()
+        && ast.attrs(only).is_none()
+    {
+        let colors = (Some(ast.str_val(bg_color).to_owned()), None);
+        let padding = CELL_COLOR_SEP_EM * ctx.size();
+        return boxed_arena(ast, content, colors, padding, arena, ctx);
+    }
+    layout_row_arena(ast, span, arena, ctx)
+}
+
+fn boxed_arena(
+    ast: &AstArena,
+    content: NodeId,
+    (bg_color, border_color): (Option<String>, Option<String>),
+    padding: f64,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
     let inner_id = layout_node_arena(ast, content, arena, ctx);
     let inner_w = arena.get(inner_id).width;
     let inner_h = arena.get(inner_id).height;

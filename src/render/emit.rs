@@ -602,35 +602,9 @@ fn emit_box(
             bg_color,
             border_color,
         } => {
-            let w_px = layout.width * em;
-            let h_px = (layout.height + layout.depth) * em;
-            let ry = y - layout.height * em;
-
-            // Border rectangle
-            svg.push_str(r#"<rect x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, ry);
-            svg.push_str(r#"" width=""#);
-            push_f3(svg, w_px);
-            svg.push_str(r#"" height=""#);
-            push_f3(svg, h_px);
-            svg.push_str(r#"" stroke=""#);
-            if let Some(bc) = border_color {
-                push_xml_escaped(svg, bc);
-            } else {
-                svg.push_str(&attrs.fg_color);
-            }
-            svg.push_str(r#"" fill=""#);
-            if let Some(bg) = bg_color {
-                push_xml_escaped(svg, bg);
-            } else {
-                svg.push_str("none");
-            }
-            svg.push_str(r#"" stroke-width=""#);
-            // Proportional to font size (≈rule_thickness ≈ 0.04em)
-            push_f3(svg, 0.04 * em);
-            svg.push_str(r#""/>"#);
+            let extent = (layout.width, layout.height, layout.depth);
+            let colors = (bg_color.as_deref(), border_color.as_deref());
+            push_box(svg, (x, y), extent, em, colors, &attrs.fg_color);
 
             // Content
             let cx = x + child.dx * em;
@@ -978,34 +952,9 @@ fn emit_box_arena(
             bg_color,
             border_color,
         } => {
-            let w_px = layout.width * em;
-            let h_px = (layout.height + layout.depth) * em;
-            let ry = y - layout.height * em;
-
-            // Border rectangle
-            svg.push_str(r#"<rect x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, ry);
-            svg.push_str(r#"" width=""#);
-            push_f3(svg, w_px);
-            svg.push_str(r#"" height=""#);
-            push_f3(svg, h_px);
-            svg.push_str(r#"" stroke=""#);
-            if let Some(bc) = border_color {
-                push_xml_escaped(svg, bc);
-            } else {
-                svg.push_str(&attrs.fg_color);
-            }
-            svg.push_str(r#"" fill=""#);
-            if let Some(bg) = bg_color {
-                push_xml_escaped(svg, bg);
-            } else {
-                svg.push_str("none");
-            }
-            svg.push_str(r#"" stroke-width=""#);
-            push_f3(svg, 0.04 * em);
-            svg.push_str(r#""/>"#);
+            let extent = (layout.width, layout.height, layout.depth);
+            let colors = (bg_color.as_deref(), border_color.as_deref());
+            push_box(svg, (x, y), extent, em, colors, &attrs.fg_color);
 
             // Content — arena version stores child without position offset,
             // so we must apply padding here (heap version stored dx=padding in PositionedBox)
@@ -1017,6 +966,40 @@ fn emit_box_arena(
             svg.push_str("</g>");
         },
     }
+}
+
+/// The background and frame of a `Boxed` node of the given width, height and
+/// depth (em) at `(x, y)`. The frame is inside the box.
+pub(super) fn push_box(
+    svg: &mut String,
+    (x, y): (f64, f64),
+    (width, height, depth): (f64, f64, f64),
+    em: f64,
+    (background, border): (Option<&str>, Option<&str>),
+    fg_color: &str,
+) {
+    let framed = super::layout::is_framed(background.is_some(), border.is_some());
+    let stroke = super::layout::BOX_RULE_EM * em;
+    let inset = if framed { stroke / 2.0 } else { 0.0 };
+    svg.push_str(r#"<rect x=""#);
+    push_f3(svg, x + inset);
+    svg.push_str(r#"" y=""#);
+    push_f3(svg, y - height * em + inset);
+    svg.push_str(r#"" width=""#);
+    push_f3(svg, width * em - 2.0 * inset);
+    svg.push_str(r#"" height=""#);
+    push_f3(svg, (height + depth) * em - 2.0 * inset);
+    if framed {
+        svg.push_str(r#"" stroke=""#);
+        push_xml_escaped(svg, border.unwrap_or(fg_color));
+    }
+    svg.push_str(r#"" fill=""#);
+    push_xml_escaped(svg, background.unwrap_or("none"));
+    if framed {
+        svg.push_str(r#"" stroke-width=""#);
+        push_f3(svg, stroke);
+    }
+    svg.push_str(r#""/>"#);
 }
 
 /// Write an XML-escaped character directly to the buffer (zero allocation).

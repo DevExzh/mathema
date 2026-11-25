@@ -286,36 +286,6 @@ fn push_stroke_free_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &
     svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
 }
 
-/// Emit the border/background `<rect>` for a `\boxed`/`\fbox` (`.3`-precision).
-#[inline]
-#[allow(clippy::too_many_arguments)]
-fn push_boxed_rect(
-    svg: &mut String,
-    x: f64,
-    ry: f64,
-    w: f64,
-    h: f64,
-    stroke: &str,
-    fill: &str,
-    stroke_width: f64,
-) {
-    svg.push_str(r#"<rect x=""#);
-    push_f3(svg, x);
-    svg.push_str(r#"" y=""#);
-    push_f3(svg, ry);
-    svg.push_str(r#"" width=""#);
-    push_f3(svg, w);
-    svg.push_str(r#"" height=""#);
-    push_f3(svg, h);
-    svg.push_str(r#"" stroke=""#);
-    push_xml_escaped(svg, stroke);
-    svg.push_str(r#"" fill=""#);
-    push_xml_escaped(svg, fill);
-    svg.push_str(r#"" stroke-width=""#);
-    push_f3(svg, stroke_width);
-    svg.push_str(r#""/>"#);
-}
-
 /// Emit a `<use>` referencing an embedded MATH-table variant glyph outline.
 fn emit_variant_glyph(
     svg: &mut String,
@@ -579,13 +549,9 @@ fn emit_box_embedded(
             bg_color,
             border_color,
         } => {
-            let w_px = layout.width * em;
-            let h_px = (layout.height + layout.depth) * em;
-            let ry = y - layout.height * em;
-            let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
-            let fill_color = bg_color.as_deref().unwrap_or("none");
-            let sw = 0.04 * em; // proportional stroke width
-            push_boxed_rect(svg, x, ry, w_px, h_px, stroke_color, fill_color, sw);
+            let extent = (layout.width, layout.height, layout.depth);
+            let colors = (bg_color.as_deref(), border_color.as_deref());
+            super::emit::push_box(svg, (x, y), extent, em, colors, &options.fg_color);
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
@@ -975,13 +941,9 @@ fn emit_box_arena_embedded(
             bg_color,
             border_color,
         } => {
-            let w_px = layout.width * em;
-            let h_px = (layout.height + layout.depth) * em;
-            let ry = y - layout.height * em;
-            let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
-            let fill_color = bg_color.as_deref().unwrap_or("none");
-            let sw = 0.04 * em; // proportional stroke width
-            push_boxed_rect(svg, x, ry, w_px, h_px, stroke_color, fill_color, sw);
+            let extent = (layout.width, layout.height, layout.depth);
+            let colors = (bg_color.as_deref(), border_color.as_deref());
+            super::emit::push_box(svg, (x, y), extent, em, colors, &options.fg_color);
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
         },
         ArenaBoxKind::Reflected { child } => {

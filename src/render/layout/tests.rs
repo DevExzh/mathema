@@ -296,6 +296,43 @@ fn atoms_are_spaced_as_in_tex() {
     }
 }
 
+/// `\\fboxsep` and `\\fboxrule`, as in TeX; a `\\colorbox` has no frame.
+#[test]
+fn boxes_have_the_padding_of_tex() {
+    for (latex, width, height, depth) in [
+        ("\\boxed{x}", 1.252, 0.771, 0.340),
+        ("\\fcolorbox{red}{blue}{$x$}", 1.252, 0.771, 0.340),
+        ("\\colorbox{red}{$x$}", 1.172, 0.731, 0.300),
+    ] {
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        assert!((root.width - width).abs() < 1e-6, "{latex}: {}", root.width);
+        assert!((root.height - height).abs() < 1e-6, "{latex}");
+        assert!((root.depth - depth).abs() < 1e-6, "{latex}");
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let options = default_options();
+        let svg = crate::render::render_to_svg(&expr, &options).unwrap();
+        assert_eq!(
+            svg.contains("stroke="),
+            !latex.starts_with("\\colorbox"),
+            "{svg}"
+        );
+        // The frame is inside the box.
+        if latex.starts_with("\\boxed") {
+            assert!(
+                svg.contains(r#"<rect x=".32" y=".32" width="19.392""#),
+                "{svg}"
+            );
+        }
+    }
+    // The colour of a cell takes no more space than before.
+    let cell = "\\begin{array}{c}\\cellcolor{red}x\\end{array}";
+    assert_arena_heap_equivalent(cell, MathStyle::Text);
+    let expr = crate::from_latex(cell).unwrap().expr();
+    let root = layout_expr(&expr, MathStyle::Text, &default_options());
+    assert!((root.width - 1.772).abs() < 1e-6, "{}", root.width);
+}
+
 /// A label that fits on an arrow or an equals sign does not stretch it.
 #[test]
 fn labels_stretch_what_they_do_not_fit_on() {
