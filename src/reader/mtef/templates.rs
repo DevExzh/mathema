@@ -10,9 +10,11 @@
 
 use smallvec::SmallVec;
 
-use super::decode::{Decoder, Glyph, Item, ScriptSlots};
+use super::decode::{Decoder, Glyph, Item, OpenTemplate, ScriptSlots, SlotSizes};
 use crate::ast::compact::{CompactNode, NodeId};
-use crate::ast::{AccentPosition, FractionKind, LimitStyle, StrokeKind, SymbolKind};
+use crate::ast::{
+    AccentPosition, FontSize, FractionKind, LimitStyle, NodeAttrs, Rational, StrokeKind, SymbolKind,
+};
 use crate::error::Result;
 
 /// A template, reduced to what the AST can express.
@@ -91,6 +93,68 @@ impl Desc {
             Desc::BigOp { op: None, .. } => 4,
             Desc::BigOp { .. } | Desc::Limit => 3,
         }
+    }
+}
+
+impl Decoder<'_> {
+    /// Which slots of a template are one step smaller than the template by
+    /// their place: scripts, limits, labels, root indices and the slots of
+    /// small fractions. The others are its own size. This is what MathType
+    /// and Equation Editor write in all but a few hundred of the 300,000
+    /// slots of the corpus.
+    #[inline]
+    pub(super) fn slot_sizes(&self, selector: u8, variation: u16) -> SlotSizes {
+        let small = match (self.v5, selector) {
+            // Scripts and arrows.
+            (true, 14 | 27..=29) | (false, 15 | 18..=20 | 44) => true,
+            (true, 11) => variation & 0x0001 != 0,
+            (false, 14) => variation == 1,
+            (false, 41) => variation == 2,
+            (true, 21 | 22) | (false, 42 | 43) => return SlotSizes::Limits,
+            // Big operators, limits, roots and horizontal braces.
+            (true, 10 | 15..=20 | 23..=25) | (false, 13 | 21..=28 | 29..=39) => {
+                return SlotSizes::FirstSame;
+            },
+            _ => false,
+        };
+        if small {
+            SlotSizes::Smaller
+        } else {
+            SlotSizes::Same
+        }
+    }
+
+    /// The size of a sign in the operator slot, as that of text there.
+    fn slot_sign_size(&self, size: FontSize) -> Option<FontSize> {
+        let FontSize::Points(points) = size else {
+            return None;
+        };
+        let (text, normal) = match self.slot_size_level() {
+            0 => (1000, 1500),
+            1 => (700, 1000),
+            _ => (500, 1000),
+        };
+        Some(FontSize::Points(Rational::new(
+            points.num.checked_mul(text)?,
+            points.den.checked_mul(normal)?,
+        )))
+    }
+
+    /// The typesize that a slot of a template has by its place.
+    #[inline]
+    pub(super) fn slot_size_of(&self, open: OpenTemplate) -> u8 {
+        let OpenTemplate {
+            sizes,
+            level,
+            slots,
+        } = open;
+        let smaller = match sizes {
+            SlotSizes::Same => false,
+            SlotSizes::Smaller => true,
+            SlotSizes::FirstSame => slots > 0,
+            SlotSizes::Limits => matches!(slots, 1 | 2),
+        };
+        if smaller { (level + 1).min(2) } else { level }
     }
 }
 
@@ -534,6 +598,13 @@ impl Decoder<'_> {
         } else {
             describe_v3(selector, variation)
         };
+        if matches!(desc, Some(Desc::Fence { .. }))
+            && glyphs
+                .iter()
+                .any(|sign| self.sign_size(sign, false).is_some())
+        {
+            self.lose_size("the sizes of delimiters were dropped; they fit what is between them");
+        }
         let Some(desc) = desc else {
             let version = if self.v5 { 5 } else { 3 };
             self.recover(
@@ -665,14 +736,41 @@ impl Decoder<'_> {
                             None
                         }
                     });
+                let sign = match op_slot {
+                    None => glyphs.first().and_then(|sign| self.sign_size(sign, true)),
+                    Some(_) => None,
+                };
+                let op_size = op_slot
+                    .and_then(|id| self.single_char(id).map(|_| id))
+                    .and_then(|id| self.children_of(id).first().copied())
+                    .and_then(|id| self.arena.attrs(id).cloned());
                 match (op, op_slot) {
-                    (Some(op), _) => Item::Node(self.node(CompactNode::Nary {
-                        op,
-                        sub: sub.unwrap_or(NodeId::NONE),
-                        sup: sup.unwrap_or(NodeId::NONE),
-                        body,
-                        limits,
-                    })?),
+                    (Some(op), _) => {
+                        // The sign is no node.
+                        if let Some(slot) = op_slot {
+                            for id in self.children_of(slot) {
+                                if let Some(attrs) = self.arena.attrs(id).cloned() {
+                                    self.arena.remove_attrs(id, &attrs);
+                                }
+                            }
+                        }
+                        let id = self.node(CompactNode::Nary {
+                            op,
+                            sub: sub.unwrap_or(NodeId::NONE),
+                            sup: sup.unwrap_or(NodeId::NONE),
+                            body,
+                            limits,
+                        })?;
+                        // The sign of a general big operator is in a slot
+                        // at the size of a big operator's sign.
+                        let slot_sign = op_size
+                            .and_then(|attrs| attrs.size)
+                            .and_then(|size| self.slot_sign_size(size));
+                        if let Some(size) = sign.or(slot_sign) {
+                            self.arena.add_attrs(id, &NodeAttrs::with_glyph_size(size));
+                        }
+                        Item::Node(id)
+                    },
                     // Without limits the operator slot is drawn as it is.
                     (None, Some(base)) if sub.is_none() && sup.is_none() => {
                         // Parts of zero spaces draw nothing.
@@ -864,12 +962,16 @@ impl Decoder<'_> {
                 } else {
                     AccentPosition::Above
                 };
-                Item::Node(self.node(CompactNode::Accent {
+                let id = self.node(CompactNode::Accent {
                     base,
                     accent,
                     position,
                     wide,
-                })?)
+                })?;
+                if let Some(size) = glyphs.first().and_then(|mark| self.sign_size(mark, false)) {
+                    self.arena.add_attrs(id, &NodeAttrs::with_glyph_size(size));
+                }
+                Item::Node(id)
             },
             Desc::Strike(stroke) => {
                 let content = self.take_or_empty(&mut slots, 0)?;
@@ -933,6 +1035,43 @@ mod tests {
                 limits: LimitStyle::AboveBelow
             })
         ));
+    }
+
+    #[test]
+    fn slot_sizes_agree_with_the_templates() {
+        for v5 in [false, true] {
+            let config = crate::error::Config::default();
+            let mut decoder = Decoder::new(&[], &config);
+            decoder.v5 = v5;
+            for (selector, variation) in (0..=255).flat_map(|s| (0..0x200).map(move |v| (s, v))) {
+                let desc = if v5 {
+                    describe_v5(selector, variation)
+                } else {
+                    describe_v3(selector, variation)
+                };
+                let expected = match desc {
+                    None => continue,
+                    Some(Desc::BigOp { op: None, .. }) => SlotSizes::Limits,
+                    Some(Desc::Script { .. } | Desc::Arrow { .. }) => SlotSizes::Smaller,
+                    Some(Desc::Fraction(_))
+                        if (v5 && variation & 1 != 0)
+                            || (!v5 && (selector, variation) == (14, 1))
+                            || (!v5 && (selector, variation) == (41, 2)) =>
+                    {
+                        SlotSizes::Smaller
+                    },
+                    Some(Desc::BigOp { .. } | Desc::Limit | Desc::Root | Desc::HBrace { .. }) => {
+                        SlotSizes::FirstSame
+                    },
+                    _ => SlotSizes::Same,
+                };
+                assert_eq!(
+                    decoder.slot_sizes(selector, variation),
+                    expected,
+                    "v5 {v5}: {selector} {variation:#x}"
+                );
+            }
+        }
     }
 
     #[test]

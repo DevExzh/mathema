@@ -816,7 +816,14 @@ fn v5_size_color_ruler_and_future_records_are_consumed() {
         result.expr.nodes,
         [MathNode::Color {
             color: "#ff0000".into(),
-            content: Box::new(MathNode::Identifier("x".into())),
+            // The last SIZE record: the subscript size and 2/32 of a point.
+            content: Box::new(MathNode::Attributed {
+                attrs: crate::ast::NodeAttrs::with_size(crate::ast::FontSize::Logical {
+                    level: crate::ast::TypeSize::Sub,
+                    delta_pt: crate::ast::Rational::new(1, 16),
+                }),
+                content: Box::new(MathNode::Identifier("x".into())),
+            }),
         }]
     );
     let infos: Vec<_> = result

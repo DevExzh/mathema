@@ -16,11 +16,15 @@
 //! slashes), function names as one operator and text runs as one text node.
 //!
 //! The AST has no place for MathType's typesetting data, which is read and
-//! dropped without a diagnostic: nudges, type sizes, explicit fonts (only
+//! dropped without a diagnostic: nudges, explicit fonts (only
 //! their bold/italic style is kept), line spacing, tab stops (rulers), the
 //! equation preferences and template options (fence alignment, expanding
 //! integrals). Dotted partition lines become dashed ones. Operator and
 //! decimal-point column alignment become left and right alignment.
+//!
+//! Font sizes become attributes ([`crate::ast::attrs`]) where they are not the
+//! size a character has by its place in the equation: explicit point sizes,
+//! sizes made larger or smaller, and typesizes the user chose.
 //!
 //! # Conventions
 //!
@@ -169,10 +173,17 @@ impl MtefReader {
         };
         match outcome {
             Ok(roots) => {
+                // The preferences matter only to sizes seen against them.
+                let base = if decoder.arena.has_attrs() {
+                    decoder.full_size()
+                } else {
+                    None
+                };
                 let mut arena = decoder.arena;
                 let roots = arena.push_children(&roots)?;
                 arena.check_limits()?;
-                let expr = CompactExpr::new(arena, roots, display);
+                let mut expr = CompactExpr::new(arena, roots, display);
+                expr.set_base_size(base);
                 Ok((
                     CompactParseResult::with_diagnostics(expr, decoder.diagnostics),
                     info,

@@ -23,7 +23,8 @@ use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan};
 use crate::ast::normalize::can_take_prescripts;
 use crate::ast::{
-    AccentPosition, ColumnAlign, LimitStyle, Rational, StrokeKind, SymbolKind, TextStyle,
+    AccentPosition, ColumnAlign, FontSize, LimitStyle, NodeAttrs, Rational, StrokeKind, SymbolKind,
+    TextStyle, TypeSize,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 
@@ -85,9 +86,42 @@ pub(super) struct Glyph {
     pub(super) alphabet: Option<TextStyle>,
     pub(super) embells: SmallVec<[(u8, usize); 1]>,
     /// Offset of the CHAR record, for diagnostics.
-    pub(super) offset: usize,
+    pub(super) offset: u32,
     /// The COLOR_DEF index the character is drawn in; `None` for black.
     pub(super) color: Option<u16>,
+    /// The size the character is drawn in.
+    pub(super) size: SizeState,
+}
+
+/// The current size (SIZE and typesize records).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SizeState {
+    /// A typesize value and what is added to it, in 32nds of a point.
+    Logical { level: u8, delta: i16 },
+    /// An explicit size, in 32nds of a point.
+    Points(i16),
+}
+
+/// Which slots of a template are smaller than the template by their place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SlotSizes {
+    Same,
+    Smaller,
+    /// All but the first.
+    FirstSame,
+    /// Slots 1 and 2 of four: the limits of a general big operator, whose
+    /// sign is in the fourth.
+    Limits,
+}
+
+/// A template whose lines are being read.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OpenTemplate {
+    pub(super) sizes: SlotSizes,
+    /// The typesize its text has without attributes of its own.
+    pub(super) level: u8,
+    /// The number of slots read.
+    pub(super) slots: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +224,21 @@ pub(super) struct Decoder<'a> {
     node_colors: HashMap<NodeId, u16>,
     /// What INTOP and SUMOP templates that are no big operator became.
     pub(super) template_runs: HashSet<NodeId>,
+    /// The current size. Equations start at full size.
+    size: SizeState,
+    /// The size the lines being read have by their place in the equation:
+    /// that of their text in the AST without attributes of its own.
+    slot_size: u8,
+    /// The template whose own list is being read.
+    template: Option<OpenTemplate>,
+    /// Whether a typesize record names a script size.
+    script_sizes: bool,
+    /// Nodes at full size by a smaller slot's place. Some writers leave the
+    /// typesize records out: without any script size in the equation these
+    /// say nothing.
+    full_in_script: Vec<(NodeId, NodeAttrs)>,
+    /// Where the sizes of MTEF 5 equation preferences are.
+    sizes_at: Option<usize>,
 }
 
 impl<'a> Decoder<'a> {
@@ -220,6 +269,12 @@ impl<'a> Decoder<'a> {
             color_context: None,
             node_colors: HashMap::new(),
             template_runs: HashSet::new(),
+            size: SizeState::Logical { level: 0, delta: 0 },
+            slot_size: 0,
+            template: None,
+            script_sizes: false,
+            full_in_script: Vec::new(),
+            sizes_at: None,
         }
     }
 
@@ -478,7 +533,13 @@ impl<'a> Decoder<'a> {
         self.mtef_header(ole_header)?;
         let items = self.parse_object_list(true)?;
         self.check_trailing()?;
-        self.assemble_line(items)
+        let line = self.assemble_line(items)?;
+        if !self.script_sizes {
+            for (id, attrs) in std::mem::take(&mut self.full_in_script) {
+                self.arena.remove_attrs(id, &attrs);
+            }
+        }
+        Ok(line)
     }
 
     /// Detect and validate an `EQNOLEFILEHDR` (cbHdr = 28 as a 16-bit value;
@@ -789,7 +850,7 @@ impl<'a> Decoder<'a> {
             PILE => {
                 let color = self.color;
                 let outer = std::mem::replace(&mut self.color_context, color);
-                let id = self.parse_pile(options)?;
+                let id = self.in_slot(|decoder| decoder.parse_pile(options))?;
                 self.color_context = outer;
                 self.set_color(id, color);
                 items.push(Item::Node(id));
@@ -797,7 +858,7 @@ impl<'a> Decoder<'a> {
             MATRIX => {
                 let color = self.color;
                 let outer = std::mem::replace(&mut self.color_context, color);
-                let id = self.parse_matrix(start, options)?;
+                let id = self.in_slot(|decoder| decoder.parse_matrix(start, options))?;
                 self.color_context = outer;
                 self.set_color(id, color);
                 items.push(Item::Node(id));
@@ -820,7 +881,13 @@ impl<'a> Decoder<'a> {
             FONT if self.v5 => self.font_style_def()?,
             FONT => self.v3_font()?,
             SIZE => self.size_record()?,
-            FULL..=SUBSYM => {},
+            FULL..=SUBSYM => {
+                self.script_sizes |= matches!(rtype - FULL, 1 | 2);
+                self.size = SizeState::Logical {
+                    level: rtype - FULL,
+                    delta: 0,
+                };
+            },
             COLOR if self.v5 => self.color()?,
             COLOR_DEF if self.v5 => self.color_def(options)?,
             FONT_DEF if self.v5 => self.font_def()?,
@@ -856,6 +923,10 @@ impl<'a> Decoder<'a> {
     // ── Structure records ──────────────────────────────────────────────
 
     fn parse_line(&mut self, options: u8) -> Result<Option<NodeId>> {
+        self.in_slot(|decoder| decoder.parse_line_body(options))
+    }
+
+    fn parse_line_body(&mut self, options: u8) -> Result<Option<NodeId>> {
         if options & OPT_NUDGE != 0 {
             self.nudge()?;
         }
@@ -1014,8 +1085,9 @@ impl<'a> Decoder<'a> {
             explicit,
             alphabet,
             embells,
-            offset: start,
+            offset: u32::try_from(start).unwrap_or(u32::MAX),
             color: self.color,
+            size: self.size,
         })
     }
 
@@ -1184,7 +1256,16 @@ impl<'a> Decoder<'a> {
         // The lines of a template are assembled relative to its colour.
         let color = self.color;
         let outer = std::mem::replace(&mut self.color_context, color);
+        // Only characters have sizes: what a template draws of its own has the
+        // size of its contents or of its sign.
+        let open = OpenTemplate {
+            sizes: self.slot_sizes(selector, variation),
+            level: self.slot_size,
+            slots: 0,
+        };
+        let outer_template = self.template.replace(open);
         let list = self.parse_list();
+        self.template = outer_template;
         self.color_context = outer;
         let list = list?;
         let mut slots = Vec::new();
@@ -1201,7 +1282,9 @@ impl<'a> Decoder<'a> {
         self.build_template(start, selector, variation, slots, glyphs, items)?;
         for item in &mut items[first..] {
             match item {
-                Item::Node(id) => self.set_color(*id, color),
+                Item::Node(id) => {
+                    self.set_color(*id, color);
+                },
                 Item::Script(slots) | Item::PreScript(slots) => slots.color = color,
                 _ => {},
             }
@@ -1424,11 +1507,219 @@ impl<'a> Decoder<'a> {
     /// SIZE: an explicit point size (101), a large delta (100) or a typesize
     /// with a one-byte delta.
     fn size_record(&mut self) -> Result<()> {
-        match self.u8()? {
-            101 => self.skip(2),
-            100 => self.skip(3),
-            _ => self.skip(1),
+        self.size = match self.u8()? {
+            // MTEFv5.md gives "-point size" here, but every record seen in
+            // documents holds the positive size. Both are read.
+            101 => SizeState::Points((self.u16()? as i16).saturating_abs()),
+            100 => {
+                let level = self.u8()?;
+                let delta = self.u16()? as i16;
+                SizeState::Logical { level, delta }
+            },
+            level => SizeState::Logical {
+                level,
+                delta: i16::from(self.u8()?) - 128,
+            },
+        };
+        Ok(())
+    }
+
+    /// Whether `size` is, without a closer look, what text has by its place.
+    #[inline(always)]
+    fn is_size_by_place(&self, size: SizeState) -> bool {
+        size == self.size_by_place()
+    }
+
+    /// The size of something drawn in `size` that does not have it by its
+    /// place in the equation.
+    fn own_size(&self, size: SizeState) -> Option<FontSize> {
+        match size {
+            SizeState::Points(points) => {
+                (points > 0).then(|| FontSize::Points(Rational::new(points.into(), 32)))
+            },
+            SizeState::Logical { level, delta } => {
+                if level == self.slot_size && delta == 0 {
+                    return None;
+                }
+                let level = match level {
+                    0 => TypeSize::Full,
+                    1 => TypeSize::Sub,
+                    2 => TypeSize::Sub2,
+                    3 => TypeSize::Sym,
+                    4 => TypeSize::SubSym,
+                    5 => TypeSize::User1,
+                    6 => TypeSize::User2,
+                    _ => return None,
+                };
+                // A size that the preferences set: scripts and what matches
+                // them are the layout's matter, the others are as they say.
+                if !matches!(level, TypeSize::Full | TypeSize::Sub | TypeSize::Sub2)
+                    && let Some(points) = self.preferred_size(level)
+                {
+                    let den = i64::from(points.den);
+                    let num = i64::from(points.num) * 32 + i64::from(delta) * den;
+                    return Some(FontSize::Points(Rational::new(
+                        i32::try_from(num).ok()?,
+                        u32::try_from(den * 32).ok()?,
+                    )));
+                }
+                Some(FontSize::Logical {
+                    level,
+                    delta_pt: Rational::new(delta.into(), 32),
+                })
+            },
         }
+    }
+
+    /// The size of a sign that is not its by place, as that of text there.
+    /// Typesizes are where equations have them: only sizes in points and
+    /// amounts added to a typesize count.
+    #[inline(always)]
+    pub(super) fn sign_size(&self, sign: &Glyph, big_operator: bool) -> Option<FontSize> {
+        match sign.size {
+            SizeState::Logical { delta: 0, .. } => None,
+            _ => self.own_sign_size(sign, big_operator),
+        }
+    }
+
+    #[cold]
+    fn own_sign_size(&self, sign: &Glyph, big_operator: bool) -> Option<FontSize> {
+        let text = [1000, 700, 500][usize::from(self.slot_size.min(2))];
+        let normal = match (big_operator, text) {
+            (false, _) => text,
+            (true, 1000) => 1500,
+            (true, _) => 1000,
+        };
+        let points = match sign.size {
+            SizeState::Points(points) => i64::from(points),
+            SizeState::Logical { delta: 0, .. } => return None,
+            SizeState::Logical { level, delta } => {
+                let per_mille = [1000, 700, 500, 1500, 1000, 750, 1500]
+                    .get(usize::from(level))
+                    .copied()?;
+                let full = self.full_size().unwrap_or(Rational::new(12, 1));
+                i64::from(full.num) * 32 * per_mille / (i64::from(full.den) * 1000)
+                    + i64::from(delta)
+            },
+        };
+        if points <= 0 {
+            return None;
+        }
+        let num = i32::try_from(points.checked_mul(text)?).ok()?;
+        Some(FontSize::Points(Rational::new(
+            num,
+            u32::try_from(32 * normal).ok()?,
+        )))
+    }
+
+    /// Report a size that the AST has no place for.
+    pub(super) fn lose_size(&mut self, message: &str) {
+        if !self.diagnostics.iter().any(|d| d.message == message) {
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Info,
+                message: message.to_owned(),
+                span: None,
+            });
+        }
+    }
+
+    /// Record the size of a node drawn in `size`.
+    #[inline(always)]
+    fn set_size(&mut self, id: NodeId, size: SizeState) {
+        if !self.is_size_by_place(size) {
+            self.set_own_size(id, size);
+        }
+    }
+
+    /// The size of primes drawn in `size`: raised characters there, a script
+    /// in the AST.
+    fn set_prime_size(&mut self, marks: NodeId, size: SizeState) {
+        if self.is_size_by_place(size) {
+            return;
+        }
+        if let Some(own) = self.own_size(size) {
+            self.add_own_attrs(marks, own, NodeAttrs::with_size(self.script_of(own)));
+        }
+    }
+
+    #[cold]
+    fn set_own_size(&mut self, id: NodeId, size: SizeState) {
+        // What has no glyph has no size to see.
+        let drawn = match *self.arena.node(id) {
+            CompactNode::Space(_) => false,
+            CompactNode::Text(_, text) => !self.arena.str_val(text).trim().is_empty(),
+            _ => true,
+        };
+        if drawn && let Some(size) = self.own_size(size) {
+            self.add_size(id, size);
+        }
+    }
+
+    fn add_size(&mut self, id: NodeId, size: FontSize) {
+        self.add_own_attrs(id, size, NodeAttrs::with_size(size));
+    }
+
+    fn add_own_attrs(&mut self, id: NodeId, size: FontSize, attrs: NodeAttrs) {
+        if matches!(size, FontSize::Logical { level: TypeSize::Full, delta_pt } if delta_pt.num == 0)
+        {
+            self.full_in_script.push((id, attrs.clone()));
+        }
+        self.arena.add_attrs(id, &attrs);
+    }
+
+    /// The size of an embellished character and its marks, which have the
+    /// character's size.
+    fn set_embellished_size(&mut self, id: NodeId, size: SizeState) {
+        if self.is_size_by_place(size) {
+            return;
+        }
+        let Some(own) = self.own_size(size) else {
+            return;
+        };
+        let mut current = id;
+        loop {
+            match *self.arena.node(current) {
+                CompactNode::Accent { base, .. } => {
+                    self.add_own_attrs(current, own, NodeAttrs::with_glyph_size(own));
+                    current = base;
+                },
+                CompactNode::Superscript { base, sup } => {
+                    self.add_own_attrs(sup, own, NodeAttrs::with_size(self.script_of(own)));
+                    current = base;
+                },
+                CompactNode::Underscript { base, under, .. } => {
+                    self.add_size(under, own);
+                    current = base;
+                },
+                CompactNode::PreScripts { base, pre_sup, .. } => {
+                    self.add_own_attrs(pre_sup, own, NodeAttrs::with_size(self.script_of(own)));
+                    current = base;
+                },
+                CompactNode::Cancel { content, .. } => current = content,
+                _ => return self.set_own_size(current, size),
+            }
+        }
+    }
+
+    /// The size of a script of text in `size`, in 32nds of a point.
+    fn script_of(&self, size: FontSize) -> FontSize {
+        let full = self.full_size().unwrap_or(Rational::new(12, 1));
+        size.script(full.as_f64())
+    }
+
+    /// Read a slot of the open template, or a line of a pile or matrix.
+    #[inline(always)]
+    fn in_slot<T>(&mut self, read: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let Some(mut open) = self.template.take() else {
+            return read(self);
+        };
+        let outer = self.slot_size;
+        self.slot_size = self.slot_size_of(open);
+        let result = read(self);
+        self.slot_size = outer;
+        open.slots = open.slots.saturating_add(1);
+        self.template = Some(open);
+        result
     }
 
     /// COLOR: the following records are drawn in the given colour.
@@ -1469,6 +1760,7 @@ impl<'a> Decoder<'a> {
     /// EQN_PREFS: options, the sizes and spacing dimension arrays, then the
     /// style definitions (MTEFv5.md "EQN_PREFS records", "Dimension arrays").
     fn eqn_prefs(&mut self, start: usize) -> Result<()> {
+        self.sizes_at = Some(self.pos);
         self.dimension_array(start)?;
         self.dimension_array(start)?;
         let count = self.u8()?;
@@ -1516,7 +1808,76 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    /// The full size of MTEF 5 equation preferences, in points.
+    pub(super) fn full_size(&self) -> Option<Rational> {
+        let (unit, digits) = self.preference(0)?;
+        dimension_points(unit, &digits)
+    }
+
+    /// The size that the preferences of MTEF 5 give a typesize, in points, if
+    /// it is not the factory setting.
+    #[cold]
+    fn preferred_size(&self, level: TypeSize) -> Option<Rational> {
+        let index = match level {
+            TypeSize::Full => 0,
+            TypeSize::Sub => 1,
+            TypeSize::Sub2 => 2,
+            TypeSize::Sym => 3,
+            TypeSize::SubSym => 4,
+            TypeSize::User1 => 5,
+            TypeSize::User2 => 6,
+        };
+        let (unit, digits) = self.preference(index)?;
+        if unit != 4 {
+            return dimension_points(unit, &digits);
+        }
+        let percent = Rational::from_scaled_decimal(&digits, Rational::one())?;
+        if percent == Rational::new(level.per_mille(), 10) || percent.num <= 0 {
+            return None;
+        }
+        let full = self.full_size().unwrap_or(Rational::new(12, 1));
+        Rational::from_scaled_decimal(&digits, Rational::new(full.num, full.den.checked_mul(100)?))
+    }
+
+    /// The unit and digits of a size in MTEF 5 equation preferences.
+    fn preference(&self, index: usize) -> Option<(u8, String)> {
+        let (&count, bytes) = self.data.get(self.sizes_at?..self.end)?.split_first()?;
+        if index >= usize::from(count) {
+            return None;
+        }
+        let mut nibbles = bytes.iter().flat_map(|b| [b >> 4, b & 0x0F]);
+        for _ in 0..index {
+            nibbles.by_ref().skip(1).find(|&nibble| nibble == 0x0F)?;
+        }
+        let unit = nibbles.next()?;
+        let digits: String = nibbles
+            .take_while(|&nibble| nibble != 0x0F)
+            .take(16)
+            .filter_map(|nibble| b"0123456789.-".get(usize::from(nibble)))
+            .map(|&digit| char::from(digit))
+            .collect();
+        Some((unit, digits))
+    }
+
     // ── Line assembly ──────────────────────────────────────────────────
+
+    pub(super) fn slot_size_level(&self) -> u8 {
+        self.slot_size
+    }
+
+    /// The size that text has by its place.
+    #[inline(always)]
+    fn size_by_place(&self) -> SizeState {
+        SizeState::Logical {
+            level: self.slot_size,
+            delta: 0,
+        }
+    }
+
+    /// Whether a glyph is drawn in the size of a run in `size`.
+    fn same_size(&self, glyph: &Glyph, size: SizeState) -> bool {
+        glyph.size == size || self.own_size(glyph.size) == self.own_size(size)
+    }
 
     /// Turn the items of a line into nodes: group characters into function
     /// names, numbers and text, attach scripts to their bases and apply
@@ -1534,7 +1895,7 @@ impl<'a> Decoder<'a> {
                         && !matches!(class, Class::Space(_) | Class::Marker)
                     {
                         self.warn(
-                            glyph.offset,
+                            glyph.offset as usize,
                             format!(
                                 "MathType private-use character U+{:04X} has no Unicode equivalent; it was kept as is",
                                 u32::from(glyph.ch)
@@ -1551,6 +1912,7 @@ impl<'a> Decoder<'a> {
                             id = self.embellish(id, kind, offset)?;
                         }
                         self.set_color(id, glyph.color);
+                        self.set_embellished_size(id, glyph.size);
                         self.emit(&mut out, &mut pending, id)?;
                         continue;
                     }
@@ -1559,7 +1921,9 @@ impl<'a> Decoder<'a> {
                         && let Some(base) = self.take_prime_base(&mut out, glyph.color)?
                     {
                         let mut marks: SmallVec<[NodeId; 3]> = SmallVec::new();
-                        marks.push(self.glyph_node(&glyph, class)?);
+                        let mark = self.glyph_node(&glyph, class)?;
+                        self.set_prime_size(mark, glyph.size);
+                        marks.push(mark);
                         while let Some(Item::Glyph(next)) = items.front()
                             && next.embells.is_empty()
                             && next.color == glyph.color
@@ -1567,13 +1931,16 @@ impl<'a> Decoder<'a> {
                         {
                             let next = next.clone();
                             items.pop_front();
-                            marks.push(self.glyph_node(&next, classify(&next))?);
+                            let mark = self.glyph_node(&next, classify(&next))?;
+                            self.set_prime_size(mark, next.size);
+                            marks.push(mark);
                         }
                         let id = self.prime(base, &marks)?;
                         self.set_color(id, glyph.color);
                         out.push(id);
                         continue;
                     }
+                    let mut size = glyph.size;
                     let id = match class {
                         Class::Marker => continue,
                         Class::Text => {
@@ -1583,13 +1950,21 @@ impl<'a> Decoder<'a> {
                                 && next.embells.is_empty()
                                 && next.color == glyph.color
                                 && classify(next) == Class::Text
+                                && (next.ch.is_whitespace()
+                                    || text.trim().is_empty()
+                                    || self.same_size(next, size))
                             {
+                                // Blanks have no size that shows.
+                                if text.trim().is_empty() {
+                                    size = next.size;
+                                }
                                 text.push(next.ch);
                                 items.pop_front();
                             }
                             self.str_node(&text, |s| CompactNode::Text(TextStyle::Normal, s))?
                         },
                         Class::Function => {
+                            let mut mixed = false;
                             let mut name = String::new();
                             name.push(glyph.ch);
                             while let Some(Item::Glyph(next)) = items.front()
@@ -1597,9 +1972,19 @@ impl<'a> Decoder<'a> {
                                 && next.color == glyph.color
                                 && classify(next) == Class::Function
                                 && !next.func_start
+                                // A name is one whatever its sizes.
+                                && (self.same_size(next, size)
+                                    || !crate::unicode::symbols::is_operator_command(&name))
                             {
+                                mixed |= !self.same_size(next, size);
                                 name.push(next.ch);
                                 items.pop_front();
+                            }
+                            if mixed {
+                                self.lose_size(
+                                    "the sizes of the letters of a function name differ; they were dropped",
+                                );
+                                size = self.size_by_place();
                             }
                             self.str_node(&name, |s| CompactNode::Operator {
                                 name: s,
@@ -1623,6 +2008,7 @@ impl<'a> Decoder<'a> {
                                     && next.color == glyph.color
                                     && next.typeface == glyph.typeface
                                     && classify(next) == Class::Number
+                                    && self.same_size(next, size)
                                 {
                                     digits.push(next.ch);
                                     items.pop_front();
@@ -1630,11 +2016,13 @@ impl<'a> Decoder<'a> {
                                     && let Some(Item::Glyph(point)) = items.front()
                                     && is_decimal_point(point)
                                     && point.color == glyph.color
+                                    && self.same_size(point, size)
                                     && let Some(Item::Glyph(next)) = items.get(1)
                                     && next.color == glyph.color
                                     && next.embells.is_empty()
                                     && next.ch.is_ascii_digit()
                                     && classify(next) == Class::Number
+                                    && self.same_size(next, size)
                                 {
                                     // Equation Editor sets the point of a
                                     // decimal in the function style and the
@@ -1655,6 +2043,7 @@ impl<'a> Decoder<'a> {
                                 && next.color == glyph.color
                                 && next.typeface == glyph.typeface
                                 && classify(next) == class
+                                && self.same_size(next, size)
                             {
                                 let ch = next.ch;
                                 items.pop_front();
@@ -1666,6 +2055,7 @@ impl<'a> Decoder<'a> {
                         _ => self.glyph_node(&glyph, class)?,
                     };
                     self.set_color(id, glyph.color);
+                    self.set_size(id, size);
                     self.emit(&mut out, &mut pending, id)?;
                 },
                 Item::Node(id) if self.template_runs.contains(&id) => {
@@ -2018,7 +2408,7 @@ impl<'a> Decoder<'a> {
             };
             id = only;
         }
-        if let CompactNode::Operator { limits, .. } = self.arena.node_mut(id) {
+        if let CompactNode::Operator { limits, .. } = self.arena.node_mut_in_place(id) {
             *limits = placement;
             Some(id)
         } else {
@@ -2606,6 +2996,29 @@ impl<'a> Decoder<'a> {
             },
         }
     }
+}
+
+/// A dimension of the equation preferences in points: units are inches,
+/// centimetres, points and picas (a percentage is no length).
+fn dimension_points(unit: u8, digits: &str) -> Option<Rational> {
+    let (num, den) = match unit {
+        0 => (72, 1),
+        1 => (3600, 127),
+        2 => (1, 1),
+        3 => (12, 1),
+        _ => return None,
+    };
+    let size = Rational::from_scaled_decimal(digits, Rational::new(num, den))?;
+    if size.num <= 0 {
+        return None;
+    }
+    if unit == 2 && size.den <= 1000 {
+        return Some(size);
+    }
+    // One that has no short decimal in points, which is what is written:
+    // in 32nds of a point, which have.
+    let units = (size.as_f64() * 32.0).round();
+    (units >= 1.0 && units <= f64::from(i32::MAX)).then(|| Rational::new(units as i32, 32))
 }
 
 /// Read the apostrophes of a line as primes, except the possessive or plural
