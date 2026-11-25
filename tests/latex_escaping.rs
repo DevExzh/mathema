@@ -1572,6 +1572,22 @@ fn dropped_text_between_inline_math() {
         (r"\angl{$x$ $y$}", r"\angl{$x$ $y$}"),
         (r"\angl{a\texttt{}b}", r"\angl{ab}"),
         (r"\angl{\verb5}", r"\angl{}"),
+        ("\\angl{$N$\\r\0}", r"\angl{$N$\char778{}}"),
+        (r"\angl{`\verb||`}", r"\angl{`{}`}"),
+        (
+            r"\angl{\reflectbox{a}\ \verb|b| c}",
+            r"\angl{\reflectbox{a} \texttt{b} c}",
+        ),
+        (
+            "\\angl{$\\foo\u{30a}\\relax\u{30a}'\\foo$}",
+            "\\angl{$\\mathord{\\text{\\textbackslash{}foo}}\\relax \u{30a}{\\relax \u{30a}}^{\\prime}\\mathord{\\text{\\textbackslash{}foo}}$}",
+        ),
+        ("\\angl{\\$\\r\0}", "\\angl{\\$\u{30a}}"),
+        (
+            "\\angl{\\verb5d5\0\\verb\\{}",
+            r"\angl{\texttt{d\char123{}}}",
+        ),
+        ("\\angl{\\textbf{a}\0\\textbf{b}}", r"\angl{\textbf{ab}}"),
         ("\\angl{a\\texttt{\0}b}", r"\angl{a\texttt{\char0{}}b}"),
     ] {
         let written = mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX);

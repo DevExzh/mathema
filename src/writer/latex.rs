@@ -218,6 +218,24 @@ impl LatexBuffer {
         }
     }
 
+    /// [`Self::insert_text`] at each of the ascending offsets `at`, in one pass.
+    fn insert_text_at_each(&mut self, at: &[usize], text: &str) {
+        let Some(&first) = at.first() else {
+            return;
+        };
+        let tail = self.text.split_off(first);
+        let mut from = first;
+        for &at in at {
+            self.text.push_str(&tail[from - first..at - first]);
+            self.text.push_str(text);
+            from = at;
+        }
+        self.text.push_str(&tail[from - first..]);
+        for (end, _) in &mut self.command_ends {
+            *end += text.len() * at.partition_point(|&at| at < *end);
+        }
+    }
+
     /// Cut the output back to `len` bytes.
     fn truncate_text(&mut self, len: usize) {
         self.text.truncate(len);
@@ -2474,6 +2492,14 @@ fn is_joining_mark(ch: char) -> bool {
     matches!(ch, '\u{0300}'..='\u{036F}')
 }
 
+/// Whether `text` ends with a brace that is not part of a control symbol.
+fn ends_with_brace(text: &str) -> bool {
+    text.strip_suffix(['{', '}']).is_some_and(|before| {
+        let backslashes = before.len() - before.trim_end_matches('\\').len();
+        backslashes.is_multiple_of(2)
+    })
+}
+
 /// Write a combining mark at the start of a function name, at `start`, by its
 /// code: as itself it would join the brace before it.
 fn separate_leading_mark(buf: &mut LatexBuffer, start: usize) {
@@ -3482,18 +3508,21 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     }
     while let Some((&first, tail)) = rest.split_first() {
         if let CompactNode::Text(style, sid) = *arena.node(first) {
-            if style == TextStyle::Normal {
-                let text = arena.str_val(sid);
-                if text.starts_with(['-', '\'', '`'])
-                    && text.chars().next().is_some_and(|c| buf.ends_with(c))
-                {
-                    buf.push_str("{}");
-                }
-                write_text_content(buf, text, false);
-            } else {
-                write_styled_text(buf, style, arena.str_val(sid));
-            }
+            // Text that only dropped text kept apart is read as one.
+            let mut text = std::borrow::Cow::Borrowed(arena.str_val(sid));
             rest = tail;
+            while let Some((&next, tail)) = rest.split_first()
+                && let CompactNode::Text(next_style, next_sid) = *arena.node(next)
+                && next_style == style
+            {
+                text.to_mut().push_str(arena.str_val(next_sid));
+                rest = tail;
+            }
+            if style == TextStyle::Normal {
+                write_text_content(buf, &text, false);
+            } else {
+                write_styled_text(buf, style, &text);
+            }
         } else if matches!(
             *arena.node(first),
             CompactNode::Reflect {
@@ -3521,10 +3550,13 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push('$');
             let start = buf.len();
             write_box_math(buf, arena, math);
-            // A combining mark would join the math shift.
-            if buf[start..].starts_with(is_joining_mark) {
-                buf.insert_text(start, r"\relax ");
-            }
+            // A combining mark would join the math shift or brace before it.
+            let joined: smallvec::SmallVec<[usize; 2]> = buf[start..]
+                .match_indices(is_joining_mark)
+                .map(|(at, _)| start + at)
+                .filter(|&at| at == start || ends_with_brace(&buf[start..at]))
+                .collect();
+            buf.insert_text_at_each(&joined, r"\relax ");
             buf.push('$');
             rest = tail;
         }
@@ -3618,9 +3650,13 @@ fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
         if previous == Some(ch) && matches!(ch, '-' | '`' | '\'') {
             buf.push_str("{}");
         }
-        // A combining mark would join the brace before it. In literal source
-        // text (what `\verb` reads) it is a character like any other.
-        if is_joining_mark(ch) && (literal_marks || buf.ends_with(['{', '}'])) {
+        // A combining mark would join the brace or math shift before it. In
+        // literal source text (what `\verb` reads) it is a character like any
+        // other.
+        let joins = |buf: &LatexBuffer| {
+            buf.ends_with(['{', '}']) || buf.ends_with('$') && !buf.ends_with("\\$")
+        };
+        if is_joining_mark(ch) && (literal_marks || joins(buf)) {
             write_char_code(buf, ch, "{}");
         } else if !write_char(buf, ch, place) {
             buf.report.char(ch);

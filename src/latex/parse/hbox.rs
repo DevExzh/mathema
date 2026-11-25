@@ -207,7 +207,12 @@ impl LatexCompactParser {
             } else {
                 let (remaining, inner) = self.parse_command(rest)?;
                 self.push_hbox_node(inner, nodes);
-                rest = skip_control_word_space(token, remaining);
+                // Space after an argument is not space after a control word.
+                rest = if matches!(token, r"\reflectbox" | r"\verb") {
+                    remaining
+                } else {
+                    skip_control_word_space(token, remaining)
+                };
             }
             self.ensure_node_budget(rest)?;
             literal = rest;

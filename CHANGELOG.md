@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scripts on both sides of a `\middle` delimiter stay beside it
   (`\left( {}_{a} \middle| {}_{b} \right)`); they moved the delimiter into a
   group, where TeX rejects it.
+- In a text box, text in one face around dropped characters is written as one,
+  and a combining mark no longer joins a math shift or brace of inline math.
+- A space after `\reflectbox{…}` or `\verb|…|` in a text box is kept, as in TeX.
 - `normalize_expr` flattens groups in the content of a fence, as the compact
   normalizer does.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
