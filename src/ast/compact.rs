@@ -483,7 +483,7 @@ impl CompactExpr {
 
     /// Record the size of ordinary text in points, if it is known.
     pub(crate) fn set_base_size(&mut self, points: Option<Rational>) {
-        if points.is_some() {
+        if points.is_some_and(|points| points.den > 0 && points.num > 0) {
             self.meta.get_or_insert_default().base_size_pt = points;
         }
     }

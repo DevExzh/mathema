@@ -97,6 +97,9 @@ pub struct MathmlWriter;
 
 impl MathWriter for MathmlWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
+        if !expr.meta.is_empty() {
+            return Self::write_compact(&CompactExpr::from_math_expr(expr)?, _config);
+        }
         let mut writer = MathOutput::new(Writer::new(Cursor::new(Vec::with_capacity(512))));
 
         let mut math = BytesStart::new("math");
@@ -150,7 +153,7 @@ impl MathWriter for MathmlWriter {
 #[cold]
 fn write_base_size(buf: &mut XmlBuffer, expr: &CompactExpr) {
     buf.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
-    if let Some(base) = expr.meta.as_deref().and_then(|meta| meta.base_size_pt) {
+    if let Some(base) = expr.meta.as_deref().and_then(crate::ast::ExprMeta::base) {
         let tag = buf.len() - 1;
         buf.truncate(tag);
         buf.push_str(" mathsize=\"");

@@ -600,7 +600,7 @@ fn nested_sizes_settle_after_one_rewrite() {
         }
         tried += 1;
     }
-    assert_eq!(tried, 10);
+    assert_eq!(tried, 13);
 }
 
 #[test]
@@ -810,5 +810,285 @@ mod dropped_colors {
         // or not.
         assert!(latex.contains(r"\max"), "{latex}");
         assert!(!latex.contains(r"\nolimits"), "{latex}");
+    }
+}
+
+/// Sizes that a review found lost, moved or costly.
+mod review {
+    use super::*;
+    use mathema::ast::ExprMeta;
+    use mathema::ast::compact::CompactExpr;
+    use mathema::ast::{AccentPosition, TextStyle};
+    use mathema::writer::Writer;
+    use mathema::writer::mathml::MathmlWriter;
+
+    fn through_mtef(nodes: &[MathNode], version: MtefVersion) -> (Vec<MathNode>, Vec<String>) {
+        let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes.to_vec())).unwrap();
+        let (bytes, diagnostics) = mathema::writer::mtef::MtefWriter::write_bytes_with_diagnostics(
+            &expr,
+            &Config::default(),
+            &MtefWriteOptions::new(version),
+        )
+        .unwrap();
+        (
+            from_mtef_bytes(&bytes).unwrap().expr().nodes,
+            diagnostics.into_iter().map(|d| d.message).collect(),
+        )
+    }
+
+    #[test]
+    fn a_sized_styled_character_under_an_accent() {
+        let bold = |size: i32| {
+            sized(
+                points(size, 1),
+                MathNode::Styled(TextStyle::Bold, vec![id("K")]),
+            )
+        };
+        let hat = |base: MathNode, mark: Option<i32>| {
+            let accent = MathNode::Accent {
+                base: Box::new(base),
+                accent: '\u{0302}',
+                position: AccentPosition::Above,
+                wide: false,
+            };
+            match mark {
+                Some(size) => sized(
+                    NodeAttrs::with_glyph_size(FontSize::Points(Rational::new(size, 1))),
+                    accent,
+                ),
+                None => accent,
+            }
+        };
+        for version in [MtefVersion::V3, MtefVersion::V5] {
+            // Mark and letter at one size: an embellishment, exactly.
+            let node = hat(bold(24), Some(24));
+            let (back, diagnostics) = through_mtef(std::slice::from_ref(&node), version);
+            assert_eq!(back, [node], "{version:?}");
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            // The mark at the size of the text around it: exactly over a bare
+            // letter, at the letter's size and reported over a styled one.
+            let bare = hat(sized(points(24, 1), id("K")), None);
+            let (back, diagnostics) = through_mtef(std::slice::from_ref(&bare), version);
+            assert_eq!(back, [bare], "{version:?}");
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            let (back, diagnostics) = through_mtef(&[hat(bold(24), None)], version);
+            assert_eq!(back, [hat(bold(24), Some(24))]);
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+            // An outer size does not reach a letter with one of its own.
+            let (back, _) = through_mtef(&[sized(points(30, 1), hat(bold(9), None))], version);
+            let text = format!("{back:?}");
+            assert!(
+                text.contains("num: 9,") && text.contains("Styled"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sized_pile() {
+        let pile = from_latex(r"\begin{array}{c}a\\b\end{array}")
+            .unwrap()
+            .expr()
+            .nodes
+            .remove(0);
+        let frac = MathNode::Fraction {
+            kind: mathema::ast::FractionKind::Normal,
+            num: Box::new(sized(points(18, 1), pile.clone())),
+            den: Box::new(id("d")),
+        };
+        for nodes in [vec![sized(points(18, 1), pile)], vec![frac]] {
+            for version in [MtefVersion::V3, MtefVersion::V5] {
+                let text = format!("{:?}", through_mtef(&nodes, version).0);
+                assert_eq!(text.matches("num: 18").count(), 2, "{version:?} {text}");
+            }
+        }
+    }
+
+    /// SYM (13) before text, digits, a function name and a prime.
+    #[test]
+    fn every_dropped_symbol_size_is_reported() {
+        let runs: [&[u8]; 4] = [
+            &[13, 2, 129, b'a', 0, 10, 2, 129, b'b', 0],
+            &[10, 2, 136, b'1', 0, 13, 2, 136, b'2', 0],
+            &[10, 2, 130, b's', 0, 13, 2, 130, b'i', 0],
+            &[10, 2, 131, b'x', 0, 13, 2, 130, b'\'', 0],
+        ];
+        for run in runs {
+            let bytes = [&[3, 1, 1, 3, 10, 1][..], run, &[0, 0]].concat();
+            let read = from_mtef_bytes(&bytes).unwrap();
+            let reports = read
+                .diagnostics()
+                .iter()
+                .filter(|d| d.message.contains("symbol sizes"))
+                .count();
+            assert_eq!(reports, 1, "{run:?}: {:?}", read.diagnostics());
+        }
+    }
+
+    #[test]
+    fn a_known_base_size_is_written_without_other_sizes() {
+        let mut expr = mathema::MathExpr::block(vec![id("x")]);
+        expr.meta = ExprMeta::default();
+        expr.meta.base_size_pt = Some(Rational::new(18, 1));
+        let config = Config::default();
+        let heap = MathmlWriter::write(&expr, &config).unwrap();
+        assert!(heap.contains(r#"mathsize="18pt""#), "{heap}");
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        assert_eq!(
+            MathmlWriter::write_compact(&compact, &config).unwrap(),
+            heap
+        );
+        // MTEF 5: 18 pt in the preferences, nibbles 2 1 8 F.
+        let bytes = mathema::writer::mtef::MtefWriter::write_bytes(
+            &compact,
+            &config,
+            &MtefWriteOptions::new(MtefVersion::V5),
+        )
+        .unwrap();
+        assert!(
+            bytes.windows(3).any(|w| w == [8, 0x21, 0x8f]),
+            "{bytes:02x?}"
+        );
+    }
+
+    #[test]
+    fn sizes_that_are_none_are_ignored() {
+        for size in [
+            Rational { num: 1, den: 0 },
+            Rational { num: 0, den: 0 },
+            Rational { num: 0, den: 1 },
+            Rational { num: -5, den: 1 },
+        ] {
+            let attrs = NodeAttrs::with_size(FontSize::Points(size));
+            let mut expr = mathema::MathExpr::block(vec![sized(attrs, id("x"))]);
+            expr.meta.base_size_pt = Some(size);
+            let mathml = MathmlWriter::write(&expr, &Config::default()).unwrap();
+            assert!(!mathml.contains("mathsize"), "{mathml}");
+        }
+        let delta = NodeAttrs::with_size(FontSize::Logical {
+            level: TypeSize::Full,
+            delta_pt: Rational { num: 1, den: 0 },
+        });
+        let expr = mathema::MathExpr::block(vec![sized(delta, id("x"))]);
+        let mathml = MathmlWriter::write(&expr, &Config::default()).unwrap();
+        assert!(
+            !mathml.contains("NaN") && !mathml.contains("inf"),
+            "{mathml}"
+        );
+    }
+
+    /// A style moves the limits of a sum to its side and shrinks its sign.
+    #[test]
+    fn a_typesize_on_a_structure_is_no_style() {
+        let sum = from_latex(r"\sum_{i}^{n}").unwrap().expr().nodes.remove(0);
+        let nodes = vec![sized(logical(TypeSize::Sub), sum)];
+        let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+        let (latex, diagnostics) =
+            <mathema::writer::latex::LatexWriter as Writer>::write_compact_with_diagnostics(
+                &expr,
+                &Config::default(),
+            )
+            .unwrap();
+        assert!(!latex.contains("style"), "{latex}");
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn typesizes_in_root_indices_and_around_scripts_keep_their_size() {
+        // An index is at half size in the AST: `Sub` is larger.
+        let root = MathNode::Root {
+            index: Box::new(sized(logical(TypeSize::Sub), MathNode::Number("3".into()))),
+            radicand: Box::new(id("x")),
+        };
+        // 0.7 of 12 pt, in 32nds of a point.
+        for version in [MtefVersion::V3, MtefVersion::V5] {
+            let text = format!("{:?}", through_mtef(std::slice::from_ref(&root), version).0);
+            assert!(
+                text.contains("Points(Rational { num: 269, den: 32 })"),
+                "{text}"
+            );
+            // Scripts of a structure at `Sub2` shrink from it: 0.5 and 0.35.
+            let script = MathNode::Superscript {
+                base: Box::new(id("x")),
+                sup: Box::new(MathNode::Number("2".into())),
+            };
+            let nodes = [sized(logical(TypeSize::Sub2), script)];
+            let text = format!("{:?}", through_mtef(&nodes, version).0);
+            assert!(
+                text.contains("num: 6, den: 1") && text.contains("num: 67, den: 16"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn sizes_on_table_rows_and_cells_are_reported() {
+        for table in [
+            r#"<mtable><mtr mathsize="18pt"><mtd><mi>x</mi></mtd></mtr></mtable>"#,
+            r#"<mtable><mtr><mtd mathsize="18pt"><mi>x</mi></mtd></mtr></mtable>"#,
+        ] {
+            let read = from_mathml(&format!("<math>{table}</math>")).unwrap();
+            assert_eq!(read.diagnostics().len(), 1, "{:?}", read.diagnostics());
+        }
+    }
+
+    /// Doubling the input must not quadruple the work: each of these took
+    /// seconds or gigabytes at a fraction of this size.
+    #[test]
+    fn large_inputs_cost_in_proportion() {
+        let text: Vec<u8> = (0..40_000u32)
+            .flat_map(|i| [9, 101, 64 + 10 * (i % 2) as u8, 1, 2, 129, b'a', 0])
+            .collect();
+        let bytes = [&[3, 1, 1, 3, 10, 1][..], &text, &[0, 0]].concat();
+        let read = from_mtef_bytes(&bytes).unwrap();
+        let latex = read.to_latex().unwrap();
+        assert!(latex.len() < 1_000_000, "{}", latex.len());
+        // Separators between the sizes must not keep it from being written.
+        read.to_mtef_bytes(&MtefWriteOptions::new(MtefVersion::V5))
+            .unwrap();
+        // 1 MB of digits in the preferences, 20,000 sized characters.
+        let mut nibbles = vec![2, 1, 2, 15, 4];
+        nibbles.extend(std::iter::repeat_n(1, 2_000_000));
+        nibbles.extend([15, 4, 4, 2, 15, 4, 1, 5, 0, 15, 4, 1, 0, 0, 15, 4, 7, 6, 15]);
+        nibbles.extend([4, 1, 5, 1, 15, 2, 1, 15]);
+        nibbles.resize(nibbles.len().next_multiple_of(2), 0);
+        let mut bytes = b"\x05\x01\x00\x06\x00DSMT6\x00\x00\x12\x00\x08".to_vec();
+        bytes.extend(nibbles.chunks(2).map(|n: &[u8]| n[0] << 4 | n[1]));
+        bytes.extend([0, 0, 10, 1, 0, 9, 5, 128]);
+        for _ in 0..20_000 {
+            bytes.extend([2, 0, 0x83, b'x', 0]);
+        }
+        bytes.extend([0, 0]);
+        let start = std::time::Instant::now();
+        let read = from_mtef_bytes(&bytes).unwrap();
+        assert!(read.compact_expr().arena.has_attrs());
+        // Seconds in a debug build; two minutes when it was quadratic.
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn a_sized_fraction_with_a_style_of_its_own() {
+        use mathema::render::{RenderOptions, render_to_svg_compact};
+        // `\tfrac` in a script: its size is that of its text style, the parts
+        // are 0.7 of it.
+        let frac = from_latex(r"\tfrac{1}{2}").unwrap().expr().nodes.remove(0);
+        let node = MathNode::Superscript {
+            base: Box::new(id("x")),
+            sup: Box::new(sized(points(18, 1), frac)),
+        };
+        let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(vec![node])).unwrap();
+        let svg = render_to_svg_compact(&expr, &RenderOptions::default()).unwrap();
+        let one = svg.split("<text ").find(|t| t.contains(">1<")).unwrap();
+        let size: f64 = one
+            .split("font-size=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((size / 16.0 - 1.05).abs() < 0.01, "{}", size / 16.0);
     }
 }

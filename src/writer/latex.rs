@@ -86,9 +86,22 @@ fn write_colored(
     mut report: LossReport,
 ) -> Result<(String, LossReport)> {
     if expr.arena.has_attrs() {
-        let lowered = super::sizes::lower_sizes(expr)?;
-        report.sizes(&lowered, config.typesetting);
-        return write_colored(&lowered.expr, config, report);
+        return match super::sizes::lower_sizes(expr) {
+            Ok(lowered) => {
+                report.sizes(&lowered, config.typesetting);
+                write_colored(&lowered.expr, config, report)
+            },
+            // The declarations make lists longer.
+            Err(crate::error::Error::LimitExceeded { .. }) => {
+                report.info(|| {
+                    "the font sizes were dropped: their declarations exceed the limits".to_owned()
+                });
+                let mut plain = expr.clone();
+                plain.arena.clear_attrs();
+                write_colored(&plain, config, report)
+            },
+            Err(error) => Err(error),
+        };
     }
     let mut buf = LatexBuffer {
         text: String::with_capacity(256),
@@ -159,6 +172,17 @@ impl LossReport {
             let more = if quoted.len() < spec.len() { "…" } else { "" };
             format!("{quoted:?}{more} is not a color; it was dropped")
         });
+    }
+
+    #[cold]
+    fn info(&mut self, message: impl FnOnce() -> String) {
+        if let Some(losses) = self.0.as_deref_mut() {
+            losses.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Info,
+                message: message(),
+                span: None,
+            });
+        }
     }
 
     /// Font sizes that no size command draws.

@@ -148,11 +148,23 @@ pub(super) enum SlotSizes {
     Limits,
 }
 
+/// The sizes of MTEF 5 equation preferences.
+#[derive(Debug, Default)]
+struct Preferences {
+    /// The full size, in points.
+    full: Option<Rational>,
+    /// The symbol, sub-symbol and user sizes that are not the factory
+    /// settings, in points.
+    others: [Option<Rational>; 4],
+}
+
 /// The sizes that need a second look when the equation is read.
 #[derive(Debug, Default)]
 pub(super) struct RareSizes {
     /// Characters whose symbol size was dropped.
-    pub(super) dropped_symbols: Vec<NodeId>,
+    pub(super) dropped_symbols: HashSet<NodeId>,
+    /// The same for characters that are no node of their own.
+    dropped_in_runs: bool,
     /// Nodes at full size by a smaller slot's place. Some writers leave the
     /// typesize records out: without any script size in the equation these
     /// say nothing.
@@ -294,6 +306,8 @@ pub(super) struct Decoder<'a> {
     script_sizes: bool,
     /// Where the sizes of MTEF 5 equation preferences are.
     sizes_at: Option<usize>,
+    /// The sizes there, read when first asked for.
+    preferences: std::cell::OnceCell<Preferences>,
 }
 
 impl<'a> Decoder<'a> {
@@ -330,6 +344,7 @@ impl<'a> Decoder<'a> {
             template: OpenTemplate::NONE,
             script_sizes: false,
             sizes_at: None,
+            preferences: std::cell::OnceCell::new(),
         }
     }
 
@@ -1580,7 +1595,7 @@ impl<'a> Decoder<'a> {
 
     #[cold]
     fn settle_rare_sizes(&mut self, rare: RareSizes) {
-        if !rare.dropped_symbols.is_empty() {
+        if rare.dropped_in_runs || !rare.dropped_symbols.is_empty() {
             self.lose_size("symbol sizes of characters were dropped");
         }
         if !self.script_sizes {
@@ -1705,11 +1720,31 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// Give primes that were read as characters of a line the sizes of the
+    /// scripts they become.
+    fn size_as_script(&mut self, id: NodeId) {
+        if !self.arena.has_attrs() {
+            return;
+        }
+        for mark in self.children_of(id) {
+            if let Some(attrs) = self.arena.attrs(mark).cloned()
+                && let Some(size) = attrs.size
+            {
+                let script = NodeAttrs::with_size(self.script_of(size));
+                self.arena.remove_attrs(mark, &attrs);
+                self.add_own_attrs(mark, size, script);
+            }
+        }
+    }
+
     /// The size of primes drawn in `size`: raised characters there, a script
     /// in the AST.
     fn set_prime_size(&mut self, marks: NodeId, size: SizeState) {
         if self.is_size_by_place(size) {
             return;
+        }
+        if Self::is_dropped_symbol(size) {
+            self.rare_sizes.get_or_insert_default().dropped_in_runs = true;
         }
         if let Some(own) = self.own_size(size) {
             self.add_own_attrs(marks, own, NodeAttrs::with_size(self.script_of(own)));
@@ -1728,7 +1763,7 @@ impl<'a> Decoder<'a> {
             self.rare_sizes
                 .get_or_insert_default()
                 .dropped_symbols
-                .push(id);
+                .insert(id);
         } else if drawn && let Some(size) = self.own_size(size) {
             self.add_size(id, size);
         }
@@ -1760,7 +1795,7 @@ impl<'a> Decoder<'a> {
                 self.rare_sizes
                     .get_or_insert_default()
                     .dropped_symbols
-                    .push(id);
+                    .insert(id);
             }
             return;
         };
@@ -1851,6 +1886,7 @@ impl<'a> Decoder<'a> {
     /// style definitions (MTEFv5.md "EQN_PREFS records", "Dimension arrays").
     fn eqn_prefs(&mut self, start: usize) -> Result<()> {
         self.sizes_at = Some(self.pos);
+        self.preferences = std::cell::OnceCell::new();
         self.dimension_array(start)?;
         self.dimension_array(start)?;
         let count = self.u8()?;
@@ -1900,53 +1936,75 @@ impl<'a> Decoder<'a> {
 
     /// The full size of MTEF 5 equation preferences, in points.
     pub(super) fn full_size(&self) -> Option<Rational> {
-        let (unit, digits) = self.preference(0)?;
-        dimension_points(unit, &digits)
+        self.preferences().full
     }
 
     /// The size that the preferences of MTEF 5 give a typesize, in points, if
     /// it is not the factory setting.
     #[cold]
     fn preferred_size(&self, level: TypeSize) -> Option<Rational> {
-        let index = match level {
-            TypeSize::Full => 0,
-            TypeSize::Sub => 1,
-            TypeSize::Sub2 => 2,
-            TypeSize::Sym => 3,
-            TypeSize::SubSym => 4,
-            TypeSize::User1 => 5,
-            TypeSize::User2 => 6,
-        };
-        let (unit, digits) = self.preference(index)?;
-        if unit != 4 {
-            return dimension_points(unit, &digits);
+        let preferences = self.preferences();
+        match level {
+            TypeSize::Sym => preferences.others[0],
+            TypeSize::SubSym => preferences.others[1],
+            TypeSize::User1 => preferences.others[2],
+            TypeSize::User2 => preferences.others[3],
+            TypeSize::Full | TypeSize::Sub | TypeSize::Sub2 => None,
         }
-        let percent = Rational::from_scaled_decimal(&digits, Rational::one())?;
-        if percent == Rational::new(level.per_mille(), 10) || percent.num <= 0 {
-            return None;
-        }
-        let full = self.full_size().unwrap_or(Rational::new(12, 1));
-        Rational::from_scaled_decimal(&digits, Rational::new(full.num, full.den.checked_mul(100)?))
     }
 
-    /// The unit and digits of a size in MTEF 5 equation preferences.
-    fn preference(&self, index: usize) -> Option<(u8, String)> {
+    fn preferences(&self) -> &Preferences {
+        self.preferences
+            .get_or_init(|| self.read_preferences().unwrap_or_default())
+    }
+
+    #[cold]
+    fn read_preferences(&self) -> Option<Preferences> {
         let (&count, bytes) = self.data.get(self.sizes_at?..self.end)?.split_first()?;
-        if index >= usize::from(count) {
-            return None;
-        }
         let mut nibbles = bytes.iter().flat_map(|b| [b >> 4, b & 0x0F]);
-        for _ in 0..index {
-            nibbles.by_ref().skip(1).find(|&nibble| nibble == 0x0F)?;
+        // Full, Sub, Sub2, Sym, SubSym and the two user sizes.
+        let mut sizes: [Option<(u8, String)>; 7] = Default::default();
+        for size in sizes.iter_mut().take(usize::from(count)) {
+            let unit = nibbles.next()?;
+            let mut digits = String::new();
+            for nibble in nibbles.by_ref().take_while(|&nibble| nibble != 0x0F) {
+                if digits.len() < 16
+                    && let Some(&digit) = b"0123456789.-".get(usize::from(nibble))
+                {
+                    digits.push(char::from(digit));
+                }
+            }
+            *size = Some((unit, digits));
         }
-        let unit = nibbles.next()?;
-        let digits: String = nibbles
-            .take_while(|&nibble| nibble != 0x0F)
-            .take(16)
-            .filter_map(|nibble| b"0123456789.-".get(usize::from(nibble)))
-            .map(|&digit| char::from(digit))
-            .collect();
-        Some((unit, digits))
+        let points = |size: &Option<(u8, String)>| {
+            let (unit, digits) = size.as_ref()?;
+            dimension_points(*unit, digits)
+        };
+        let full = points(&sizes[0]);
+        let other = |size: &Option<(u8, String)>, level: TypeSize| {
+            let (unit, digits) = size.as_ref()?;
+            if *unit != 4 {
+                return points(size);
+            }
+            let percent = Rational::from_scaled_decimal(digits, Rational::one())?;
+            if percent == Rational::new(level.per_mille(), 10) || percent.num <= 0 {
+                return None;
+            }
+            let full = full.unwrap_or(Rational::new(12, 1));
+            Rational::from_scaled_decimal(
+                digits,
+                Rational::new(full.num, full.den.checked_mul(100)?),
+            )
+        };
+        Some(Preferences {
+            full,
+            others: [
+                other(&sizes[3], TypeSize::Sym),
+                other(&sizes[4], TypeSize::SubSym),
+                other(&sizes[5], TypeSize::User1),
+                other(&sizes[6], TypeSize::User2),
+            ],
+        })
     }
 
     // ── Line assembly ──────────────────────────────────────────────────
@@ -1959,6 +2017,14 @@ impl<'a> Decoder<'a> {
     #[inline(always)]
     fn size_by_place(&self) -> SizeState {
         SizeState::level(self.slot_size)
+    }
+
+    /// Note the size of a character that joins a run, where it is dropped.
+    #[inline(always)]
+    fn note_run_size(&mut self, glyph: &Glyph) {
+        if Self::is_dropped_symbol(glyph.size) && !glyph.ch.is_whitespace() {
+            self.rare_sizes.get_or_insert_default().dropped_in_runs = true;
+        }
     }
 
     /// Whether a glyph is drawn in the size of a run in `size`.
@@ -2046,7 +2112,9 @@ impl<'a> Decoder<'a> {
                                     size = next.size;
                                 }
                                 text.push(next.ch);
-                                items.pop_front();
+                                if let Some(Item::Glyph(next)) = items.pop_front() {
+                                    self.note_run_size(&next);
+                                }
                             }
                             self.str_node(&text, |s| CompactNode::Text(TextStyle::Normal, s))?
                         },
@@ -2065,7 +2133,9 @@ impl<'a> Decoder<'a> {
                             {
                                 mixed |= !self.same_size(next, size);
                                 name.push(next.ch);
-                                items.pop_front();
+                                if let Some(Item::Glyph(next)) = items.pop_front() {
+                                    self.note_run_size(&next);
+                                }
                             }
                             if mixed {
                                 self.lose_size(
@@ -2098,7 +2168,9 @@ impl<'a> Decoder<'a> {
                                     && self.same_size(next, size)
                                 {
                                     digits.push(next.ch);
-                                    items.pop_front();
+                                    if let Some(Item::Glyph(next)) = items.pop_front() {
+                                        self.note_run_size(&next);
+                                    }
                                 } else if !digits.contains('.')
                                     && let Some(Item::Glyph(point)) = items.front()
                                     && is_decimal_point(point)
@@ -2115,7 +2187,9 @@ impl<'a> Decoder<'a> {
                                     // decimal in the function style and the
                                     // digits in the number style.
                                     digits.push('.');
-                                    items.pop_front();
+                                    if let Some(Item::Glyph(point)) = items.pop_front() {
+                                        self.note_run_size(&point);
+                                    }
                                 } else {
                                     break;
                                 }
@@ -2133,7 +2207,9 @@ impl<'a> Decoder<'a> {
                                 && self.same_size(next, size)
                             {
                                 let ch = next.ch;
-                                items.pop_front();
+                                if let Some(Item::Glyph(next)) = items.pop_front() {
+                                    self.note_run_size(&next);
+                                }
                                 run.push(self.plain_char_node(ch)?);
                             }
                             let span = self.children(&run)?;
@@ -2290,6 +2366,7 @@ impl<'a> Decoder<'a> {
             && self.all_primes(id)
             && let Some(base) = self.take_prime_base(out, color)?
         {
+            self.size_as_script(id);
             let primed = self.prime(base, &[id])?;
             self.set_color(primed, color);
             out.push(primed);
@@ -2301,6 +2378,7 @@ impl<'a> Decoder<'a> {
             && self.all_primes(mark)
             && let Some(base) = self.take_prime_base(out, color)?
         {
+            self.size_as_script(mark);
             let primed = self.prime(base, &[mark])?;
             self.set_color(primed, color);
             out.push(primed);
@@ -3096,7 +3174,8 @@ fn dimension_points(unit: u8, digits: &str) -> Option<Rational> {
         _ => return None,
     };
     let size = Rational::from_scaled_decimal(digits, Rational::new(num, den))?;
-    if size.num <= 0 {
+    // No font size is larger, and the digits written hold up to it.
+    if size.num <= 0 || size.as_f64() > 10_000.0 {
         return None;
     }
     if unit == 2 && size.den <= 1000 {

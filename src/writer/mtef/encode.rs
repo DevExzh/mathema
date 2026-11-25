@@ -108,6 +108,31 @@ fn type_size(size: Size) -> TypeSize {
     }
 }
 
+/// The character that the reader takes for an accent when it is alone above a
+/// character in the limit template, where it can have a size of its own.
+fn limit_mark(accent: char) -> Option<char> {
+    Some(match accent {
+        '\u{0303}' => '\u{223C}',
+        '\u{0302}' => '\u{02C6}',
+        '\u{20D7}' => '\u{2192}',
+        '\u{0307}' => '\u{02D9}',
+        '\u{0304}' => '\u{00AF}',
+        _ => return None,
+    })
+}
+
+/// One character under embellishments.
+struct Embellished {
+    leaf: NodeId,
+    /// The innermost node around or at the character with a size, below the
+    /// outermost embellishment.
+    sized: Option<NodeId>,
+    /// The innermost math alphabet inside an accent.
+    style: Option<TextStyle>,
+    /// The embellishment types, innermost first.
+    kinds: SmallVec<[u8; 4]>,
+}
+
 /// The font size of the node being written.
 #[derive(Debug, Clone, Copy)]
 struct OwnSize {
@@ -168,6 +193,8 @@ pub(super) struct Encoder<'a> {
     size: Option<SizeRecord>,
     /// The font size of the node being written, if it is not a typesize.
     own_size: Option<OwnSize>,
+    /// Whether what is written is in a root's index.
+    in_index: bool,
     /// Whether the character being written is a separator.
     separator: bool,
     /// Whether typesizes are not the sizes they stand for.
@@ -247,6 +274,7 @@ impl<'a> Encoder<'a> {
             own_size: None,
             sized: arena.has_attrs(),
             absolute: false,
+            in_index: false,
             separator: false,
             glyph_size: None,
             base_pt,
@@ -430,6 +458,23 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    fn is_character(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Number(_)
+            | CompactNode::Identifier(_)
+            | CompactNode::Text(..)
+            | CompactNode::Symbol(..)
+            | CompactNode::Operator { .. } => true,
+            CompactNode::Styled(_, span) => self
+                .arena
+                .children(span)
+                .iter()
+                .all(|&id| self.is_character(id)),
+            CompactNode::Color { content, .. } => self.is_character(content),
+            _ => false,
+        }
+    }
+
     /// Whether a node is set in a symbol size, which the reader does not
     /// keep.
     fn has_symbol_size(&self, id: NodeId) -> bool {
@@ -464,8 +509,19 @@ impl<'a> Encoder<'a> {
                 // Equation Editor has no user sizes.
                 let known =
                     !self.absolute && (self.v5 || !matches!(level, Size::User1 | Size::User2));
+                // The scripts of a structure shrink from its size, those of a
+                // typesize are the next one; a root's index has no typesize
+                // in the AST.
+                let whole = self.is_character(id) && !(self.in_index && level == Size::Sub);
                 match delta_pt.num {
-                    0 if known => (None, level),
+                    0 if known && whole => (None, level),
+                    0 => (
+                        Some(OwnSize {
+                            size: self.points(font_size.scale(self.base_pt) * self.base_pt),
+                            place: size,
+                        }),
+                        size,
+                    ),
                     _ if known => (
                         Some(OwnSize {
                             size: font_size,
@@ -565,7 +621,7 @@ impl<'a> Encoder<'a> {
             // Equation Editor and MathType write it.
             Some(id) if self.is_pile(self.unwrap_row(id)) => {
                 self.enter()?;
-                self.pile(self.unwrap_row(id), size)?;
+                self.sized_pile(self.unwrap_row(id), size)?;
                 self.depth -= 1;
             },
             Some(id) => {
@@ -762,8 +818,19 @@ impl<'a> Encoder<'a> {
                 if pile != *only {
                     self.lose(V3_COLOR_LOSS);
                 }
+                let mut size = Size::Full;
+                if self.sized {
+                    // The colours left out on the way.
+                    let mut around = *only;
+                    while around != pile
+                        && let CompactNode::Color { content, .. } = *self.arena.node(around)
+                    {
+                        (self.own_size, size) = self.own_size_of(around, size);
+                        around = self.unwrap_row(content);
+                    }
+                }
                 self.enter()?;
-                self.pile(pile, Size::Full)?;
+                self.sized_pile(pile, size)?;
                 self.depth -= 1;
             },
             _ => {
@@ -897,11 +964,28 @@ impl<'a> Encoder<'a> {
 
     #[inline(always)]
     fn node_inner(&mut self, id: NodeId, size: Size) -> Result<()> {
-        if let Some((leaf, style, kinds)) = self.embellishments(id) {
-            if self.sized && !self.mark_fits(id, leaf) {
-                self.lose("MTEF marks over one character have its size; their own was dropped");
+        if let Some(embellished) = self.embellishments(id) {
+            let fits = !self.sized || self.marks_have_size(id, &embellished);
+            if fits {
+                return self.embellished(size, &embellished);
             }
-            return self.embellished(size, leaf, style, &kinds);
+            if let CompactNode::Accent {
+                base,
+                accent,
+                position: AccentPosition::Above,
+                ..
+            } = *self.arena.node(id)
+            {
+                // The reader takes it for an accent of a bare character only.
+                if self.unwrap_row(base) == embellished.leaf
+                    && self.reads_as_character(embellished.leaf)
+                    && let Some(mark) = limit_mark(accent)
+                {
+                    return self.limit_glyph(id, size, base, mark, true);
+                }
+            }
+            self.lose("MTEF draws a mark over one character at the character's size");
+            return self.embellished(size, &embellished);
         }
         match *self.arena.node(id) {
             CompactNode::Number(s) => self.leaf(size, Leaf::Number, s),
@@ -1499,12 +1583,16 @@ impl<'a> Encoder<'a> {
     /// strikes): the character's node, the innermost math alphabet inside an
     /// accent, and the embellishment types, innermost first.
     #[inline(always)]
-    fn embellishments(&self, id: NodeId) -> Option<(NodeId, Option<TextStyle>, SmallVec<[u8; 4]>)> {
+    fn embellishments(&self, id: NodeId) -> Option<Embellished> {
         let mut kinds: SmallVec<[u8; 4]> = SmallVec::new();
         let mut accented = false;
         let mut style = None;
+        let mut sized = None;
         let mut current = id;
         loop {
+            if self.sized && current != id && self.own_font_size(current).is_some() {
+                sized = Some(current);
+            }
             match *self.arena.node(current) {
                 CompactNode::Accent {
                     base,
@@ -1584,15 +1672,56 @@ impl<'a> Encoder<'a> {
             return None;
         }
         kinds.reverse();
-        Some((current, style, kinds))
+        Some(Embellished {
+            leaf: current,
+            sized,
+            style,
+            kinds,
+        })
     }
 
-    /// Whether the mark of an accent has the size of its character.
+    /// Whether a character is written as something other than text.
     #[cold]
-    fn mark_fits(&self, id: NodeId, leaf: NodeId) -> bool {
-        !matches!(*self.arena.node(id), CompactNode::Accent { .. })
-            || self.arena.attrs(id).and_then(|attrs| attrs.glyph_size)
-                == self.arena.attrs(leaf).and_then(|attrs| attrs.size)
+    fn reads_as_character(&self, leaf: NodeId) -> bool {
+        matches!(
+            *self.arena.node(leaf),
+            CompactNode::Identifier(_) | CompactNode::Symbol(..)
+        ) && self
+            .single_char(leaf)
+            .is_some_and(|ch| !chars::is_far_east(ch))
+    }
+
+    /// The font size a node has of its own.
+    fn own_font_size(&self, id: NodeId) -> Option<FontSize> {
+        self.arena.attrs(id).and_then(|attrs| attrs.size)
+    }
+
+    /// Whether the accents over a character have its size: both none of their
+    /// own, or the same.
+    #[cold]
+    fn marks_have_size(&self, id: NodeId, embellished: &Embellished) -> bool {
+        let size = embellished.sized.and_then(|id| self.own_font_size(id));
+        let mut current = id;
+        loop {
+            current = match *self.arena.node(current) {
+                CompactNode::Accent { base, .. } => {
+                    let mark = self.arena.attrs(current).and_then(|attrs| attrs.glyph_size);
+                    if mark != size {
+                        return false;
+                    }
+                    base
+                },
+                CompactNode::Superscript { base, .. } => base,
+                CompactNode::Cancel { content, .. } => content,
+                CompactNode::Styled(_, span) if self.arena.children(span).len() == 1 => {
+                    self.arena.children(span)[0]
+                },
+                CompactNode::Row(_) if self.unwrap_row(current) != current => {
+                    self.unwrap_row(current)
+                },
+                _ => return true,
+            };
+        }
     }
 
     /// Whether marks in `sup` have the size of scripts of the character under
@@ -1644,20 +1773,25 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    fn embellished(
-        &mut self,
-        size: Size,
-        leaf: NodeId,
-        style: Option<TextStyle>,
-        kinds: &[u8],
-    ) -> Result<()> {
-        if let Some(style) = style {
+    fn embellished(&mut self, size: Size, embellished: &Embellished) -> Result<()> {
+        let outer = (self.style, self.own_size);
+        if let Some(style) = embellished.style {
             self.note_style(style);
-            let outer = self.style.replace(style);
-            let result = self.embellished(size, leaf, None, kinds);
-            self.style = outer;
-            return result;
+            self.style = Some(style);
         }
+        let mut size = size;
+        if let Some(sized) = embellished.sized {
+            if self.has_symbol_size(sized) {
+                self.lose(SYMBOL_SIZE_LOSS);
+            }
+            (self.own_size, size) = self.own_size_of(sized, size);
+        }
+        let result = self.embellished_leaf(size, embellished.leaf, &embellished.kinds);
+        (self.style, self.own_size) = outer;
+        result
+    }
+
+    fn embellished_leaf(&mut self, size: Size, leaf: NodeId, kinds: &[u8]) -> Result<()> {
         let (kind, ch) = match *self.arena.node(leaf) {
             CompactNode::Number(s) => (Leaf::Number, s),
             CompactNode::Identifier(s) => (Leaf::Identifier, s),
@@ -1671,15 +1805,7 @@ impl<'a> Encoder<'a> {
         };
         let (glyph, _) = self.leaf_glyph(kind, ch)?;
         let func_start = self.v5 && kind == Leaf::Operator;
-        if !self.sized {
-            return self.glyph(size, glyph, func_start, kinds);
-        }
-        let outer = self.own_size;
-        let (own, size) = self.own_size_of(leaf, size);
-        self.own_size = own;
-        let result = self.glyph(size, glyph, func_start, kinds);
-        self.own_size = outer;
-        result
+        self.glyph(size, glyph, func_start, kinds)
     }
 
     // ── Scripts ────────────────────────────────────────────────────────
@@ -2183,11 +2309,9 @@ impl<'a> Encoder<'a> {
         if above {
             self.null_line(script);
         }
-        self.with_sign_size(id, size, |this| {
-            this.need(script);
-            this.tag(LINE, 0);
-            this.glyph(script, glyph, false, &[])
-        })?;
+        self.need(script);
+        self.tag(LINE, 0);
+        self.with_sign_size(id, size, |this| this.glyph(script, glyph, false, &[]))?;
         self.end();
         if !above {
             self.null_line(script);
@@ -2286,7 +2410,9 @@ impl<'a> Encoder<'a> {
                 place: script,
             });
         }
+        let nested = std::mem::replace(&mut self.in_index, true);
         self.with_math_style(index_style, |this| this.slot(script, index))?;
+        self.in_index = nested;
         self.own_size = outer;
         self.end();
         Ok(())
@@ -2667,6 +2793,21 @@ impl<'a> Encoder<'a> {
     }
 
     /// PILE: halign, valign (baseline of the centre line), one line per row.
+    /// A pile that is written without the line around it.
+    fn sized_pile(&mut self, id: NodeId, mut size: Size) -> Result<()> {
+        if !self.sized {
+            return self.pile(id, size);
+        }
+        let outer = self.own_size;
+        if self.has_symbol_size(id) {
+            self.lose(SYMBOL_SIZE_LOSS);
+        }
+        (self.own_size, size) = self.own_size_of(id, size);
+        let result = self.pile(id, size);
+        self.own_size = outer;
+        result
+    }
+
     fn pile(&mut self, id: NodeId, size: Size) -> Result<()> {
         let CompactNode::Array {
             col_aligns,
@@ -2901,7 +3042,7 @@ impl<'a> Encoder<'a> {
             && self.is_pile(only)
         {
             self.enter()?;
-            self.pile(only, size)?;
+            self.sized_pile(only, size)?;
             self.depth -= 1;
             return Ok(());
         }

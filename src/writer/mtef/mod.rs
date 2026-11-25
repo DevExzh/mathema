@@ -34,7 +34,7 @@ mod tests;
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr, Rational};
-use crate::error::{Config, Diagnostic, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::reader::mtef::{MtefInfo, MtefProduct, MtefVersion};
 use crate::writer::Writer as MathWriter;
 use encode::Encoder;
@@ -358,7 +358,10 @@ impl MtefWriter {
         config: &Config,
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
-        let (mtef, diagnostics, reading) = Self::encode(expr, config, options)?;
+        let (mtef, diagnostics, reading) = match Self::encode(expr, config, options) {
+            Ok(written) => written,
+            Err(error) => return Self::write_unsized(expr, config, options, error),
+        };
         // The reading can nest deeper than the tree written. Where that could
         // matter, refuse a tree whose reading cannot be written again.
         if let Some(mut reading) = reading {
@@ -367,10 +370,35 @@ impl MtefWriter {
             if let Err(limit @ crate::error::Error::LimitExceeded { .. }) =
                 Self::encode(&reading, config, options)
             {
-                return Err(limit);
+                return Self::write_unsized(expr, config, options, limit);
             }
         }
         Self::finish(mtef, diagnostics, options, options.v5())
+    }
+
+    /// Write without the font sizes what exceeds a limit with them: the
+    /// separators between sizes make lines longer.
+    #[cold]
+    #[inline(never)]
+    fn write_unsized(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        error: crate::error::Error,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        if !matches!(error, crate::error::Error::LimitExceeded { .. }) || !expr.arena.has_attrs() {
+            return Err(error);
+        }
+        let mut plain = expr.clone();
+        plain.arena.clear_attrs();
+        let (bytes, mut diagnostics) = Self::write_bytes_with_diagnostics(&plain, config, options)?;
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: "the font sizes were dropped: with them the equation exceeds the limits"
+                .to_owned(),
+            span: None,
+        });
+        Ok((bytes, diagnostics))
     }
 
     /// The MTEF data without the OLE header, and its reading when the tree
@@ -421,11 +449,7 @@ impl MtefWriter {
                     mtef[start + FAR_EAST_ENCODING_AT] += 2;
                 }
             }
-            let base = expr
-                .meta
-                .as_deref()
-                .and_then(|meta| meta.base_size_pt)
-                .filter(|_| expr.arena.has_attrs());
+            let base = expr.meta.as_deref().and_then(crate::ast::ExprMeta::base);
             match base {
                 Some(base) => {
                     mtef.extend_from_slice(&V5_PREFERENCES[..V5_SIZES.start]);

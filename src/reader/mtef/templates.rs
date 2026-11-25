@@ -140,6 +140,27 @@ impl Decoder<'_> {
         )))
     }
 
+    /// The size of a mark in a limit slot, as that of text at the template.
+    #[cold]
+    fn limit_mark_size(&self, size: FontSize) -> Option<FontSize> {
+        let (text, script) = match self.slot_size_level() {
+            0 => (1000, 700),
+            1 => (700, 500),
+            _ => (500, 500),
+        };
+        let points = match size {
+            FontSize::Points(points) => points,
+            FontSize::Logical { .. } => {
+                let full = self.full_size().unwrap_or(Rational::new(12, 1)).as_f64();
+                Rational::new((size.scale(full) * full * 32.0).round() as i32, 32)
+            },
+        };
+        Some(FontSize::Points(Rational::new(
+            points.num.checked_mul(text)?,
+            points.den.checked_mul(script)?,
+        )))
+    }
+
     /// The typesize that a slot of a template has by its place.
     #[inline]
     pub(super) fn slot_size_of(&self, open: OpenTemplate) -> u8 {
@@ -751,7 +772,7 @@ impl Decoder<'_> {
                         if let Some(slot) = op_slot {
                             for id in self.children_of(slot) {
                                 if let Some(rare) = &mut self.rare_sizes {
-                                    rare.dropped_symbols.retain(|&dropped| dropped != id);
+                                    rare.dropped_symbols.remove(&id);
                                 }
                                 if let Some(attrs) = self.arena.attrs(id).cloned() {
                                     self.arena.remove_attrs(id, &attrs);
@@ -858,12 +879,20 @@ impl Decoder<'_> {
                     // A tilde, caret, dot or arrow alone above a character
                     // is that character's accent, typed with the limit
                     // template.
-                    self.node(CompactNode::Accent {
+                    let mark = upper
+                        .and_then(|id| self.children_of(id).first().copied())
+                        .and_then(|id| self.arena.attrs(id)?.size)
+                        .and_then(|size| self.limit_mark_size(size));
+                    let id = self.node(CompactNode::Accent {
                         base,
                         accent,
                         position: AccentPosition::Above,
                         wide: false,
-                    })?
+                    })?;
+                    if let Some(size) = mark {
+                        self.arena.add_attrs(id, &NodeAttrs::with_glyph_size(size));
+                    }
+                    id
                 } else {
                     self.over_under(base, upper, lower)?
                 };

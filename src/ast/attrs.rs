@@ -145,6 +145,12 @@ pub struct ExprMeta {
 }
 
 impl ExprMeta {
+    /// The base size, if it is one.
+    pub(crate) fn base(&self) -> Option<Rational> {
+        self.base_size_pt
+            .filter(|points| points.den > 0 && points.num > 0)
+    }
+
     /// Whether nothing is known.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -154,13 +160,21 @@ impl ExprMeta {
 
 /// The base size that `meta` gives or implies, in points.
 pub(crate) fn base_size_pt(meta: Option<&ExprMeta>) -> f64 {
-    meta.and_then(|meta| meta.base_size_pt)
+    meta.and_then(ExprMeta::base)
         .map(super::Rational::as_f64)
-        .filter(|size| *size > 0.0)
+        .filter(|size| *size > 0.0 && size.is_finite())
         .unwrap_or_else(|| f64::from(DEFAULT_BASE_SIZE_PT))
 }
 
 impl FontSize {
+    /// Whether this is a size. A document or an API can name others.
+    pub(crate) fn is_valid(self) -> bool {
+        match self {
+            Self::Points(points) => points.den > 0 && points.num > 0,
+            Self::Logical { delta_pt, .. } => delta_pt.den > 0,
+        }
+    }
+
     /// The size of a script of text in this size, in 32nds of a point (the
     /// unit of MTEF).
     pub(crate) fn script(self, base_pt: f64) -> Self {

@@ -1342,10 +1342,15 @@ impl<'a> ArenaLayoutCtx<'a> {
 
     /// The context of a node with attributes. A size is that of its text
     /// whatever the style.
-    fn with_attrs(&self, attrs: &crate::ast::NodeAttrs) -> ArenaLayoutCtx<'a> {
+    fn with_attrs(
+        &self,
+        attrs: &crate::ast::NodeAttrs,
+        style: Option<MathStyle>,
+    ) -> ArenaLayoutCtx<'a> {
         let mut next = self.clone();
         if let Some(size) = attrs.size {
-            next.size_scale = size.scale(f64::from(self.base_pt)) / self.style.size_multiplier();
+            next.size_scale =
+                size.scale(f64::from(self.base_pt)) / style.unwrap_or(self.style).size_multiplier();
         }
         next.glyph_scale = attrs.glyph_size.map_or(1.0, |size| {
             size.scale(f64::from(self.base_pt)) / next.size()
@@ -1802,7 +1807,12 @@ fn layout_node_arena(
     }
     let mut ctx = ctx.deeper();
     if let Some(attrs) = ast.attrs(id) {
-        ctx = ctx.with_attrs(attrs);
+        // The size of a fraction with a style of its own is in that style.
+        let style = match *ast.node(id) {
+            CompactNode::Fraction { kind, .. } => kind.forced_style(),
+            _ => None,
+        };
+        ctx = ctx.with_attrs(attrs, style);
     }
     let ctx = &ctx;
     match *ast.node(id) {

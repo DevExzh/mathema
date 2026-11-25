@@ -423,6 +423,11 @@ impl AstArena {
     /// attributes of a `Row`, which is only a list, go to each of its
     /// children, so that rows can be opened and unwrapped freely.
     pub fn add_attrs(&mut self, id: NodeId, attrs: &NodeAttrs) {
+        let valid = NodeAttrs {
+            size: attrs.size.filter(|size| size.is_valid()),
+            glyph_size: attrs.glyph_size.filter(|size| size.is_valid()),
+        };
+        let attrs = &valid;
         // A refused push returns the last existing id (see `push_node`).
         if attrs.is_empty() || self.size_overflow {
             return;

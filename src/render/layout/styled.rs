@@ -675,7 +675,7 @@ pub(super) fn layout_styled_node_arena(
     let sized;
     let ctx = match ast.attrs(id) {
         Some(attrs) => {
-            sized = ctx.with_attrs(attrs);
+            sized = ctx.with_attrs(attrs, None);
             &sized
         },
         None => ctx,

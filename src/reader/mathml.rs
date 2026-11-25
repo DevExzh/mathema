@@ -2282,6 +2282,9 @@ impl<'a> MathmlCompactParser<'a> {
                     if name != "mtr" && name != "mlabeledtr" {
                         continue;
                     }
+                    if has_mathsize(&e) {
+                        self.unsupported_size(name);
+                    }
                     let row_count = table.row_lengths.len() + 1;
                     let max_columns = AstArena::MAX_CHILDREN / row_count;
                     if table.columns.len().max(1) > max_columns {
@@ -2357,6 +2360,9 @@ impl<'a> MathmlCompactParser<'a> {
                         let name = e.local_name().into_inner();
                         if name == "mtd" {
                             let attributes = table_cell_attributes(&e);
+                            if has_mathsize(&e) {
+                                self.unsupported_size(name);
+                            }
                             let span =
                                 parse_column_span(attributes.columnspan, max_columns - index)?;
                             let children = if empty {
@@ -3188,6 +3194,12 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
             !value.is_empty() && value.bytes().all(|byte| byte == b'0')
         });
     result
+}
+
+fn has_mathsize(start: &quick_xml::events::BytesStart<'_>) -> bool {
+    // A single character is found much faster than the attributes are read,
+    // and few others have this one.
+    start.attributes_raw().contains('z') && get_attr(start, "mathsize").is_some()
 }
 
 fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {

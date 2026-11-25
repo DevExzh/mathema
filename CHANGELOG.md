@@ -510,8 +510,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`meta`, `meta`, `typesetting`), and `MathNode` a new variant.
 - **Breaking (behavior):** MTEF runs of text, digits or function names are
   split where their size changes; absolute MathML sizes are attributes instead
-  of being dropped with a warning (accent and operator signs included); OMML `w:sz` is no longer a diagnostic and an invalid
-  value is an error in `Strictness::Strict`.
+  of being dropped with a warning (accent and operator signs included); OMML
+  `w:sz` is no longer a diagnostic and an invalid value is an error in
+  `Strictness::Strict`.
 - The MTEF reader reads MTEF 2 (Equation Editor 1.x and 2.x, MathType 3.0) and
   MTEF 4 (MathType 3.5), which were errors before. New variants
   `MtefVersion::V2` and `MtefVersion::V4` (the enum is `#[non_exhaustive]`, so

@@ -461,7 +461,7 @@ impl<'a> Emitter<'a> {
         let known = expr
             .meta
             .as_deref()
-            .is_some_and(|meta| meta.base_size_pt.is_some());
+            .is_some_and(|meta| meta.base().is_some());
         self.run_size = (known && self.host == OmmlRunProperties::WordprocessingMl)
             .then(|| (self.base_pt * 2.0).round().clamp(1.0, f64::from(u16::MAX)) as u16);
     }

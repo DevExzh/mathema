@@ -360,6 +360,8 @@ type Ids = SmallVec<[NodeId; 8]>;
 #[derive(Default)]
 struct RunSizes {
     sized: Vec<(NodeId, MathStyle, u16)>,
+    /// Nodes that took the place of others, by those.
+    replaced: Vec<(NodeId, NodeId)>,
     /// The signs of n-ary objects and accents.
     signs: Vec<(NodeId, MathStyle, u16)>,
     /// A run has the size that the document gives it.
@@ -369,10 +371,9 @@ struct RunSizes {
 impl RunSizes {
     /// A node took the place of a run.
     fn replaced(&mut self, old: NodeId, new: NodeId) {
-        for (id, ..) in &mut self.sized {
-            if *id == old {
-                *id = new;
-            }
+        // Only of runs with sizes is it of interest.
+        if !self.sized.is_empty() {
+            self.replaced.push((old, new));
         }
     }
 
@@ -403,9 +404,20 @@ impl RunSizes {
                 arena.add_attrs(id, &NodeAttrs::with_glyph_size(points(style, size)));
             }
         }
-        for (id, style, size) in self.sized {
+        // Most equations have none, and a map costs something.
+        let replaced = (!self.replaced.is_empty()).then(|| {
+            self.replaced
+                .iter()
+                .copied()
+                .collect::<std::collections::HashMap<_, _>>()
+        });
+        for (mut id, style, size) in self.sized {
             if Some(size) == base {
                 continue;
+            }
+            // Newer nodes take the place of older ones, so this ends.
+            while let Some(&new) = replaced.as_ref().and_then(|map| map.get(&id)) {
+                id = new;
             }
             arena.add_attrs(id, &NodeAttrs::with_size(points(style, size)));
         }
