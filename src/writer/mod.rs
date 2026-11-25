@@ -1,4 +1,3 @@
-mod joining;
 pub mod latex;
 pub mod mathml;
 pub mod mtef;

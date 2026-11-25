@@ -4,7 +4,6 @@
 
 use smallvec::SmallVec;
 
-use super::joining::Joiner;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::style::MathStyle;
@@ -35,8 +34,6 @@ struct Lowering<'a> {
     base_pt: f64,
     approximated: usize,
     dropped: usize,
-    /// Whether sizes are declared at all.
-    declares: bool,
 }
 
 /// `expr` with its font sizes as size and style declarations.
@@ -51,24 +48,12 @@ pub(super) struct Lowered {
 /// Lower the font sizes of `expr`.
 #[cold]
 pub(super) fn lower_sizes(expr: &CompactExpr) -> crate::error::Result<Lowered> {
-    lower(expr, true)
-}
-
-/// `expr` without its typesetting attributes, for a writer that has no place
-/// for them.
-#[cold]
-pub(super) fn without_sizes(expr: &CompactExpr) -> crate::error::Result<CompactExpr> {
-    Ok(lower(expr, false)?.expr)
-}
-
-fn lower(expr: &CompactExpr, declares: bool) -> crate::error::Result<Lowered> {
     let mut lowered = expr.clone();
     let mut lowering = Lowering {
         base_pt: crate::ast::attrs::base_size_pt(expr.meta.as_deref()),
         arena: &mut lowered.arena,
         approximated: 0,
         dropped: 0,
-        declares,
     };
     let context = Context {
         style: expr.display.into(),
@@ -100,9 +85,6 @@ impl Lowering<'_> {
     /// A style changes how a structure is drawn, not only its size: the limits
     /// of a sum, the size of its sign. Only a character takes one.
     fn declaration(&mut self, id: NodeId, size: FontSize, context: Context) -> Declaration {
-        if !self.declares {
-            return Declaration::None;
-        }
         let declaration = self.any_declaration(size, context);
         if matches!(declaration, Declaration::Style(_)) && !self.is_character(id) {
             self.dropped += 1;
@@ -223,9 +205,6 @@ impl Lowering<'_> {
         // The declarations of the list itself.
         let mut ambient = context;
         let mut current = context;
-        // What differs only in sizes that are not declared is one node, as it
-        // would be without them.
-        let mut joiner = Joiner::new();
         for id in children {
             match *self.arena.node(id) {
                 CompactNode::StyleSwitch(value) => {
@@ -264,10 +243,8 @@ impl Lowering<'_> {
             self.switch(&mut out, current, wanted);
             current = wanted;
             let lowered = self.node(id, wanted);
-            let key = self.arena.attrs(id).cloned();
-            joiner.add(self.arena, &mut out, lowered, key);
+            out.push(lowered);
         }
-        joiner.finish(self.arena, &mut out);
         self.arena.push_children_deferred(&out)
     }
 

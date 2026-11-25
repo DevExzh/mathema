@@ -131,12 +131,6 @@ impl OmmlWriter {
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
-        if expr.arena.has_attrs() && options.run_properties != OmmlRunProperties::WordprocessingMl {
-            let plain = super::sizes::without_sizes(expr)?;
-            let (omml, mut diagnostics) = Self::write_with_options(&plain, _config, options)?;
-            diagnostics.insert(0, dropped_sizes());
-            return Ok((omml, diagnostics));
-        }
         let mut e = Emitter::new(
             &expr.arena,
             options.run_properties,
@@ -183,25 +177,11 @@ impl OmmlWriter {
         _config: &Config,
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        let keeps_sizes = options.run_properties == OmmlRunProperties::WordprocessingMl;
-        let plain: Vec<Option<CompactExpr>> = paragraph
-            .equations
-            .iter()
-            .map(|eq| {
-                (!keeps_sizes && eq.arena.has_attrs())
-                    .then(|| super::sizes::without_sizes(eq))
-                    .transpose()
-            })
-            .collect::<Result<_>>()?;
         let empty = AstArena::new();
         let mut e = Emitter::new(&empty, options.run_properties, MathStyle::Text);
         e.open_root("m:oMathPara");
         e.paragraph_props(paragraph.justification.or(options.justification));
-        for (eq, plain) in paragraph.equations.iter().zip(&plain) {
-            if plain.is_some() {
-                e.drop_size();
-            }
-            let eq = plain.as_ref().unwrap_or(eq);
+        for eq in &paragraph.equations {
             crate::ast::validate_compact_depth(&eq.arena, eq.roots)?;
             e.arena = &eq.arena;
             e.style = MathStyle::from(eq.display);
@@ -504,7 +484,10 @@ impl<'a> Emitter<'a> {
     /// is written too, if it is known and the host has one.
     fn start(&mut self, expr: &CompactExpr) {
         self.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
-        self.sized = expr.arena.has_attrs();
+        self.sized = expr.arena.has_attrs() && self.host == OmmlRunProperties::WordprocessingMl;
+        if expr.arena.has_attrs() && !self.sized {
+            self.drop_size();
+        }
         self.entered = false;
         let known = expr
             .meta

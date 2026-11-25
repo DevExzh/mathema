@@ -189,7 +189,7 @@ pub(crate) fn can_merge_number_text(first: &str, second: &str) -> bool {
 /// Count decimal points in a number token whose text came from a parser or an
 /// authored MathML `<mn>`. Non-decimal content stays in its own node and is
 /// never merged with neighboring number nodes.
-pub(crate) fn number_decimal_points(text: &str) -> Option<usize> {
+fn number_decimal_points(text: &str) -> Option<usize> {
     let mut dots = 0;
     for byte in text.bytes() {
         if byte == b'.' {

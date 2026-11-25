@@ -131,10 +131,6 @@ impl MathWriter for UnicodeMathWriter {
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        if expr.arena.has_attrs() {
-            let plain = super::sizes::without_sizes(expr)?;
-            return Self::write_compact(&plain, _config);
-        }
         let mut out = String::with_capacity(256);
         let arena = &expr.arena;
         write_nodes_c_with_style(&mut out, arena, expr.roots, MathStyle::from(expr.display));

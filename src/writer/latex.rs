@@ -31,21 +31,31 @@ pub struct LatexWriter;
 impl LatexWriter {
     /// Write an expression that was just read and not normalized, without the
     /// colors LaTeX cannot hold (see [`colors`]).
-    pub(crate) fn write_read(expr: &CompactExpr, config: &Config) -> Result<String> {
+    ///
+    /// `normalize` is how the expression was normalized all the same, if it
+    /// was: sizes that cannot be written kept apart what that joins.
+    pub(crate) fn write_read(
+        expr: &CompactExpr,
+        config: &Config,
+        normalize: Option<Normalize>,
+    ) -> Result<String> {
         let grouped = colors::grouped(expr);
         let report = LossReport::default();
-        write_colored(grouped.as_ref().unwrap_or(expr), config, report).map(|(latex, _)| latex)
+        write_lowered(grouped.as_ref().unwrap_or(expr), config, report, normalize)
+            .map(|(latex, _)| latex)
     }
 
     /// [`write_read`](Self::write_read) with loss diagnostics.
     pub(crate) fn write_read_with_diagnostics(
         expr: &CompactExpr,
         config: &Config,
+        normalize: Option<Normalize>,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let mut report = LossReport::collecting();
         colors::report_dropped(expr, &mut report);
         let grouped = colors::grouped(expr);
-        let (latex, report) = write_colored(grouped.as_ref().unwrap_or(expr), config, report)?;
+        let expr = grouped.as_ref().unwrap_or(expr);
+        let (latex, report) = write_lowered(expr, config, report, normalize)?;
         Ok((latex, report.finish()))
     }
 }
@@ -76,32 +86,58 @@ fn write_expr(
 ) -> Result<(String, LossReport)> {
     colors::report_dropped(expr, &mut report);
     let with_atoms = colors::with_ordinary_atoms(expr);
-    write_colored(with_atoms.as_ref().unwrap_or(expr), config, report)
+    write_lowered(with_atoms.as_ref().unwrap_or(expr), config, report, None)
+}
+
+/// A way to normalize an expression.
+pub(crate) type Normalize = fn(&mut CompactExpr) -> Result<()>;
+
+/// `expr` with its font sizes as declarations, without those that have none.
+#[cold]
+pub(crate) fn lower_sizes(expr: &CompactExpr) -> Result<CompactExpr> {
+    lower(
+        expr,
+        &mut LossReport::default(),
+        crate::error::TypesettingPolicy::default(),
+    )
+}
+
+fn lower(
+    expr: &CompactExpr,
+    report: &mut LossReport,
+    policy: crate::error::TypesettingPolicy,
+) -> Result<CompactExpr> {
+    match super::sizes::lower_sizes(expr) {
+        Ok(lowered) => {
+            report.sizes(&lowered, policy);
+            Ok(lowered.expr)
+        },
+        // The declarations make lists longer.
+        Err(crate::error::Error::LimitExceeded { .. }) => {
+            report.info(|| {
+                "the font sizes were dropped: their declarations exceed the limits".to_owned()
+            });
+            let mut plain = expr.clone();
+            plain.arena.clear_attrs();
+            Ok(plain)
+        },
+        Err(error) => Err(error),
+    }
 }
 
 /// Write an expression whose colors can all be written.
-fn write_colored(
+fn write_lowered(
     expr: &CompactExpr,
     config: &Config,
     mut report: LossReport,
+    normalize: Option<Normalize>,
 ) -> Result<(String, LossReport)> {
     if expr.arena.has_attrs() {
-        return match super::sizes::lower_sizes(expr) {
-            Ok(lowered) => {
-                report.sizes(&lowered, config.typesetting);
-                write_colored(&lowered.expr, config, report)
-            },
-            // The declarations make lists longer.
-            Err(crate::error::Error::LimitExceeded { .. }) => {
-                report.info(|| {
-                    "the font sizes were dropped: their declarations exceed the limits".to_owned()
-                });
-                let mut plain = expr.clone();
-                plain.arena.clear_attrs();
-                write_colored(&plain, config, report)
-            },
-            Err(error) => Err(error),
-        };
+        let mut lowered = lower(expr, &mut report, config.typesetting)?;
+        if let Some(normalize) = normalize {
+            normalize(&mut lowered)?;
+        }
+        return write_lowered(&lowered, config, report, None);
     }
     let mut buf = LatexBuffer {
         text: String::with_capacity(256),

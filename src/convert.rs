@@ -46,16 +46,32 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
 /// one multi-letter identifier, so identifiers are merged neither on the
 /// way from MTEF nor on the way to it.
 ///
-/// The colors LaTeX cannot hold go first, on the way to LaTeX only.
+/// What the target does not write goes first: it must not keep apart what
+/// normalization joins.
 fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()> {
-    if to == Format::LaTeX {
-        crate::writer::latex::colors::to_groups(expr);
-    }
+    drop_unwritten(expr, to)?;
     if from == Format::Mtef || to == Format::Mtef {
         normalize_compact_expr_keeping_identifiers(expr)
     } else {
         normalize_compact_expr(expr)
     }
+}
+
+/// Drop what `target` does not write, before normalization: the font sizes of
+/// pure OMML and UnicodeMath, and in LaTeX those that no declaration draws and
+/// the colors it cannot hold.
+pub(crate) fn drop_unwritten(expr: &mut CompactExpr, target: Format) -> Result<()> {
+    match target {
+        Format::LaTeX => {
+            crate::writer::latex::colors::to_groups(expr);
+            if expr.arena.has_attrs() {
+                *expr = crate::writer::latex::lower_sizes(expr)?;
+            }
+        },
+        Format::Omml | Format::UnicodeMath => expr.arena.clear_attrs(),
+        _ => {},
+    }
+    Ok(())
 }
 
 fn parse_compact(input: &str, format: Format, config: &Config) -> Result<CompactParseResult> {
@@ -107,9 +123,46 @@ pub struct ConvertResult {
 }
 
 impl ConvertResult {
+    /// How the expression was normalized when it was read, if it was.
+    fn normalization(&self) -> Option<crate::writer::latex::Normalize> {
+        self.mtef
+            .is_some()
+            .then_some(normalize_compact_expr_keeping_identifiers as _)
+    }
+
+    /// The expression without its font sizes, for a format that writes none,
+    /// as it would have been read without them. `None` when it has none.
+    fn without_sizes(&self) -> Result<Option<CompactExpr>> {
+        if !self.compact.expr.arena.has_attrs() {
+            return Ok(None);
+        }
+        let mut plain = self.compact.expr.clone();
+        plain.arena.clear_attrs();
+        if let Some(normalize) = self.normalization() {
+            normalize(&mut plain)?;
+        }
+        Ok(Some(plain))
+    }
+
+    fn write_omml(
+        &self,
+        config: &Config,
+        options: &crate::writer::omml::OmmlOptions,
+    ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        let expr = &self.compact.expr;
+        let written = OmmlWriter::write_with_options(expr, config, options)?;
+        if options.run_properties != crate::writer::omml::OmmlRunProperties::WordprocessingMl
+            && let Some(plain) = self.without_sizes()?
+        {
+            let (omml, _) = OmmlWriter::write_with_options(&plain, config, options)?;
+            return Ok((omml, written.1));
+        }
+        Ok(written)
+    }
+
     /// Serialize the parsed expression to LaTeX.
     pub fn to_latex(&self) -> Result<String> {
-        LatexWriter::write_read(&self.compact.expr, &self.config)
+        LatexWriter::write_read(&self.compact.expr, &self.config, self.normalization())
     }
 
     /// Serialize the parsed expression to Presentation MathML.
@@ -121,12 +174,16 @@ impl ConvertResult {
     /// that is no color in a color, control characters in text, font sizes.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_latex_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        LatexWriter::write_read_with_diagnostics(&self.compact.expr, &self.config)
+        LatexWriter::write_read_with_diagnostics(
+            &self.compact.expr,
+            &self.config,
+            self.normalization(),
+        )
     }
 
     /// Serialize to LaTeX using the given configuration.
     pub fn to_latex_with(&self, config: &Config) -> Result<String> {
-        LatexWriter::write_read(&self.compact.expr, config)
+        LatexWriter::write_read(&self.compact.expr, config, self.normalization())
     }
 
     /// Serialize to Presentation MathML using the given configuration.
@@ -136,12 +193,16 @@ impl ConvertResult {
 
     /// Serialize the parsed expression to OMML (Office MathML).
     pub fn to_omml(&self) -> Result<String> {
-        OmmlWriter::write_compact(&self.compact.expr, &self.config)
+        self.to_omml_with(&self.config)
     }
 
     /// Serialize to OMML using the given configuration.
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
-        OmmlWriter::write_compact(&self.compact.expr, config)
+        if !self.compact.expr.arena.has_attrs() {
+            return OmmlWriter::write_compact(&self.compact.expr, config);
+        }
+        self.write_omml(config, &Default::default())
+            .map(|(omml, _)| omml)
     }
 
     /// Serialize to OMML with writer options (host run-property dialect,
@@ -159,7 +220,7 @@ impl ConvertResult {
         &self,
         options: &crate::writer::omml::OmmlOptions,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        OmmlWriter::write_with_options(&self.compact.expr, &self.config, options)
+        self.write_omml(&self.config, options)
     }
 
     /// Serialize the parsed expression to MTEF 5, hex-encoded: the bytes
@@ -213,12 +274,13 @@ impl ConvertResult {
 
     /// Serialize the parsed expression to UnicodeMath linear notation.
     pub fn to_unicode_math(&self) -> Result<String> {
-        UnicodeMathWriter::write_compact(&self.compact.expr, &self.config)
+        self.to_unicode_math_with(&self.config)
     }
 
     /// Serialize to UnicodeMath using the given configuration.
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
-        UnicodeMathWriter::write_compact(&self.compact.expr, config)
+        let plain = self.without_sizes()?;
+        UnicodeMathWriter::write_compact(plain.as_ref().unwrap_or(&self.compact.expr), config)
     }
 
     /// Serialize to Presentation MathML, also returning diagnostics for any
@@ -234,7 +296,7 @@ impl ConvertResult {
     /// Serialize to OMML, also returning writer-side loss diagnostics.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_omml_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        OmmlWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+        self.write_omml(&self.config, &Default::default())
     }
 
     /// Serialize to MTEF, also returning writer-side loss diagnostics. MTEF
@@ -252,7 +314,9 @@ impl ConvertResult {
     pub fn to_unicode_math_with_diagnostics(
         &self,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        UnicodeMathWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+        let (_, diagnostics) =
+            UnicodeMathWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)?;
+        Ok((self.to_unicode_math()?, diagnostics))
     }
 
     /// Render to a standalone SVG with embedded glyph outlines.

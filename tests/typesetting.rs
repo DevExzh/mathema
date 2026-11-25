@@ -1190,47 +1190,159 @@ mod review {
         }
     }
 
-    /// What is not written does not split runs.
+    /// What is not written does not split runs where it is dropped first, and
+    /// a writer that is given a split tree writes that.
     #[test]
     fn unwritten_sizes_do_not_split_runs() {
-        use mathema::reader::{Reader, omml::OmmlReader};
-        let source = omml(
-            &[
-                ("T", None),
-                ("H", Some("17")),
-                ("1", None),
-                ("2", Some("17")),
-            ],
-            None,
-        );
-        let round = |omml: &str| {
-            let mut read = OmmlReader::parse_compact(omml, &Config::default()).unwrap();
-            mathema::ast::normalize::normalize_compact_expr(&mut read.expr).unwrap();
-            let write = <mathema::writer::omml::OmmlWriter as Writer>::write_compact(
-                &read.expr,
-                &Config::default(),
-            );
-            (read.expr, write.unwrap())
-        };
-        let (expr, written) = round(&source);
-        assert_eq!(round(&written).1, written);
+        use mathema::{Format, convert};
+        let runs = [
+            ("T", None),
+            ("H", Some("17")),
+            ("1", None),
+            ("2", Some("17")),
+        ];
+        let source = omml(&runs, None);
+        let plain = omml(&runs.map(|(text, _)| (text, None)), None);
+        for format in [Format::Omml, Format::UnicodeMath, Format::LaTeX] {
+            let written = convert(&source, Format::Omml, format).unwrap();
+            if format != Format::LaTeX {
+                assert_eq!(written, convert(&plain, Format::Omml, format).unwrap());
+            }
+        }
+        let written = convert(&source, Format::Omml, Format::Omml).unwrap();
         assert!(
             written.contains(">TH<") && written.contains(">12<"),
             "{written}"
         );
-        // The LaTeX writer drops a size in a script and joins what it kept apart.
-        let latex = <mathema::writer::latex::LatexWriter as Writer>::write_compact(
-            &expr,
-            &Config::default(),
-        )
-        .unwrap();
-        assert!(from_latex(&latex).is_ok(), "{latex}");
-        let unicode = <mathema::writer::unicode_math::UnicodeMathWriter as Writer>::write_compact(
-            &expr,
-            &Config::default(),
-        )
-        .unwrap();
-        assert!(unicode.contains("TH"), "{unicode}");
+        assert_eq!(
+            convert(&written, Format::Omml, Format::Omml).unwrap(),
+            written
+        );
+        let read = from_omml(&source).unwrap();
+        assert_eq!(
+            read.to_omml().unwrap(),
+            from_omml(&plain).unwrap().to_omml().unwrap()
+        );
+    }
+
+    /// The letters of MTEF are variables of their own whatever their sizes.
+    #[test]
+    fn letters_of_several_sizes_stay_variables() {
+        let letters = [
+            9, 101, 44, 1, 2, 131, b'Q', 0, 9, 101, 64, 1, 2, 131, b'R', 0,
+        ];
+        let bytes = [&[3, 1, 1, 3, 10, 1][..], &letters, &[0, 0]].concat();
+        let plain = [3, 1, 1, 3, 10, 1, 2, 131, b'Q', 0, 2, 131, b'R', 0, 0, 0];
+        let (read, plain) = (
+            from_mtef_bytes(&bytes).unwrap(),
+            from_mtef_bytes(&plain).unwrap(),
+        );
+        assert!(read.compact_expr().arena.has_attrs());
+        assert_eq!(read.to_omml().unwrap(), plain.to_omml().unwrap());
+        assert_eq!(
+            read.to_unicode_math().unwrap(),
+            plain.to_unicode_math().unwrap()
+        );
+        let omml = read.to_omml().unwrap();
+        let back = from_omml(&omml).unwrap().expr().nodes;
+        assert_eq!(back, [id("Q"), id("R")]);
+    }
+
+    /// The expression without its sizes.
+    fn strip(expr: &CompactExpr) -> CompactExpr {
+        use mathema::ast::visit::{MutVisitor, walk_node_mut};
+        struct Strip;
+        impl MutVisitor for Strip {
+            fn visit_node_mut(&mut self, node: &mut MathNode) {
+                while let MathNode::Attributed { content, .. } = node {
+                    *node = (**content).clone();
+                }
+                walk_node_mut(self, node);
+            }
+        }
+        let mut heap = expr.to_math_expr();
+        Strip.visit_expr_mut(&mut heap);
+        heap.meta = ExprMeta::default();
+        let plain = CompactExpr::from_math_expr(&heap).unwrap();
+        assert!(!plain.arena.has_attrs());
+        plain
+    }
+
+    /// For a format that writes no sizes: the output is that of the expression
+    /// without them, stripped before it is normalized.
+    #[track_caller]
+    fn written_as_if_unsized(sized: &CompactExpr) {
+        use mathema::writer::{omml::OmmlWriter, unicode_math::UnicodeMathWriter};
+        let config = Config::default();
+        let plain = strip(sized);
+        for (with, without) in [
+            (
+                <OmmlWriter as Writer>::write_compact(sized, &config).unwrap(),
+                <OmmlWriter as Writer>::write_compact(&plain, &config).unwrap(),
+            ),
+            (
+                <UnicodeMathWriter as Writer>::write_compact(sized, &config).unwrap(),
+                <UnicodeMathWriter as Writer>::write_compact(&plain, &config).unwrap(),
+            ),
+        ] {
+            assert_eq!(with, without);
+        }
+    }
+
+    /// The same through [`mathema::convert`], from each format that has sizes.
+    #[test]
+    fn sizes_that_are_not_written_change_nothing() {
+        use mathema::reader::{Reader, mathml::MathmlReader, mtef::MtefReader, omml::OmmlReader};
+        use mathema::{Format, convert};
+        let config = Config::default();
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut inputs = Vec::new();
+        for dir in ["mtef", "mtef-sizes"] {
+            let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+            for entry in std::fs::read_dir(format!("{root}/{dir}")).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|e| e == "bin")
+                    && let Ok(read) = from_mtef_bytes(&std::fs::read(&path).unwrap())
+                    && read.compact_expr().arena.has_attrs()
+                {
+                    written_as_if_unsized(read.compact_expr());
+                    inputs.push((Format::Mtef, hex(&std::fs::read(&path).unwrap())));
+                    inputs.push((Format::MathML, read.to_mathml().unwrap()));
+                    inputs.push((Format::Omml, read.to_omml_with_options(&wml()).unwrap().0));
+                }
+            }
+        }
+        for (from, input) in inputs {
+            let parsed = match from {
+                Format::Mtef => MtefReader::parse_compact(&input, &config),
+                Format::MathML => MathmlReader::parse_compact(&input, &config),
+                _ => OmmlReader::parse_compact(&input, &config),
+            };
+            let mut plain = strip(&parsed.unwrap().expr);
+            use mathema::writer::{omml::OmmlWriter, unicode_math::UnicodeMathWriter};
+            let expected = if from == Format::Mtef {
+                // The letters of MTEF are not joined.
+                let read = from_mtef_bytes(&hex_bytes(&input)).unwrap();
+                (read.to_omml().unwrap(), read.to_unicode_math().unwrap())
+            } else {
+                mathema::ast::normalize::normalize_compact_expr(&mut plain).unwrap();
+                (
+                    <OmmlWriter as Writer>::write_compact(&plain, &config).unwrap(),
+                    <UnicodeMathWriter as Writer>::write_compact(&plain, &config).unwrap(),
+                )
+            };
+            assert_eq!(convert(&input, from, Format::Omml).unwrap(), expected.0);
+            assert_eq!(
+                convert(&input, from, Format::UnicodeMath).unwrap(),
+                expected.1
+            );
+        }
+    }
+
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
     }
 
     /// A mark with a size is a limit: a group character has none.
@@ -1418,15 +1530,14 @@ mod review {
             }
         }
         assert!(read >= 6, "{read}");
-        // Digits of 300/32 and 320/32 pt: one number where sizes are not
-        // written, however the tree was built.
+        // Digits of 300/32 and 320/32 pt, one number without sizes.
         let bytes = [
             9, 101, 44, 1, 2, 136, b'3', 0, 9, 101, 64, 1, 2, 136, b'4', 0,
         ];
         let bytes = [&[3, 1, 1, 3, 10, 1][..], &bytes, &[0, 0]].concat();
         let read = from_mtef_bytes(&bytes).unwrap();
         every_route_agrees(read.compact_expr());
-        assert_eq!(written_from_heap(&read.expr())[3], "34");
+        assert_eq!(read.to_unicode_math().unwrap(), "34");
     }
 
     /// Trees of neighbours that can be joined, from a fixed sequence.
@@ -1495,6 +1606,7 @@ mod review {
             let mut heap = mathema::MathExpr::block(random.list(3));
             let mut expr = CompactExpr::from_math_expr(&heap).unwrap();
             every_route_agrees(&expr);
+            written_as_if_unsized(&expr);
             // As the nodes are given, sizes around lists among them.
             assert_eq!(written_from_heap(&heap), written(&expr));
             mathema::ast::normalize::normalize_expr(&mut heap);
@@ -1519,8 +1631,8 @@ mod review {
         expr.roots = expr.arena.push_children(&[ids[0], ids[1], third]).unwrap();
         let heap = expr.to_math_expr();
         assert_eq!(written_from_heap(&heap), written(&expr));
-        assert!(written(&expr)[2].contains(">TQ<"), "{}", written(&expr)[2]);
-        assert!(written(&expr)[2].contains(">Q<"), "{}", written(&expr)[2]);
+        // Every neighbour is written by itself.
+        assert_eq!(written(&expr)[2].matches("<m:r>").count(), 3);
     }
 
     /// Runs without sizes that are apart stay apart.

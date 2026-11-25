@@ -11,8 +11,11 @@
 //! result.free(); // release WASM memory
 //! ```
 
+use std::borrow::Cow;
+
 use wasm_bindgen::prelude::*;
 
+use crate::ast::compact::CompactExpr;
 use crate::ast::normalize::normalize_compact_expr;
 use crate::error::{CompactParseResult, Config, Format, Strictness};
 use crate::reader::Reader;
@@ -134,12 +137,27 @@ pub struct ParsedMath {
     config: Config,
 }
 
+impl ParsedMath {
+    /// The expression without the font sizes that `format` does not write, as
+    /// it would have been normalized without them.
+    fn written_in(&self, format: Format) -> Result<Cow<'_, CompactExpr>, JsValue> {
+        if !self.compact.expr.arena.has_attrs() {
+            return Ok(Cow::Borrowed(&self.compact.expr));
+        }
+        let mut expr = self.compact.expr.clone();
+        crate::convert::drop_unwritten(&mut expr, format).map_err(to_js_err)?;
+        normalize_compact_expr(&mut expr).map_err(to_js_err)?;
+        Ok(Cow::Owned(expr))
+    }
+}
+
 #[wasm_bindgen]
 impl ParsedMath {
     /// Write as LaTeX.
     #[wasm_bindgen(js_name = "toLatex")]
     pub fn to_latex(&self) -> Result<String, JsValue> {
-        LatexWriter::write_compact(&self.compact.expr, &self.config).map_err(to_js_err)
+        let expr = self.written_in(Format::LaTeX)?;
+        LatexWriter::write_compact(&expr, &self.config).map_err(to_js_err)
     }
 
     /// Write as MathML.
@@ -151,7 +169,8 @@ impl ParsedMath {
     /// Write as Office Math Markup Language (OMML).
     #[wasm_bindgen(js_name = "toOmml")]
     pub fn to_omml(&self) -> Result<String, JsValue> {
-        OmmlWriter::write_compact(&self.compact.expr, &self.config).map_err(to_js_err)
+        let expr = self.written_in(Format::Omml)?;
+        OmmlWriter::write_compact(&expr, &self.config).map_err(to_js_err)
     }
 
     /// Write as MTEF (hex-encoded binary).
@@ -163,7 +182,8 @@ impl ParsedMath {
     /// Write as UnicodeMath.
     #[wasm_bindgen(js_name = "toUnicodeMath")]
     pub fn to_unicode_math(&self) -> Result<String, JsValue> {
-        UnicodeMathWriter::write_compact(&self.compact.expr, &self.config).map_err(to_js_err)
+        let expr = self.written_in(Format::UnicodeMath)?;
+        UnicodeMathWriter::write_compact(&expr, &self.config).map_err(to_js_err)
     }
 
     /// Render as a standalone SVG with embedded Latin Modern Math glyph
