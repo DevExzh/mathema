@@ -498,10 +498,6 @@ struct LayoutCtx<'a> {
     size_scale: f64,
     /// The size of ordinary text in points, for sizes in points.
     base_pt: f32,
-    /// When set, use this style for inter-atom spacing calculations instead of
-    /// `self.style`.  This allows fraction numerators/denominators to preserve
-    /// medium/thick spacing even when the layout style drops to Script or below.
-    spacing_style: Option<MathStyle>,
     /// MathML can request the display branch while retaining script optical size.
     display_choice: bool,
     /// Inherited typography for a structured operator body. Explicit
@@ -521,11 +517,6 @@ impl<'a> LayoutCtx<'a> {
         self.style.size_multiplier() * self.size_scale
     }
 
-    /// Style to use for inter-atom spacing calculations.
-    fn effective_spacing_style(&self) -> MathStyle {
-        self.spacing_style.unwrap_or_else(|| self.branch_style())
-    }
-
     fn with_style(&self, style: MathStyle) -> LayoutCtx<'a> {
         LayoutCtx {
             style,
@@ -534,7 +525,6 @@ impl<'a> LayoutCtx<'a> {
             depth: self.depth,
             size_scale: self.size_scale,
             base_pt: self.base_pt,
-            spacing_style: self.spacing_style,
             display_choice: false,
             styled_face: self.styled_face,
         }
@@ -592,7 +582,6 @@ impl<'a> LayoutCtx<'a> {
             depth: self.depth + 1,
             size_scale: self.size_scale,
             base_pt: self.base_pt,
-            spacing_style: self.spacing_style,
             display_choice: self.display_choice,
             styled_face: self.styled_face,
         }
@@ -610,7 +599,6 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         depth: 0,
         size_scale: 1.0,
         base_pt: crate::ast::attrs::base_size_pt(Some(&expr.meta)) as f32,
-        spacing_style: None,
         display_choice: false,
         styled_face: None,
     };
@@ -653,11 +641,7 @@ fn layout_row_after(before: Option<AtomType>, nodes: &[MathNode], ctx: &LayoutCt
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.unwrap(); // safe: we passed Some
             if let Some(prev) = adj_prev {
-                let space = spacing::inter_atom_space(
-                    prev,
-                    cur_atom,
-                    current_ctx.effective_spacing_style(),
-                );
+                let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.branch_style());
                 if space > 0.0 {
                     let kern_width = space * current_ctx.size();
                     cursor_x += kern_width;
@@ -1431,7 +1415,6 @@ impl<'a> LayoutBuilder<'a> {
             size_scale: 1.0,
             base_pt: crate::ast::attrs::base_size_pt(expr.meta.as_deref()) as f32,
             glyph_scale: 1.0,
-            spacing_style: None,
             display_choice: false,
             styled_face: None,
         };
@@ -1450,9 +1433,6 @@ struct ArenaLayoutCtx<'a> {
     base_pt: f32,
     /// The size of the node's own sign, as a multiple of its text.
     glyph_scale: f64,
-    /// When set, use this style for inter-atom spacing calculations instead of
-    /// `self.style`.  See `LayoutCtx::spacing_style` for rationale.
-    spacing_style: Option<MathStyle>,
     display_choice: bool,
     styled_face: Option<TextStyle>,
 }
@@ -1468,11 +1448,6 @@ impl<'a> ArenaLayoutCtx<'a> {
         self.style.size_multiplier() * self.size_scale
     }
 
-    /// Style to use for inter-atom spacing calculations.
-    fn effective_spacing_style(&self) -> MathStyle {
-        self.spacing_style.unwrap_or_else(|| self.branch_style())
-    }
-
     fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
         ArenaLayoutCtx {
             style,
@@ -1482,7 +1457,6 @@ impl<'a> ArenaLayoutCtx<'a> {
             size_scale: self.size_scale,
             base_pt: self.base_pt,
             glyph_scale: 1.0,
-            spacing_style: self.spacing_style,
             display_choice: false,
             styled_face: self.styled_face,
         }
@@ -1541,7 +1515,6 @@ impl<'a> ArenaLayoutCtx<'a> {
             size_scale: self.size_scale,
             base_pt: self.base_pt,
             glyph_scale: 1.0,
-            spacing_style: self.spacing_style,
             display_choice: self.display_choice,
             styled_face: self.styled_face,
         }
@@ -1971,11 +1944,7 @@ fn layout_row_segment_arena(
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.unwrap(); // safe: we passed Some
             if let Some(prev) = adj_prev {
-                let space = spacing::inter_atom_space(
-                    prev,
-                    cur_atom,
-                    current_ctx.effective_spacing_style(),
-                );
+                let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.branch_style());
                 if space > 0.0 {
                     cursor_x += space * current_ctx.size();
                 }

@@ -321,7 +321,7 @@ pub(super) fn layout_nary(
     let size = ctx.size();
     // The space between the operator and its operand.
     let thin_space = spacing::nary_body_atom(body, ctx.branch_style()).map_or(0.0, |atom| {
-        spacing::inter_atom_space(AtomType::Op, atom, ctx.effective_spacing_style()) * size
+        spacing::inter_atom_space(AtomType::Op, atom, ctx.branch_style()) * size
     });
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
@@ -1029,7 +1029,7 @@ pub(super) fn layout_nary_arena(
     let size = ctx.size();
     // The space between the operator and its operand.
     let thin_space = spacing::nary_body_atom_c(ast, body, ctx.branch_style()).map_or(0.0, |atom| {
-        spacing::inter_atom_space(AtomType::Op, atom, ctx.effective_spacing_style()) * size
+        spacing::inter_atom_space(AtomType::Op, atom, ctx.branch_style()) * size
     });
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1

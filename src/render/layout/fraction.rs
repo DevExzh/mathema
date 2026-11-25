@@ -25,10 +25,8 @@ pub(super) fn layout_fraction(
     // (Text→Script) suppress binary-operator spacing, producing visually
     // cramped numerators/denominators.  The layout SIZE still follows the
     // normal fracnum/fracden rules; only the spacing calculation is upgraded.
-    let mut num_ctx = ctx.with_style(num_style);
-    num_ctx.spacing_style = Some(num_ctx.effective_spacing_style().min_text_level());
-    let mut den_ctx = ctx.with_style(den_style);
-    den_ctx.spacing_style = Some(den_ctx.effective_spacing_style().min_text_level());
+    let num_ctx = ctx.with_style(num_style);
+    let den_ctx = ctx.with_style(den_style);
     let num_box = layout_node(num, &num_ctx);
     let den_box = layout_node(den, &den_ctx);
 
@@ -134,11 +132,8 @@ pub(super) fn layout_fraction_arena(
         ctx.style.fracnum()
     };
     let den_style = num_style.cramped();
-    // Preserve at least text-level spacing in fraction content (see heap path).
-    let mut num_ctx = ctx.with_style(num_style);
-    num_ctx.spacing_style = Some(num_ctx.effective_spacing_style().min_text_level());
-    let mut den_ctx = ctx.with_style(den_style);
-    den_ctx.spacing_style = Some(den_ctx.effective_spacing_style().min_text_level());
+    let num_ctx = ctx.with_style(num_style);
+    let den_ctx = ctx.with_style(den_style);
     let num_id = layout_node_arena(ast, num, arena, &num_ctx);
     let den_id = layout_node_arena(ast, den, arena, &den_ctx);
 

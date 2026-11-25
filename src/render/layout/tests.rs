@@ -528,6 +528,24 @@ fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
     assert_eq!(offset("\\hat{\\mathord{V}}"), offset("\\hat V"));
 }
 
+/// Numerators in text are spaced as scripts are, as in XeTeX.
+#[test]
+fn small_fractions_are_spaced_as_scripts() {
+    for (latex, expected) in [
+        ("\\frac{a+b}{c-d}", 1.573),
+        ("\\frac{a+b}{c=d}", 1.573),
+        ("\\frac{\\sin x}{\\log_2 x}", 2.223),
+        ("\\frac{1}{2+\\frac{1}{3+\\frac{1}{x}}}", 2.788),
+        ("x^{\\frac{2}{k+1}}", 1.970),
+        ("\\displaystyle\\frac{a+b}{c-d}", 2.464),
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let actual = layout_expr(&expr, MathStyle::Text, &default_options()).width;
+        assert!((actual - expected).abs() < 2e-3, "{latex}: {actual}");
+    }
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {
@@ -1099,7 +1117,6 @@ fn layout_phantom_has_dimensions_but_invisible() {
             depth: 0,
             size_scale: 1.0,
             base_pt: 12.0,
-            spacing_style: None,
             display_choice: false,
             styled_face: None,
         },
@@ -1131,7 +1148,6 @@ fn layout_vphantom_has_zero_width() {
             depth: 0,
             size_scale: 1.0,
             base_pt: 12.0,
-            spacing_style: None,
             display_choice: false,
             styled_face: None,
         },
@@ -1172,7 +1188,6 @@ fn layout_hphantom_has_zero_height_depth() {
             depth: 0,
             size_scale: 1.0,
             base_pt: 12.0,
-            spacing_style: None,
             display_choice: false,
             styled_face: None,
         },
@@ -1260,7 +1275,6 @@ fn layout_boxed_adds_padding() {
             depth: 0,
             size_scale: 1.0,
             base_pt: 12.0,
-            spacing_style: None,
             display_choice: false,
             styled_face: None,
         },
@@ -1301,7 +1315,6 @@ fn layout_scaled_doubles_dimensions() {
             depth: 0,
             size_scale: 1.0,
             base_pt: 12.0,
-            spacing_style: None,
             display_choice: false,
             styled_face: None,
         },
@@ -1337,7 +1350,6 @@ fn layout_scaled_scales_child_positions() {
         depth: 0,
         size_scale: 1.0,
         base_pt: 12.0,
-        spacing_style: None,
         display_choice: false,
         styled_face: None,
     };
@@ -2777,64 +2789,6 @@ fn fraction_binop_spacing_display() {
     }
 }
 
-/// Verify that binary operators inside a fraction numerator/denominator
-/// receive non-zero inter-atom spacing even in inline (text) mode.
-/// This tests the spacing floor added by the fraction layout functions.
-#[test]
-fn fraction_binop_spacing_inline() {
-    use crate::ast::SymbolKind;
-    // \frac{a + b}{c - d}  in inline (text) mode
-    let num = MathNode::Row(vec![
-        MathNode::Identifier("a".into()),
-        MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
-        MathNode::Identifier("b".into()),
-    ]);
-    let den = MathNode::Row(vec![
-        MathNode::Identifier("c".into()),
-        MathNode::Symbol(SymbolKind::BinaryOp, "\u{2212}".into()),
-        MathNode::Identifier("d".into()),
-    ]);
-    let expr = MathExpr::inline(vec![MathNode::Fraction {
-        kind: FractionKind::Normal,
-        num: Box::new(num),
-        den: Box::new(den),
-    }]);
-    let opts = default_options();
-    let root = layout_expr(&expr, MathStyle::Text, &opts);
-
-    // In inline mode, fracnum(Text) = Script. Without the spacing floor
-    // fix, medium space would be suppressed. With the fix, it should be
-    // non-zero.
-    if let BoxKind::HBox { ref children } = root.kind {
-        let frac = &children[0].layout;
-        if let BoxKind::VBox { ref children } = frac.kind {
-            let check_spacing = |label: &str, layout: &LayoutBox| {
-                if let BoxKind::HBox { ref children } = layout.kind {
-                    assert!(
-                        children.len() >= 3,
-                        "{label}: expected at least 3 children, got {}",
-                        children.len()
-                    );
-                    let gap_before = children[1].dx - (children[0].dx + children[0].layout.width);
-                    assert!(
-                        gap_before > 0.01,
-                        "{label}: inline fraction should still have spacing around binary ops, got {:.4}",
-                        gap_before
-                    );
-                } else {
-                    panic!("{label}: expected HBox");
-                }
-            };
-            check_spacing("numerator", &children[0].layout);
-            check_spacing("denominator", &children[1].layout);
-        } else {
-            panic!("fraction should be VBox");
-        }
-    } else {
-        panic!("root should be HBox");
-    }
-}
-
 /// Verify the compact path produces identical spacing to the heap path
 /// for fractions with binary operators.
 #[test]
@@ -3125,7 +3079,6 @@ fn scaled_delimiter_with_other_factor_keeps_scaling() {
         depth: 0,
         size_scale: 1.0,
         base_pt: 12.0,
-        spacing_style: None,
         display_choice: false,
         styled_face: None,
     };
@@ -3159,7 +3112,6 @@ fn big_delimiter_at(latex: &str, size_scale: f64) -> (f64, LayoutBox) {
         depth: 0,
         size_scale,
         base_pt: 12.0,
-        spacing_style: None,
         display_choice: false,
         styled_face: None,
     };

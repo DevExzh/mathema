@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rendering: scripts are drawn with the script designs of Latin Modern Math (OpenType
   `ssty`), in the sizes and widths of XeTeX; TeX's space after scripts and beside
   fractions does not shrink in scripts.
+- Rendering: fractions in text are spaced as scripts are, without spaces around
+  operators and relations.
 - Rendering: the left-aligned columns of `aligned`, `align`, `split` and the like
   start with an ordinary atom, as in amsmath: `a &= b` has a space before `=`.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over

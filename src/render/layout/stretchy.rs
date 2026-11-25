@@ -624,7 +624,7 @@ pub(super) fn layout_fenced(
                         let atom = spacing::classify_node_in(n, style);
                         (atom, spacing::right_atom(n, atom, style))
                     }),
-                    style: current_ctx.effective_spacing_style(),
+                    style: current_ctx.branch_style(),
                     // A break has no size of its own.
                     size: if matches!(n, MathNode::LineBreak) {
                         ctx.size()
@@ -723,7 +723,7 @@ pub(super) fn layout_fenced(
                         let space = spacing::inter_atom_space(
                             prev,
                             spacing::AtomType::Close,
-                            ctx.effective_spacing_style(),
+                            ctx.branch_style(),
                         );
                         if space > 0.0 {
                             cursor_x += space * ctx.size();
@@ -797,7 +797,7 @@ pub(super) fn layout_fenced_arena(
                         let atom = spacing::classify_node_c_in(ast, child_id, style);
                         (atom, spacing::right_atom_c(ast, child_id, atom, style))
                     }),
-                    style: current_ctx.effective_spacing_style(),
+                    style: current_ctx.branch_style(),
                     // A break has no size of its own.
                     size: if matches!(*ast.node(child_id), CompactNode::Newline) {
                         ctx.size()
@@ -890,7 +890,7 @@ pub(super) fn layout_fenced_arena(
                         let space = spacing::inter_atom_space(
                             prev,
                             spacing::AtomType::Close,
-                            ctx.effective_spacing_style(),
+                            ctx.branch_style(),
                         );
                         if space > 0.0 {
                             cursor_x += space * ctx.size();

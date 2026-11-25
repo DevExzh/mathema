@@ -434,11 +434,7 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.expect("passed Some");
             if let Some(prev) = adj_prev {
-                let space = spacing::inter_atom_space(
-                    prev,
-                    cur_atom,
-                    current_ctx.effective_spacing_style(),
-                );
+                let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.branch_style());
                 if space > 0.0 {
                     // A break has no size of its own.
                     let size = if matches!(node, MathNode::LineBreak) {
@@ -900,11 +896,7 @@ pub(super) fn layout_styled_arena(
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.expect("passed Some");
             if let Some(prev) = adj_prev {
-                let space = spacing::inter_atom_space(
-                    prev,
-                    cur_atom,
-                    current_ctx.effective_spacing_style(),
-                );
+                let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.branch_style());
                 if space > 0.0 {
                     // A break has no size of its own.
                     let size = if matches!(*ast.node(id), CompactNode::Newline) {
