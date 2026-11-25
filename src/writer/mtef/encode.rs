@@ -137,6 +137,8 @@ struct Embellished {
 #[derive(Debug, Clone, Copy)]
 struct OwnSize {
     size: FontSize,
+    /// Whether it is an attribute, not the base size of the equation.
+    attribute: bool,
     /// The typesize of the node's own text, which has the font size; other
     /// typesizes inside it keep their proportion.
     place: Size,
@@ -197,6 +199,8 @@ pub(super) struct Encoder<'a> {
     in_index: bool,
     /// Whether the character being written is a separator.
     separator: bool,
+    /// Whether a full size in a smaller slot has a record of its own.
+    says_full: bool,
     /// Whether typesizes are not the sizes they stand for.
     absolute: bool,
     /// Whether any node has attributes.
@@ -275,6 +279,7 @@ impl<'a> Encoder<'a> {
             sized: arena.has_attrs(),
             absolute: false,
             in_index: false,
+            says_full: false,
             separator: false,
             glyph_size: None,
             base_pt,
@@ -417,6 +422,7 @@ impl<'a> Encoder<'a> {
         if let Some(own) = self.arena.attrs(id).and_then(|attrs| attrs.glyph_size) {
             self.own_size = Some(OwnSize {
                 size: own,
+                attribute: true,
                 place: size,
             });
         }
@@ -518,6 +524,7 @@ impl<'a> Encoder<'a> {
                     let size_pt = self.points(font_size.scale(self.base_pt) * self.base_pt);
                     let own = OwnSize {
                         size: size_pt,
+                        attribute: true,
                         place: size,
                     };
                     (Some(own), size)
@@ -526,6 +533,7 @@ impl<'a> Encoder<'a> {
                 } else {
                     let own = OwnSize {
                         size: font_size,
+                        attribute: true,
                         place: level,
                     };
                     (Some(own), level)
@@ -534,6 +542,7 @@ impl<'a> Encoder<'a> {
             font_size => (
                 Some(OwnSize {
                     size: font_size,
+                    attribute: true,
                     place: size,
                 }),
                 size,
@@ -811,6 +820,7 @@ impl<'a> Encoder<'a> {
             self.absolute = true;
             self.own_size = Some(OwnSize {
                 size: self.points(self.base_pt),
+                attribute: false,
                 place: Size::Full,
             });
         }
@@ -949,7 +959,16 @@ impl<'a> Encoder<'a> {
             if self.has_symbol_size(id) {
                 self.lose(SYMBOL_SIZE_LOSS);
             }
+            let place = size;
             (self.own_size, size) = self.own_size_of(id, size);
+            // A full size in a smaller slot is said to be one.
+            if size == Size::Full
+                && place != Size::Full
+                && self.size == Some(SizeRecord::Level(Size::Full))
+                && !std::mem::replace(&mut self.says_full, true)
+            {
+                self.size = None;
+            }
             self.sized_node(id, size)?;
             self.own_size = outer;
         } else {
@@ -2347,6 +2366,34 @@ impl<'a> Encoder<'a> {
 
     // ── Fractions, roots, operators ────────────────────────────────────
 
+    /// The size of a text at `size`, in points.
+    fn size_points(&self, size: Size) -> f64 {
+        let level = |size| self.base_pt * f64::from(type_size(size).per_mille()) / 1000.0;
+        match self.record(size) {
+            SizeRecord::Points(points) => f64::from(points) / 32.0,
+            SizeRecord::Delta(size, delta) => level(size) + f64::from(delta) / 32.0,
+            SizeRecord::Level(size) => level(size),
+        }
+    }
+
+    /// The size of the parts of a fraction in `style`, which are smaller than
+    /// what is around it in the AST, where that is sized.
+    fn fraction_size(&self, size: Size, slot: Size, style: MathStyle) -> Option<OwnSize> {
+        let own = self.own_size?;
+        if !own.attribute {
+            return Some(own);
+        }
+        let scale = style.fracnum().size_multiplier() / self.math_style.size_multiplier();
+        if (scale - 1.0).abs() < 1e-9 && slot == size {
+            return Some(own);
+        }
+        Some(OwnSize {
+            size: self.points(self.size_points(size) * scale),
+            place: slot,
+            attribute: true,
+        })
+    }
+
     fn fraction(&mut self, size: Size, kind: FractionKind, num: NodeId, den: NodeId) -> Result<()> {
         let (selector, variation, slot_size) = match (self.v5, kind) {
             (_, FractionKind::NoBar) => return self.stack(size, num, den),
@@ -2361,12 +2408,15 @@ impl<'a> Encoder<'a> {
         };
         self.template(size, selector, variation);
         let fraction_style = kind.forced_style().unwrap_or(self.math_style);
+        let outer = self.own_size;
+        self.own_size = self.fraction_size(size, slot_size, fraction_style);
         self.with_math_style(fraction_style.fracnum(), |this| {
             this.slot(slot_size, Some(num))
         })?;
         self.with_math_style(fraction_style.fracden(), |this| {
             this.slot(slot_size, Some(den))
         })?;
+        self.own_size = outer;
         self.end();
         Ok(())
     }
@@ -2378,8 +2428,11 @@ impl<'a> Encoder<'a> {
         self.tag(PILE, 0);
         self.out.push(2);
         self.out.push(1);
+        let outer = self.own_size;
+        self.own_size = self.fraction_size(size, size, self.math_style);
         self.with_math_style(self.math_style.fracnum(), |this| this.slot(size, Some(num)))?;
         self.with_math_style(self.math_style.fracden(), |this| this.slot(size, Some(den)))?;
+        self.own_size = outer;
         self.end();
         Ok(())
     }
@@ -2397,19 +2450,11 @@ impl<'a> Encoder<'a> {
         let outer = self.own_size;
         if outer.is_some() {
             // The AST's index is at the second script size.
-            let text = match self.record(size) {
-                SizeRecord::Points(points) => f64::from(points) / 32.0,
-                SizeRecord::Delta(_, delta) => {
-                    self.base_pt * f64::from(type_size(size).per_mille()) / 1000.0
-                        + f64::from(delta) / 32.0
-                },
-                SizeRecord::Level(size) => {
-                    self.base_pt * f64::from(type_size(size).per_mille()) / 1000.0
-                },
-            };
+            let text = self.size_points(size);
             let scale = 500.0 / f64::from(type_size(size).per_mille().min(1000));
             self.own_size = Some(OwnSize {
                 size: self.points(text * scale),
+                attribute: outer.is_some_and(|own| own.attribute),
                 place: script,
             });
         }

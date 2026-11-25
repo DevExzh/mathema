@@ -980,7 +980,10 @@ impl<'a> Decoder<'a> {
             FONT => self.v3_font()?,
             SIZE => self.size_record()?,
             FULL..=SUBSYM => {
-                self.script_sizes |= matches!(rtype - FULL, 1 | 2);
+                // A full size that is said to be one in a smaller slot is not
+                // the lack of records.
+                self.script_sizes |=
+                    matches!(rtype - FULL, 1 | 2) || rtype == FULL && self.slot_size != 0;
                 self.size = SizeState::level(rtype - FULL);
             },
             COLOR if self.v5 => self.color()?,

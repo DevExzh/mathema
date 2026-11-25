@@ -4,9 +4,9 @@
 
 use smallvec::SmallVec;
 
-use crate::ast::arena::{AstArena, Normalized};
+use super::joining::Joiner;
+use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
-use crate::ast::normalize::number_decimal_points;
 use crate::ast::style::MathStyle;
 use crate::ast::{FontSize, MathAtomType, SymbolKind, TypeSize};
 
@@ -30,20 +30,13 @@ struct Context {
     size: u8,
 }
 
-/// Neighbours that become one node.
-struct Joined {
-    /// The index of the first one in its list.
-    at: usize,
-    text: String,
-    /// The decimal points in it, for numbers.
-    points: usize,
-}
-
 struct Lowering<'a> {
     arena: &'a mut AstArena,
     base_pt: f64,
     approximated: usize,
     dropped: usize,
+    /// Whether sizes are declared at all.
+    declares: bool,
 }
 
 /// `expr` with its font sizes as size and style declarations.
@@ -58,12 +51,24 @@ pub(super) struct Lowered {
 /// Lower the font sizes of `expr`.
 #[cold]
 pub(super) fn lower_sizes(expr: &CompactExpr) -> crate::error::Result<Lowered> {
+    lower(expr, true)
+}
+
+/// `expr` without its typesetting attributes, for a writer that has no place
+/// for them.
+#[cold]
+pub(super) fn without_sizes(expr: &CompactExpr) -> crate::error::Result<CompactExpr> {
+    Ok(lower(expr, false)?.expr)
+}
+
+fn lower(expr: &CompactExpr, declares: bool) -> crate::error::Result<Lowered> {
     let mut lowered = expr.clone();
     let mut lowering = Lowering {
         base_pt: crate::ast::attrs::base_size_pt(expr.meta.as_deref()),
         arena: &mut lowered.arena,
         approximated: 0,
         dropped: 0,
+        declares,
     };
     let context = Context {
         style: expr.display.into(),
@@ -95,6 +100,9 @@ impl Lowering<'_> {
     /// A style changes how a structure is drawn, not only its size: the limits
     /// of a sum, the size of its sign. Only a character takes one.
     fn declaration(&mut self, id: NodeId, size: FontSize, context: Context) -> Declaration {
+        if !self.declares {
+            return Declaration::None;
+        }
         let declaration = self.any_declaration(size, context);
         if matches!(declaration, Declaration::Style(_)) && !self.is_character(id) {
             self.dropped += 1;
@@ -215,10 +223,9 @@ impl Lowering<'_> {
         // The declarations of the list itself.
         let mut ambient = context;
         let mut current = context;
-        // Text that takes the place of a node of `out`, and the node it ends
-        // with.
-        let mut joined: Option<Joined> = None;
-        let mut joined_last = None;
+        // What differs only in sizes that are not declared is one node, as it
+        // would be without them.
+        let mut joiner = Joiner::new();
         for id in children {
             match *self.arena.node(id) {
                 CompactNode::StyleSwitch(value) => {
@@ -257,84 +264,11 @@ impl Lowering<'_> {
             self.switch(&mut out, current, wanted);
             current = wanted;
             let lowered = self.node(id, wanted);
-            // What differs only in sizes that are not declared is one, as it
-            // would be without them.
-            if let Some(&last) = out.last()
-                && self.arena.has_attrs()
-                && self.arena.attrs(id) != self.arena.attrs(joined_last.unwrap_or(last))
-                && self.join(out.len() - 1, last, lowered, &mut joined)
-            {
-                joined_last = Some(id);
-                continue;
-            }
-            self.finish_text(&mut out, joined.take());
-            joined_last = None;
-            out.push(lowered);
+            let key = self.arena.attrs(id).cloned();
+            joiner.add(self.arena, &mut out, lowered, key);
         }
-        self.finish_text(&mut out, joined.take());
+        joiner.finish(self.arena, &mut out);
         self.arena.push_children_deferred(&out)
-    }
-
-    /// Join `next` to `last`, at `at` in its list, if normalization would. Only
-    /// the new part is looked at, whatever has been joined before.
-    fn join(&self, at: usize, last: NodeId, next: NodeId, joined: &mut Option<Joined>) -> bool {
-        let normalized = self.arena.normalized();
-        let points = |sid| number_decimal_points(self.arena.str_val(sid));
-        let (before, after) = match (*self.arena.node(last), *self.arena.node(next)) {
-            (CompactNode::Text(a, before), CompactNode::Text(b, after)) if a == b => {
-                (before, after)
-            },
-            (CompactNode::Number(before), CompactNode::Number(after))
-                if normalized != Normalized::No =>
-            {
-                let so_far = match joined {
-                    Some(joined) => Some(joined.points),
-                    None => points(before),
-                };
-                // One decimal point at most.
-                match (so_far, points(after)) {
-                    (Some(a), Some(b)) if a + b <= 1 => (before, after),
-                    _ => return false,
-                }
-            },
-            (CompactNode::Identifier(before), CompactNode::Identifier(after))
-                if normalized == Normalized::MergingIdentifiers
-                    && (joined.is_some() || self.arena.str_val(before).is_ascii())
-                    && self.arena.str_val(after).is_ascii() =>
-            {
-                (before, after)
-            },
-            _ => return false,
-        };
-        let number = matches!(*self.arena.node(next), CompactNode::Number(_));
-        let joined = joined.get_or_insert_with(|| Joined {
-            at,
-            text: self.arena.str_val(before).to_owned(),
-            points: if number {
-                points(before).unwrap_or(0)
-            } else {
-                0
-            },
-        });
-        joined.text.push_str(self.arena.str_val(after));
-        if number {
-            joined.points += points(after).unwrap_or(0);
-        }
-        true
-    }
-
-    /// Put joined text in the place of its first part.
-    fn finish_text(&mut self, out: &mut [NodeId], joined: Option<Joined>) {
-        if let Some(Joined { at, text, .. }) = joined {
-            let text = self.arena.push_str(&text);
-            let node = match *self.arena.node(out[at]) {
-                CompactNode::Text(style, _) => CompactNode::Text(style, text),
-                CompactNode::Number(_) => CompactNode::Number(text),
-                CompactNode::Identifier(_) => CompactNode::Identifier(text),
-                _ => return,
-            };
-            out[at] = self.arena.push_node(node);
-        }
     }
 
     /// Lower a node in a position that holds one node: its declaration goes

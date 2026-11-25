@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use crate::ast::arena::{AstArena, Normalized};
+use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 
@@ -14,6 +14,12 @@ use crate::ast::*;
 ///    3c. Merge adjacent ASCII Identifier nodes (math-mode letter runs)
 /// 4. Remove empty Rows from node lists
 pub fn normalize_expr(expr: &mut MathExpr) {
+    // Sizes around lists are those of what the lists hold, and lists are opened.
+    if super::has_attributes(expr)
+        && let Ok(compact) = CompactExpr::from_math_expr(expr)
+    {
+        *expr = compact.to_math_expr();
+    }
     normalize_nodes_depth(&mut expr.nodes, 0);
 }
 
@@ -90,9 +96,9 @@ fn normalize_nodes_keeping_breaks(
     // Phase 3: merge adjacent Text nodes with the same style
     let mut merged = Vec::with_capacity(flattened.len());
     for node in flattened {
-        if let MathNode::Text(style, ref text) = node
-            && let Some(MathNode::Text(prev_style, prev_text)) = merged.last_mut()
-            && *prev_style == style
+        if let Some((MathNode::Text(prev_style, prev_text), MathNode::Text(style, text))) =
+            same_sizes(merged.last_mut(), &node)
+            && prev_style == style
         {
             prev_text.push_str(text);
             continue;
@@ -104,12 +110,12 @@ fn normalize_nodes_keeping_breaks(
     let mut final_nodes = Vec::with_capacity(merged.len());
     let mut number_dots = None;
     for node in merged {
-        let node_dots = match &node {
+        let node_dots = match without_sizes(&node) {
             MathNode::Number(num) => number_decimal_points(num),
             _ => None,
         };
-        if let MathNode::Number(ref num) = node
-            && let Some(MathNode::Number(prev_num)) = final_nodes.last_mut()
+        if let Some((MathNode::Number(prev_num), MathNode::Number(num))) =
+            same_sizes(final_nodes.last_mut(), &node)
             && let (Some(previous_dots), Some(node_dots)) = (number_dots, node_dots)
             && previous_dots + node_dots <= 1
         {
@@ -125,8 +131,8 @@ fn normalize_nodes_keeping_breaks(
     let merged_ids = if merge_identifiers {
         let mut merged_ids = Vec::with_capacity(final_nodes.len());
         for node in final_nodes {
-            if let MathNode::Identifier(ref text) = node
-                && let Some(MathNode::Identifier(prev_text)) = merged_ids.last_mut()
+            if let Some((MathNode::Identifier(prev_text), MathNode::Identifier(text))) =
+                same_sizes(merged_ids.last_mut(), &node)
                 && prev_text.is_ascii()
                 && text.is_ascii()
             {
@@ -193,6 +199,31 @@ pub(crate) fn number_decimal_points(text: &str) -> Option<usize> {
         }
     }
     Some(dots)
+}
+
+fn without_sizes(node: &MathNode) -> &MathNode {
+    match node {
+        MathNode::Attributed { content, .. } => content,
+        node => node,
+    }
+}
+
+/// Two neighbours without their typesetting attributes, if those are the same.
+fn same_sizes<'a>(
+    previous: Option<&'a mut MathNode>,
+    node: &'a MathNode,
+) -> Option<(&'a mut MathNode, &'a MathNode)> {
+    match (previous?, node) {
+        (
+            MathNode::Attributed { attrs, content },
+            MathNode::Attributed {
+                attrs: own,
+                content: next,
+            },
+        ) => (attrs == own).then_some((&mut **content, &**next)),
+        (MathNode::Attributed { .. }, _) | (_, MathNode::Attributed { .. }) => None,
+        (previous, node) => Some((previous, node)),
+    }
 }
 
 fn is_effectively_empty_math(node: &MathNode) -> bool {
@@ -658,7 +689,6 @@ fn normalize_node_depth_with_identifiers(
 /// would outgrow its 32-bit indices.
 pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()> {
     expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0)?;
-    expr.arena.set_normalized(Normalized::MergingIdentifiers);
     expr.arena.check_limits()
 }
 
@@ -671,22 +701,7 @@ pub(crate) fn normalize_compact_expr_keeping_identifiers(
     expr: &mut CompactExpr,
 ) -> crate::error::Result<()> {
     expr.roots = normalize_compact_span_with_identifiers(&mut expr.arena, expr.roots, 0, false)?;
-    expr.arena.set_normalized(Normalized::KeepingIdentifiers);
     expr.arena.check_limits()
-}
-
-/// `expr` without its typesetting attributes, for a writer that has no place
-/// for them. Nodes that only differed in them are joined where normalization
-/// would have joined them: what is not written does not change what is.
-pub(crate) fn without_attrs(expr: &CompactExpr) -> crate::error::Result<CompactExpr> {
-    let mut plain = expr.clone();
-    plain.arena.clear_attrs();
-    match plain.arena.normalized() {
-        Normalized::No => {},
-        Normalized::KeepingIdentifiers => normalize_compact_expr_keeping_identifiers(&mut plain)?,
-        Normalized::MergingIdentifiers => normalize_compact_expr(&mut plain)?,
-    }
-    Ok(plain)
 }
 
 /// Normalize a span of child nodes. Returns a (possibly new) span.

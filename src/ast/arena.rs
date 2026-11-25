@@ -86,15 +86,6 @@ impl ProvenanceStore {
     }
 }
 
-/// How an expression was normalized.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Normalized {
-    #[default]
-    No,
-    KeepingIdentifiers,
-    MergingIdentifiers,
-}
-
 /// The attributes of the nodes that have some. Boxed in the arena, which is
 /// moved more often than it has any.
 #[derive(Debug, Clone, Default)]
@@ -131,8 +122,6 @@ pub struct AstArena {
     size_overflow: bool,
     /// See [`has_size_scale`](Self::has_size_scale).
     has_size_scale: bool,
-    /// How the expression was last normalized, if it was.
-    normalized: Normalized,
     /// [`MAX_ENTRIES`](Self::MAX_ENTRIES), lowered by tests.
     entry_limit: usize,
 }
@@ -151,7 +140,6 @@ impl AstArena {
             list_overflow: false,
             size_overflow: false,
             has_size_scale: false,
-            normalized: Normalized::No,
             entry_limit: Self::MAX_ENTRIES,
         }
     }
@@ -172,7 +160,6 @@ impl AstArena {
             list_overflow: false,
             size_overflow: false,
             has_size_scale: false,
-            normalized: Normalized::No,
             entry_limit: Self::MAX_ENTRIES,
         }
     }
@@ -484,14 +471,6 @@ impl AstArena {
         {
             self.add_attrs(id, &attrs);
         }
-    }
-
-    pub(crate) fn normalized(&self) -> Normalized {
-        self.normalized
-    }
-
-    pub(crate) fn set_normalized(&mut self, normalized: Normalized) {
-        self.normalized = normalized;
     }
 
     /// Remove the typesetting attributes of a node, if they are `attrs`.

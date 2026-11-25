@@ -1344,6 +1344,268 @@ mod review {
         assert!((size(">7<") / size(">8<") - 1.0).abs() < 0.01, "{svg}");
     }
 
+    /// Everything an expression is written as: with and without sizes.
+    fn written(expr: &CompactExpr) -> Vec<String> {
+        use mathema::writer::{
+            latex::LatexWriter, mtef::MtefWriter, omml::OmmlWriter, unicode_math::UnicodeMathWriter,
+        };
+        let config = Config::default();
+        let show = |written: mathema::Result<String>| written.unwrap_or_else(|e| e.to_string());
+        let mut out = vec![
+            show(<LatexWriter as Writer>::write_compact(expr, &config)),
+            show(<MathmlWriter as Writer>::write_compact(expr, &config)),
+            show(<OmmlWriter as Writer>::write_compact(expr, &config)),
+            show(<UnicodeMathWriter as Writer>::write_compact(expr, &config)),
+            show(OmmlWriter::write_with_options(expr, &config, &wml()).map(|(omml, _)| omml)),
+        ];
+        for version in [MtefVersion::V3, MtefVersion::V5] {
+            let bytes = MtefWriter::write_bytes(expr, &config, &MtefWriteOptions::new(version));
+            out.push(show(bytes.map(|bytes| format!("{bytes:x?}"))));
+        }
+        out
+    }
+
+    fn written_from_heap(expr: &mathema::MathExpr) -> Vec<String> {
+        use mathema::writer::{
+            latex::LatexWriter, omml::OmmlWriter, unicode_math::UnicodeMathWriter,
+        };
+        let config = Config::default();
+        let show = |written: mathema::Result<String>| written.unwrap_or_else(|e| e.to_string());
+        let mut out = vec![
+            show(LatexWriter::write(expr, &config)),
+            show(MathmlWriter::write(expr, &config)),
+            show(OmmlWriter::write(expr, &config)),
+            show(UnicodeMathWriter::write(expr, &config)),
+        ];
+        out.extend(written(&CompactExpr::from_math_expr(expr).unwrap()).split_off(4));
+        out
+    }
+
+    /// What is written depends on the tree, not on how it came to be.
+    #[track_caller]
+    fn every_route_agrees(expr: &CompactExpr) {
+        use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
+        let compact = written(expr);
+        assert_eq!(written_from_heap(&expr.to_math_expr()), compact);
+        let rebuilt = CompactExpr::from_math_expr(&expr.to_math_expr()).unwrap();
+        assert_eq!(written(&rebuilt), compact);
+        let mut normalized = expr.clone();
+        normalize_compact_expr(&mut normalized).unwrap();
+        let mut heap = expr.to_math_expr();
+        normalize_expr(&mut heap);
+        assert_eq!(heap, normalized.to_math_expr());
+        assert_eq!(written_from_heap(&heap), written(&normalized));
+        // Normalizing what is normalized changes nothing.
+        let once = written(&normalized);
+        normalize_compact_expr(&mut normalized).unwrap();
+        assert_eq!(written(&normalized), once);
+    }
+
+    #[test]
+    fn heap_and_compact_agree_on_sizes() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+        let mut read = 0;
+        for dir in ["mtef", "mtef-sizes"] {
+            for entry in std::fs::read_dir(format!("{root}/{dir}")).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|e| e == "bin")
+                    && let Ok(result) = from_mtef_bytes(&std::fs::read(&path).unwrap())
+                    && result.compact_expr().arena.has_attrs()
+                {
+                    read += 1;
+                    every_route_agrees(result.compact_expr());
+                }
+            }
+        }
+        assert!(read >= 6, "{read}");
+        // Digits of 300/32 and 320/32 pt: one number where sizes are not
+        // written, however the tree was built.
+        let bytes = [
+            9, 101, 44, 1, 2, 136, b'3', 0, 9, 101, 64, 1, 2, 136, b'4', 0,
+        ];
+        let bytes = [&[3, 1, 1, 3, 10, 1][..], &bytes, &[0, 0]].concat();
+        let read = from_mtef_bytes(&bytes).unwrap();
+        every_route_agrees(read.compact_expr());
+        assert_eq!(written_from_heap(&read.expr())[3], "34");
+    }
+
+    /// Trees of neighbours that can be joined, from a fixed sequence.
+    #[test]
+    fn random_sizes_agree_in_every_route() {
+        struct Random(u64);
+        impl Random {
+            fn below(&mut self, n: u64) -> u64 {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (self.0 >> 33) % n
+            }
+            fn leaf(&mut self) -> MathNode {
+                let letter = |r: &mut Self| ["x", "T", "H", "\u{3b1}"][r.below(4) as usize];
+                let leaf = match self.below(6) {
+                    0 | 1 => id(letter(self)),
+                    2 => MathNode::Number(["1", "23", "4.5", ".6"][self.below(4) as usize].into()),
+                    3 => MathNode::Text(
+                        TextStyle::Normal,
+                        ["ab", " ", "c"][self.below(3) as usize].into(),
+                    ),
+                    4 => MathNode::Text(TextStyle::Bold, "d".into()),
+                    _ => MathNode::Symbol(mathema::ast::SymbolKind::BinaryOp, "+".into()),
+                };
+                self.maybe_sized(leaf)
+            }
+            fn maybe_sized(&mut self, node: MathNode) -> MathNode {
+                match self.below(5) {
+                    0 => sized(points(18, 1), node),
+                    1 => sized(points(12, 1), node),
+                    2 => sized(logical(TypeSize::Sub), node),
+                    _ => node,
+                }
+            }
+            fn list(&mut self, depth: u64) -> Vec<MathNode> {
+                (0..1 + self.below(4)).map(|_| self.node(depth)).collect()
+            }
+            fn row(&mut self, depth: u64) -> Box<MathNode> {
+                Box::new(MathNode::Row(self.list(depth)))
+            }
+            fn node(&mut self, depth: u64) -> MathNode {
+                if depth == 0 || self.below(3) > 0 {
+                    return self.leaf();
+                }
+                let node = match self.below(5) {
+                    0 => MathNode::Fraction {
+                        kind: mathema::ast::FractionKind::Normal,
+                        num: self.row(depth - 1),
+                        den: self.row(depth - 1),
+                    },
+                    1 => MathNode::Superscript {
+                        base: Box::new(self.leaf()),
+                        sup: self.row(depth - 1),
+                    },
+                    2 => MathNode::Sqrt(self.row(depth - 1)),
+                    3 => MathNode::Row(self.list(depth - 1)),
+                    _ => MathNode::Styled(TextStyle::Bold, vec![id("z")]),
+                };
+                self.maybe_sized(node)
+            }
+        }
+        for seed in 0..1500 {
+            let mut random = Random(seed * 7919 + 1);
+            let mut heap = mathema::MathExpr::block(random.list(3));
+            let mut expr = CompactExpr::from_math_expr(&heap).unwrap();
+            every_route_agrees(&expr);
+            // As the nodes are given, sizes around lists among them.
+            assert_eq!(written_from_heap(&heap), written(&expr));
+            mathema::ast::normalize::normalize_expr(&mut heap);
+            mathema::ast::normalize::normalize_compact_expr(&mut expr).unwrap();
+            assert_eq!(written_from_heap(&heap), written(&expr), "{seed}");
+        }
+    }
+
+    /// A normalized arena that is edited afterwards is written as it is.
+    #[test]
+    fn edits_of_a_normalized_expression() {
+        use mathema::ast::compact::CompactNode;
+        use mathema::ast::normalize::normalize_compact_expr;
+        let nodes = vec![sized(points(18, 1), id("T")), id("H"), id("\u{3b1}")];
+        let mut expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+        normalize_compact_expr(&mut expr).unwrap();
+        let ids: Vec<_> = expr.arena.children(expr.roots).to_vec();
+        let name = expr.arena.push_str("Q");
+        *expr.arena.node_mut(ids[1]) = CompactNode::Identifier(name);
+        // Two unsized neighbours, apart because they were put there.
+        let third = expr.arena.push_node(CompactNode::Identifier(name));
+        expr.roots = expr.arena.push_children(&[ids[0], ids[1], third]).unwrap();
+        let heap = expr.to_math_expr();
+        assert_eq!(written_from_heap(&heap), written(&expr));
+        assert!(written(&expr)[2].contains(">TQ<"), "{}", written(&expr)[2]);
+        assert!(written(&expr)[2].contains(">Q<"), "{}", written(&expr)[2]);
+    }
+
+    /// Runs without sizes that are apart stay apart.
+    #[test]
+    fn unsized_runs_stay_apart() {
+        for node in [
+            id("x"),
+            MathNode::Number("3".into()),
+            MathNode::Text(TextStyle::Normal, "a".into()),
+        ] {
+            let nodes = vec![
+                node.clone(),
+                node.clone(),
+                MathNode::Space(Rational::new(1, 1)),
+                sized(points(20, 1), id("z")),
+            ];
+            let sized_ = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+            let nodes = vec![
+                node.clone(),
+                node,
+                MathNode::Space(Rational::new(1, 1)),
+                id("z"),
+            ];
+            let plain = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+            assert_eq!(written(&sized_)[2..4], written(&plain)[2..4]);
+        }
+    }
+
+    /// The parts of a fraction inside another or in a script are smaller.
+    #[cfg(feature = "render")]
+    #[test]
+    fn a_size_around_fractions_survives_mtef() {
+        let source = "<math><mstyle mathsize='18pt'><mfrac><mn>1</mn><mfrac><mn>2</mn>\
+                      <mn>3</mn></mfrac></mfrac><msup><mi>x</mi><mfrac><mn>4</mn><mn>5</mn>\
+                      </mfrac></msup><mfrac linethickness='0'><mn>6</mn><mn>7</mn></mfrac>\
+                      <msqrt><mfrac><mn>8</mn><mn>9</mn></mfrac></msqrt></mstyle></math>";
+        for source in [
+            source.to_owned(),
+            source.replace("<math>", "<math display='block'>"),
+        ] {
+            let read = from_mathml(&source).unwrap();
+            for version in [MtefVersion::V3, MtefVersion::V5] {
+                let bytes = read.to_mtef_bytes(&MtefWriteOptions::new(version)).unwrap();
+                let back = from_mtef_bytes(&bytes).unwrap();
+                for digit in '1'..='9' {
+                    let size = |read: &mathema::ConvertResult| -> f64 {
+                        let svg = read.to_svg_text().unwrap();
+                        let text = format!(">{digit}<");
+                        let node = svg.split("<text ").find(|t| t.contains(&text)).unwrap();
+                        let size = node.split("font-size=\"").nth(1).unwrap();
+                        size.split('"').next().unwrap().parse().unwrap()
+                    };
+                    let (from, to) = (size(&read), size(&back));
+                    assert!(
+                        (from / to - 1.0).abs() < 0.02,
+                        "{version:?} {digit} {from} {to}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A full size where a smaller one is expected, alone in the equation.
+    #[test]
+    fn a_lone_full_size_in_a_smaller_slot() {
+        let full = || sized(logical(TypeSize::Full), id("n"));
+        let pile = MathNode::Array {
+            columns: vec![mathema::ast::ColumnAlign::Center],
+            rows: vec![vec![vec![full()]], vec![vec![full()]]],
+            arraystretch: None,
+            add_jot: false,
+        };
+        for script in [full(), pile] {
+            let nodes = [MathNode::Underscript {
+                base: Box::new(id("B")),
+                under: Box::new(script),
+                movable_limits: false,
+            }];
+            for version in [MtefVersion::V3, MtefVersion::V5] {
+                let (back, diagnostics) = through_mtef(&nodes, version);
+                assert_eq!(back, nodes, "{version:?} {diagnostics:?}");
+            }
+        }
+    }
+
     #[cfg(feature = "render")]
     #[test]
     fn a_sized_fraction_with_a_style_of_its_own() {

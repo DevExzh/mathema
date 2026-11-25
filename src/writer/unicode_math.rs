@@ -132,7 +132,7 @@ impl MathWriter for UnicodeMathWriter {
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
         if expr.arena.has_attrs() {
-            let plain = crate::ast::normalize::without_attrs(expr)?;
+            let plain = super::sizes::without_sizes(expr)?;
             return Self::write_compact(&plain, _config);
         }
         let mut out = String::with_capacity(256);

@@ -132,7 +132,7 @@ impl OmmlWriter {
     ) -> Result<(String, Vec<Diagnostic>)> {
         crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
         if expr.arena.has_attrs() && options.run_properties != OmmlRunProperties::WordprocessingMl {
-            let plain = crate::ast::normalize::without_attrs(expr)?;
+            let plain = super::sizes::without_sizes(expr)?;
             let (omml, mut diagnostics) = Self::write_with_options(&plain, _config, options)?;
             diagnostics.insert(0, dropped_sizes());
             return Ok((omml, diagnostics));
@@ -189,7 +189,7 @@ impl OmmlWriter {
             .iter()
             .map(|eq| {
                 (!keeps_sizes && eq.arena.has_attrs())
-                    .then(|| crate::ast::normalize::without_attrs(eq))
+                    .then(|| super::sizes::without_sizes(eq))
                     .transpose()
             })
             .collect::<Result<_>>()?;
