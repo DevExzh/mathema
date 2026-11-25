@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the wide accent in MTEF 5 and as a limit in MTEF 3, mostly silently. A
   narrow accent over more than one character, which MTEF has only as a wide
   one, is now a reported loss.
+- Rewriting MTEF settles after one pass in more cases: an INTOP or SUMOP
+  template without limits is read as loose items of its line (so a prime it
+  draws is the prime of what precedes it), slots that hold only a zero space
+  are empty, and a lone point after a number is kept apart from the digits
+  after it. MTEF 5 colour is no longer lost on a base with both leading and
+  trailing scripts.
+  A prime or script after such a template is its last item's, a prime is not
+  the script of an empty leading script, a zero space before it does not come
+  between, and scripts on nothing lead the first item of a coloured run. Trees
+  nested too deeply for normalization, and some scripts on nothing next to
+  another colour, can still take a second pass.
+  Near the depth limit, the MTEF writer refuses a tree whose reading could
+  not be written again.
 - The MTEF reader accepts more real MathType output in `Strictness::Strict`:
   the short buffer slack after the final END of an `Equation Native` stream
   (an error before; unless it decodes as equation content), MTEF 5 tab stops

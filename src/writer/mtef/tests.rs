@@ -1316,3 +1316,40 @@ fn accents_around_styled_accents_are_byte_stable() {
         }
     }
 }
+
+/// Reading can group what was written one level deeper (`x′` becomes a
+/// superscript); a tree whose reading cannot be written under the same limit
+/// is refused.
+#[test]
+fn whatever_is_written_can_be_written_again_at_the_depth_limit() {
+    let (mut written, mut refused) = (0, 0);
+    for roots in 0..60 {
+        let mut node = MathNode::Row(vec![
+            MathNode::Identifier("x".into()),
+            MathNode::Symbol(crate::ast::SymbolKind::Ordinary, "\u{2032}".into()),
+        ]);
+        for _ in 0..roots {
+            node = MathNode::Sqrt(Box::new(node));
+        }
+        let expr = CompactExpr::from_math_expr(&MathExpr::inline(vec![node])).unwrap();
+        for limit in 1..=128 {
+            let config = Config {
+                max_depth: limit,
+                ..Config::default()
+            };
+            for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+                let options = MtefWriteOptions::new(version);
+                let Ok(bytes) = MtefWriter::write_bytes(&expr, &config, &options) else {
+                    refused += 1;
+                    continue;
+                };
+                written += 1;
+                let back = crate::from_mtef_bytes_with(&bytes, &config).unwrap();
+                if let Err(e) = back.to_mtef_bytes(&options) {
+                    panic!("{version:?} limit {limit}, {roots} roots: {e}");
+                }
+            }
+        }
+    }
+    assert!(written > 1000 && refused > 1000, "{written} {refused}");
+}

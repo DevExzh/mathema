@@ -104,6 +104,9 @@ impl Size {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Run {
     Number(i32),
+    /// A point that is its own node after a number: the reader would take it
+    /// and the digits after it into the number.
+    Point,
     Text,
     Function,
     Styled(i32),
@@ -130,6 +133,8 @@ pub(super) struct Encoder<'a> {
     max_depth: usize,
     max_nodes: Option<usize>,
     depth: usize,
+    /// The deepest nesting written, of AST nodes or of object lists.
+    deepest: usize,
     nodes: usize,
     pub(super) diagnostics: Vec<Diagnostic>,
     /// Typeface values of the explicit fonts defined so far, by style bits
@@ -138,6 +143,10 @@ pub(super) struct Encoder<'a> {
     explicit_count: i32,
     /// The run the last written glyph belongs to.
     last_run: Option<Run>,
+    /// The colour it was drawn in.
+    last_color: Option<u16>,
+    /// Whether the number run last written has a decimal point.
+    decimal: bool,
     /// Records that produce an item in the reader's line (CHAR, TMPL, PILE,
     /// MATRIX), counted to find bases that write nothing.
     items: usize,
@@ -189,11 +198,14 @@ impl<'a> Encoder<'a> {
             max_depth: config.effective_max_depth(),
             max_nodes: config.max_nodes,
             depth: 0,
+            deepest: 0,
             nodes: 0,
             diagnostics: Vec::new(),
             explicit: [None; 4],
             explicit_count: 0,
             last_run: None,
+            last_color: None,
+            decimal: false,
             items: 0,
             open: Vec::new(),
             zero_space: None,
@@ -233,8 +245,15 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    /// Whether the reading of what was written could exceed a limit that
+    /// this tree does not.
+    pub(super) fn is_near_limits(&self) -> bool {
+        self.deepest > self.max_depth / 2 || self.max_nodes.is_some_and(|max| self.nodes > max / 2)
+    }
+
     fn enter(&mut self) -> Result<()> {
         self.depth += 1;
+        self.deepest = self.deepest.max(self.depth).max(self.open.len());
         if self.depth > self.max_depth || self.too_deep {
             return Err(Error::LimitExceeded {
                 kind: LimitKind::Depth,
@@ -473,13 +492,20 @@ impl<'a> Encoder<'a> {
         let inside_styled = matches!(run, Some(Run::Styled(_)))
             && self.styled_start.is_some_and(|start| self.items > start);
         if matches!(run, Some(Run::Function | Run::Styled(_)))
-            && run == self.last_run
+            && run == self.run_before()
             && !inside_styled
+            || matches!(run, Some(Run::Number(_)))
+                && glyph.ch.is_ascii_digit()
+                && self.run_before() == Some(Run::Point)
         {
             self.space_code(size, chars::SPACE_ZERO)?;
         }
+        let run = match (run, self.run_before()) {
+            (None, Some(Run::Number(_))) if glyph.ch == '.' && !self.decimal => Some(Run::Point),
+            _ => run,
+        };
         self.glyph(size, glyph, func_start, &[])?;
-        self.last_run = run;
+        self.set_run(run);
         Ok(())
     }
 
@@ -925,6 +951,10 @@ impl<'a> Encoder<'a> {
     fn leaf(&mut self, size: Size, kind: Leaf, sid: StrId) -> Result<()> {
         let arena = self.arena;
         let text = arena.str_val(sid);
+        if kind == Leaf::Number {
+            let joins = matches!(self.run_before(), Some(Run::Number(_)));
+            self.decimal = text.contains('.') || joins && self.decimal;
+        }
         let mut first = true;
         for ch in text.chars() {
             // Invisible operators (function application, invisible times,
@@ -939,7 +969,7 @@ impl<'a> Encoder<'a> {
                 first = false;
             } else {
                 self.glyph(size, glyph, false, &[])?;
-                self.last_run = run;
+                self.set_run(run);
             }
         }
         Ok(())
@@ -1065,13 +1095,32 @@ impl<'a> Encoder<'a> {
         self.colors.len() as u16
     }
 
+    /// The colour in effect as the reader sees it: `None` for black.
+    fn drawn_color(&self) -> Option<u16> {
+        self.color
+            .filter(|&c| self.colors.get(usize::from(c).wrapping_sub(1)) != Some(&[0, 0, 0]))
+    }
+
+    fn set_run(&mut self, run: Option<Run>) {
+        self.last_run = run;
+        self.last_color = self.drawn_color();
+    }
+
+    /// The run the next glyph would continue: the reader joins only glyphs
+    /// of one colour.
+    fn run_before(&self) -> Option<Run> {
+        self.last_run
+            .filter(|_| self.last_color == self.drawn_color())
+    }
+
     /// A COLOR record selecting the colour `index` when it is not in effect.
     fn set_color(&mut self, index: Option<u16>) {
         if self.color == index {
             return;
         }
         if let Some(index) = index {
-            self.tag(COLOR, 0);
+            // Not a `tag`: the record does not end a run, the colour does.
+            self.out.push(COLOR);
             if index < 255 {
                 self.out.push(index as u8);
             } else {
@@ -1448,8 +1497,8 @@ impl<'a> Encoder<'a> {
         // A number or text base must not join the number or text before it,
         // or the script would take both as its base.
         let joins = match *self.arena.node(base) {
-            CompactNode::Number(_) => matches!(self.last_run, Some(Run::Number(_))),
-            CompactNode::Text(..) => self.last_run == Some(Run::Text),
+            CompactNode::Number(_) => matches!(self.run_before(), Some(Run::Number(_))),
+            CompactNode::Text(..) => self.run_before() == Some(Run::Text),
             _ => false,
         };
         if joins {

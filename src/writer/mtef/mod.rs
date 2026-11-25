@@ -321,6 +321,28 @@ impl MtefWriter {
         config: &Config,
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        let (mtef, diagnostics, reading) = Self::encode(expr, config, options)?;
+        // The reading can nest deeper than the tree written. Where that could
+        // matter, refuse a tree whose reading cannot be written again.
+        if let Some(mut reading) = reading {
+            crate::ast::normalize::normalize_compact_expr(&mut reading)?;
+            // Any other error is reported when that tree is written.
+            if let Err(limit @ crate::error::Error::LimitExceeded { .. }) =
+                Self::encode(&reading, config, options)
+            {
+                return Err(limit);
+            }
+        }
+        Self::finish(mtef, diagnostics, options, options.v5())
+    }
+
+    /// The MTEF data without the OLE header, and its reading when the tree
+    /// is near a limit.
+    fn encode(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>, Option<CompactExpr>)> {
         let v5 = options.v5();
         let mut encoder = Encoder::new(&expr.arena, config, v5, expr.display);
         encoder.equation(expr.roots)?;
@@ -369,18 +391,17 @@ impl MtefWriter {
         let mut check = config.with_strictness(crate::error::Strictness::Strict);
         check.max_input_bytes = None;
         match crate::reader::mtef::MtefReader::parse_bytes_compact(&mtef, &check) {
-            Ok(_) => {},
-            Err(limit @ crate::error::Error::LimitExceeded { .. }) => return Err(limit),
-            Err(other) => {
-                return Err(crate::error::Error::MtefWrite {
-                    message: format!(
-                        "the MTEF written for this expression does not read back: {other}"
-                    ),
-                });
+            Ok(reading) => {
+                let reading = encoder.is_near_limits().then_some(reading.expr);
+                Ok((mtef, diagnostics, reading))
             },
+            Err(limit @ crate::error::Error::LimitExceeded { .. }) => Err(limit),
+            Err(other) => Err(crate::error::Error::MtefWrite {
+                message: format!(
+                    "the MTEF written for this expression does not read back: {other}"
+                ),
+            }),
         }
-
-        Self::finish(mtef, diagnostics, options, v5)
     }
 
     /// Add the OLE header when asked for.

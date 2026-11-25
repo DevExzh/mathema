@@ -1607,3 +1607,330 @@ fn only_arrow_pair_variations_are_drawn_with_two_characters() {
         assert!(nodes.contains('→') && warned, "{characters}: {nodes}");
     }
 }
+
+/// Writing an equation and reading it back reaches a fixed point after one
+/// pass, with the content unchanged.
+#[track_caller]
+fn settles(data: &[u8]) {
+    let first = crate::from_mtef_bytes_with(data, &lenient()).unwrap();
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        let options = crate::MtefWriteOptions::new(version);
+        let one = crate::from_mtef_bytes(&first.to_mtef_bytes(&options).unwrap()).unwrap();
+        let written = one.to_mtef_bytes(&options).unwrap();
+        let two = crate::from_mtef_bytes(&written).unwrap();
+        assert_eq!(one.to_mathml().unwrap(), two.to_mathml().unwrap());
+        assert_eq!(written, two.to_mtef_bytes(&options).unwrap());
+    }
+}
+
+/// An MTEF 3 INTOP template without limits: `operator` drawn before `body`.
+fn intop(operator: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut data = vec![0x03, 42, 0, 0];
+    data.extend(line3(body));
+    data.extend_from_slice(&[0x11, 0x11]);
+    data.extend(line3(operator));
+    data.push(0);
+    data
+}
+
+#[test]
+fn a_prime_operator_without_limits_is_the_prime_of_the_item_before_it() {
+    let prime = intop(&c3(0, 2, '\''), &[]);
+    let data = eq3(&[c3(0, 3, 'x'), prime.clone()].concat());
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        r"x^{\prime}"
+    );
+    settles(&data);
+    // After a body, and nested in another one.
+    let body = intop(&c3(0, 3, 'y'), &c3(0, 8, '0'));
+    settles(&eq3(&[body, c3(0, 2, '\'')].concat()));
+    settles(&eq3(&intop(&c3(0, 3, 'y'), &prime)));
+    // An operator that draws nothing does not come between.
+    let nothing = intop(&c3(0, 24, '\u{EB01}'), &[]);
+    let data = eq3(&[c3(0, 3, 'x'), nothing, c3(0, 2, '\'')].concat());
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        r"x^{\prime}"
+    );
+    settles(&data);
+}
+
+#[test]
+fn a_slot_holding_only_a_zero_space_is_empty() {
+    let zero = c3(0, 24, '\u{EB01}');
+    // Root with a zero space for its index.
+    let mut root = vec![0x03, 13, 1, 0];
+    root.extend(line3(&c3(0, 3, 'x')));
+    root.extend(line3(&zero));
+    root.push(0);
+    let data = eq3(&root);
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        r"\sqrt{x}"
+    );
+    settles(&data);
+    // An accent over a zero space.
+    let mut accent = c3(2, 24, '\u{EB01}');
+    accent.extend_from_slice(&[0x06, 19, 0, 0]);
+    settles(&eq3(&accent));
+}
+
+#[test]
+fn a_point_written_after_a_number_stays_its_own_node() {
+    let result = crate::from_latex(r"6{.}6+1.2{.}3").unwrap();
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        let options = crate::MtefWriteOptions::new(version);
+        let back = crate::from_mtef_bytes(&result.to_mtef_bytes(&options).unwrap()).unwrap();
+        let mathml = back.to_mathml().unwrap();
+        assert!(
+            mathml.contains("<mn>6</mn><mo>.</mo><mn>6</mn>"),
+            "{mathml}"
+        );
+        assert!(
+            mathml.contains("<mn>1.2</mn><mo>.</mo><mn>3</mn>"),
+            "{mathml}"
+        );
+    }
+}
+
+#[test]
+fn leading_and_trailing_scripts_keep_their_colour() {
+    // COLOR_DEF blue, black. tmSUB with the `tvSU_PRECEDES` variation leads.
+    let define = [
+        0x10, 0, 0, 0, 0, 0, 0xE8, 0x03, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x0F, 1,
+    ];
+    let sub = |variation: u8, ch: char| {
+        let mut data = vec![0x03, 0x00, 0x1B, variation, 0x00];
+        data.extend(line5(&c5(0, 3, ch)));
+        data.extend_from_slice(&[0x01, 0x01, 0x00]);
+        data
+    };
+    let parts = |middle: &[u8]| {
+        let body: [&[u8]; 5] = [&define, &sub(1, 'a'), &c5(0, 3, 'x'), middle, &sub(0, 'b')];
+        eq5(&body.concat())
+    };
+    let mathml = |data: &[u8]| crate::from_mtef_bytes(data).unwrap().to_mathml().unwrap();
+    // All of it blue.
+    let blue = parts(&[]);
+    let out = mathml(&blue);
+    assert!(
+        out.contains(r##"<mstyle mathcolor="#0000ff"><mmultiscripts>"##),
+        "{out}"
+    );
+    settles(&blue);
+    // Blue with a black trailing subscript.
+    let mixed = parts(&[0x0F, 2]);
+    let out = mathml(&mixed);
+    assert_eq!(out.matches("#0000ff").count(), 2, "{out}");
+    settles(&mixed);
+}
+
+#[test]
+fn a_scripted_text_stays_apart_from_the_text_before_it_across_colour_records() {
+    // Blue `a`, and blue `b` with a blue subscript, as two runs.
+    let result = crate::from_latex(
+        r"{\color{blue}\text{a}}{\color{blue}\text{b}_c}+{\color{blue}\text{a}}\text{b}_c",
+    )
+    .unwrap();
+    let written = result
+        .to_mtef_bytes(&crate::MtefWriteOptions::default())
+        .unwrap();
+    let mathml = crate::from_mtef_bytes(&written)
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(!mathml.contains("<mtext>ab</mtext>"), "{mathml}");
+    assert_eq!(mathml.matches("<msub>").count(), 2, "{mathml}");
+    settles(&written);
+}
+
+#[test]
+fn primes_and_leading_scripts_around_items_that_draw_nothing_settle() {
+    let zero = c3(0, 24, '\u{EB01}');
+    // A zero space before a prime.
+    let data = eq3(&[c3(0, 3, 'x'), zero.clone(), c3(0, 2, '\'')].concat());
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        r"x^{\prime}"
+    );
+    settles(&data);
+    // A leading subscript template (tmLSCRIPT, subscript).
+    let leading = |ch: char| {
+        let mut data = vec![0x03, 44, 1, 0];
+        data.extend(line3(&c3(0, 3, ch)));
+        data.extend_from_slice(&[0x11, 0]);
+        data
+    };
+    let subscript = |ch: char| {
+        let mut data = leading(ch);
+        data[1] = 15;
+        data
+    };
+    let nothing = intop(&zero, &[]);
+    // Before an operator that draws nothing, then a prime.
+    settles(&eq3(
+        &[leading('a'), nothing.clone(), c3(0, 2, '\'')].concat()
+    ));
+    // Before a subscript on nothing, and before another leading script.
+    settles(&eq3(&[leading('a'), intop(&zero, &subscript('b'))].concat()));
+    let led = [leading('b'), c3(0, 3, 'x')].concat();
+    settles(&eq3(&[leading('a'), intop(&zero, &led)].concat()));
+    // A prime with a subscript of its own.
+    let primed = [c3(0, 2, '\''), subscript('b')].concat();
+    settles(&eq3(&[c3(0, 3, 'x'), intop(&zero, &primed)].concat()));
+}
+
+/// The colours of scripts and their bases survive rewriting in one spelling.
+#[test]
+fn scripts_in_several_colours_settle() {
+    let define = [
+        0x10, 0, 0, 0, 0, 0, 0xE8, 0x03, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x10, 0, 0xE8, 0x03, 0, 0, 0, 0,
+    ];
+    let (blue, black, red) = ([0x0F, 1], [0x0F, 2], [0x0F, 3]);
+    let script = |variation: u8, content: &[u8]| {
+        let mut data = vec![0x03, 0x00, 0x1B, variation, 0x00];
+        data.extend(line5(content));
+        data.extend_from_slice(&[0x01, 0x01, 0x00]);
+        data
+    };
+    let x = |ch: char| c5(0, 3, ch);
+    let cases: [Vec<Vec<u8>>; 4] = [
+        // A script on nothing before a coloured run.
+        vec![script(0, &x('a')), blue.to_vec(), x('x'), x('y')],
+        // Before a coloured letter with a subscript.
+        vec![
+            script(0, &x('a')),
+            blue.to_vec(),
+            x('x'),
+            script(0, &x('b')),
+        ],
+        // The same after another item.
+        vec![
+            x('w'),
+            script(1, &x('a')),
+            c5(0, 24, '\u{EF01}'),
+            blue.to_vec(),
+            x('x'),
+            x('y'),
+        ],
+        // A black base of a blue leading script in a red line.
+        vec![
+            red.to_vec(),
+            script(
+                0,
+                &[
+                    x('m'),
+                    blue.to_vec(),
+                    script(1, &x('a')),
+                    black.to_vec(),
+                    x('x'),
+                ]
+                .concat(),
+            ),
+            x('z'),
+        ],
+    ];
+    for parts in cases {
+        let data = eq5(&[define.to_vec(), parts.concat()].concat());
+        let mathml = crate::from_mtef_bytes(&data).unwrap().to_mathml().unwrap();
+        assert!(mathml.contains("mathcolor"), "{mathml}");
+        let written = crate::from_mtef_bytes(&data)
+            .unwrap()
+            .to_mtef_bytes(&crate::MtefWriteOptions::default())
+            .unwrap();
+        let back = crate::from_mtef_bytes(&written).unwrap();
+        assert_eq!(back.to_mathml().unwrap(), mathml);
+        settles(&data);
+    }
+}
+
+/// COLOR_DEF blue, black; COLOR `n` selects one.
+fn colours() -> Vec<u8> {
+    vec![0x10, 0, 0, 0, 0, 0, 0xE8, 0x03, 0x10, 0, 0, 0, 0, 0, 0, 0]
+}
+
+/// The equation's own line is assembled when the outer list sees it: a prime
+/// in another colour stays beside the coloured run.
+#[test]
+fn a_prime_after_a_coloured_run_is_not_the_runs() {
+    let prime = c5(0, 2, '\'');
+    let run =
+        |items: &[Vec<u8>]| [vec![0x0F, 1], items.concat(), vec![0x0F, 2], prime.clone()].concat();
+    let (x, equals) = (c5(0, 3, 'x'), c5(0, 6, '='));
+    for items in [
+        vec![x.clone()],
+        vec![x.clone(), equals.clone()],
+        vec![c5(0, 1, 'a'), c5(0, 1, 'b')],
+        vec![c5(0, 2, 's'), c5(0, 2, 'i'), c5(0, 2, 'n')],
+    ] {
+        let run = run(&items);
+        // On the main line, in a fraction and in a subscript.
+        let mut fraction = vec![0x03, 0, 11, 0, 0];
+        fraction.extend(line5(&run));
+        fraction.extend(line5(&x));
+        fraction.push(0);
+        let mut subscript = [x.clone(), vec![0x03, 0, 27, 0, 0]].concat();
+        subscript.extend(line5(&run));
+        subscript.extend_from_slice(&[0x01, 0x01, 0]);
+        for content in [run.clone(), fraction, subscript] {
+            let data = eq5(&[colours(), content].concat());
+            let mathml = crate::from_mtef_bytes(&data).unwrap().to_mathml().unwrap();
+            assert!(!mathml.contains("<msup>"), "{mathml}");
+            assert!(mathml.contains("#0000ff"), "{mathml}");
+            settles(&data);
+        }
+    }
+}
+
+/// Lines inside a line only group: their items were assembled on their own.
+#[test]
+fn a_prime_in_a_line_of_its_own_stays_there() {
+    let data = eq3(&[c3(0, 3, 'x'), line3(&c3(0, 2, '\''))].concat());
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        r"x\prime"
+    );
+    let data = eq5(&[c5(0, 3, 'x'), line5(&c5(0, 2, '\''))].concat());
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        r"x\prime"
+    );
+    // A template's run is the line's.
+    let data = eq3(&intop(&c3(0, 3, 'x'), &c3(0, 3, 'y')));
+    settles(&data);
+}
+
+/// Coloured zero spaces, primes and scripts on nothing from other formats.
+#[test]
+fn coloured_latex_settles() {
+    for latex in [
+        r"{\color{red}\hspace{0pt}}\hspace{0pt}",
+        r"{\color{blue}x=}'",
+        r"\frac{{\color{blue}x=}'}{y}",
+        r"x_{{\color{blue}ab}'}",
+        r"{\color{blue}'\hspace{0pt}}{\color{red}v}",
+        r"{\color{blue}^2\hspace{0pt}}{\color{red}x}",
+        r"{\color{red}'r\prime}'",
+        r"^b{\color{blue}\hspace{0pt}\sin'}",
+        r"_t{\color{blue}\sin_9}\prime",
+        r"{\color{blue}^{0}u\prime_{b}}_q",
+        r"'{\color{blue})_\}}\prime",
+        r"_,{\color{red},_n}",
+        r"^x{\color{red}\hspace{0pt}\sin}^8",
+        r"\sin{\color{black}{\color{black}_b}}\prime",
+    ] {
+        let first = crate::from_latex_with(latex, &lenient()).unwrap();
+        for version in [MtefVersion::V3, MtefVersion::V5] {
+            let options = crate::MtefWriteOptions::new(version);
+            let one = crate::from_mtef_bytes(&first.to_mtef_bytes(&options).unwrap()).unwrap();
+            let written = one.to_mtef_bytes(&options).unwrap();
+            let two = crate::from_mtef_bytes(&written).unwrap();
+            assert_eq!(
+                two.to_mtef_bytes(&options).unwrap(),
+                written,
+                "{version:?} {latex}"
+            );
+        }
+    }
+}

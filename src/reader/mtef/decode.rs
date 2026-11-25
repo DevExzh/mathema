@@ -13,7 +13,7 @@
 
 mod legacy;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use smallvec::SmallVec;
 
@@ -21,6 +21,7 @@ use super::chars::{self, Encoding};
 use super::info::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan};
+use crate::ast::normalize::can_take_prescripts;
 use crate::ast::{
     AccentPosition, ColumnAlign, LimitStyle, Rational, StrokeKind, SymbolKind, TextStyle,
 };
@@ -187,6 +188,8 @@ pub(super) struct Decoder<'a> {
     color_context: Option<u16>,
     /// The colour of each coloured node a line is assembled from.
     node_colors: HashMap<NodeId, u16>,
+    /// What INTOP and SUMOP templates that are no big operator became.
+    pub(super) template_runs: HashSet<NodeId>,
 }
 
 impl<'a> Decoder<'a> {
@@ -216,6 +219,7 @@ impl<'a> Decoder<'a> {
             color: None,
             color_context: None,
             node_colors: HashMap::new(),
+            template_runs: HashSet::new(),
         }
     }
 
@@ -369,6 +373,8 @@ impl<'a> Decoder<'a> {
                 .iter()
                 .all(|&child| self.draws_nothing(child)),
             CompactNode::Array { cells, .. } => cells.is_empty(),
+            // Normalization drops zero spaces.
+            CompactNode::Space(width) => width == Rational::zero(),
             _ => false,
         }
     }
@@ -1537,6 +1543,10 @@ impl<'a> Decoder<'a> {
                     }
                     if !glyph.embells.is_empty() {
                         let mut id = self.glyph_node(&glyph, class)?;
+                        // A zero space or a marker draws nothing to embellish.
+                        if self.draws_nothing(id) {
+                            id = self.empty_row()?;
+                        }
                         for &(kind, offset) in &glyph.embells {
                             id = self.embellish(id, kind, offset)?;
                         }
@@ -1546,9 +1556,7 @@ impl<'a> Decoder<'a> {
                     }
                     if chars::is_prime(glyph.ch)
                         && pending.is_none()
-                        && let Some(&base) = out.last()
-                        && self.node_colors.get(&base).copied() == glyph.color
-                        && self.takes_prime(base)
+                        && let Some(base) = self.take_prime_base(&mut out, glyph.color)?
                     {
                         let mut marks: SmallVec<[NodeId; 3]> = SmallVec::new();
                         marks.push(self.glyph_node(&glyph, class)?);
@@ -1561,7 +1569,6 @@ impl<'a> Decoder<'a> {
                             items.pop_front();
                             marks.push(self.glyph_node(&next, classify(&next))?);
                         }
-                        out.pop();
                         let id = self.prime(base, &marks)?;
                         self.set_color(id, glyph.color);
                         out.push(id);
@@ -1661,41 +1668,19 @@ impl<'a> Decoder<'a> {
                     self.set_color(id, glyph.color);
                     self.emit(&mut out, &mut pending, id)?;
                 },
-                Item::Node(id) => self.emit(&mut out, &mut pending, id)?,
+                Item::Node(id) if self.template_runs.contains(&id) => {
+                    self.emit_run(&mut out, &mut pending, id)?;
+                },
+                Item::Node(id) => self.emit_assembled(&mut out, &mut pending, id)?,
                 // A line inside a line (or the equation's own line) only
                 // groups its contents.
                 Item::Line(Some(id)) => {
                     for child in self.children_of(id) {
-                        self.emit(&mut out, &mut pending, child)?;
+                        self.emit_assembled(&mut out, &mut pending, child)?;
                     }
                 },
                 Item::Line(None) => {},
-                Item::Script(slots) => {
-                    let base = match out.pop() {
-                        Some(base) => base,
-                        None => self.empty_row()?,
-                    };
-                    // A leading script belongs to the whole scripted node
-                    // after it (`{}_a b_c` is b with both scripts), as
-                    // normalization builds it for every other reader: keep
-                    // the leading scripts outermost.
-                    let id = match *self.arena.node(base) {
-                        CompactNode::PreScripts {
-                            base: inner,
-                            pre_sub,
-                            pre_sup,
-                        } => {
-                            let scripted = self.script_node(inner, slots)?;
-                            self.node(CompactNode::PreScripts {
-                                base: scripted,
-                                pre_sub,
-                                pre_sup,
-                            })?
-                        },
-                        _ => self.script_node(base, slots)?,
-                    };
-                    out.push(id);
-                },
+                Item::Script(slots) => self.emit_script(&mut out, slots)?,
                 Item::PreScript(slots) => {
                     if let Some(previous) = pending.take() {
                         let base = self.empty_row()?;
@@ -1730,14 +1715,65 @@ impl<'a> Decoder<'a> {
         self.wrap_colors(out)
     }
 
-    fn emit(
+    /// A script template: a script of the item before it.
+    fn emit_script(&mut self, out: &mut SmallVec<[NodeId; 8]>, slots: ScriptSlots) -> Result<()> {
+        let base = match out.pop() {
+            Some(base) => base,
+            None => self.empty_row()?,
+        };
+        // A leading script belongs to the whole scripted node
+        // after it (`{}_a b_c` is b with both scripts), as
+        // normalization builds it for every other reader: keep
+        // the leading scripts outermost.
+        let id = match *self.arena.node(base) {
+            CompactNode::PreScripts {
+                base: inner,
+                pre_sub,
+                pre_sup,
+            } => {
+                // The leading scripts and the base have one colour; where
+                // the trailing scripts have another, each part keeps its own.
+                let color = self.node_colors.get(&base).copied();
+                self.set_color(inner, color);
+                let inner = if slots.color != color && !self.script_parts(inner).is_empty() {
+                    self.paint_script_tree(inner, color)?
+                } else {
+                    inner
+                };
+                let scripted = self.script_node(inner, slots)?;
+                let outer = self.node_colors.get(&scripted).copied();
+                let (mut pre_sub, mut pre_sup) = (pre_sub, pre_sup);
+                if outer != color {
+                    for slot in [&mut pre_sub, &mut pre_sup] {
+                        if !slot.is_none() {
+                            *slot = self.paint(*slot, color)?;
+                        }
+                    }
+                }
+                let id = self.node(CompactNode::PreScripts {
+                    base: scripted,
+                    pre_sub,
+                    pre_sup,
+                })?;
+                self.set_color(id, outer);
+                id
+            },
+            _ => self.script_node(base, slots)?,
+        };
+        out.push(id);
+        Ok(())
+    }
+
+    /// Emit a finished structure, or an item of a line already assembled:
+    /// its primes and scripts have their bases.
+    fn emit_assembled(
         &mut self,
         out: &mut SmallVec<[NodeId; 8]>,
         pending: &mut Option<ScriptSlots>,
         id: NodeId,
     ) -> Result<()> {
-        // A template that became a row (a big operator and its body): a
-        // leading script is its first item's, where it also reads back from.
+        // A leading script is the first item's of a row, where it also reads
+        // back from.
         if pending.is_some()
             && matches!(*self.arena.node(id), CompactNode::Row(span) if !span.is_empty())
         {
@@ -1746,6 +1782,62 @@ impl<'a> Decoder<'a> {
             }
             return Ok(());
         }
+        self.emit(out, pending, id)
+    }
+
+    /// Emit an INTOP or SUMOP template that is no big operator: its operator
+    /// and its body are a run of items of the line, as they are drawn and
+    /// written. A prime or script after it is its last item's, and a prime
+    /// that starts it is the item's before it.
+    fn emit_run(
+        &mut self,
+        out: &mut SmallVec<[NodeId; 8]>,
+        pending: &mut Option<ScriptSlots>,
+        id: NodeId,
+    ) -> Result<()> {
+        let color = self.node_colors.get(&id).copied();
+        // One that draws nothing is no item.
+        if self.is_empty_row(id) {
+            return Ok(());
+        }
+        if matches!(*self.arena.node(id), CompactNode::Row(span) if !span.is_empty()) {
+            for child in self.children_of(id) {
+                if !self.node_colors.contains_key(&child) {
+                    self.set_color(child, color);
+                }
+                self.emit_run(out, pending, child)?;
+            }
+            return Ok(());
+        }
+        if pending.is_none()
+            && self.all_primes(id)
+            && let Some(base) = self.take_prime_base(out, color)?
+        {
+            let primed = self.prime(base, &[id])?;
+            self.set_color(primed, color);
+            out.push(primed);
+            return Ok(());
+        }
+        // The same for a prime the template drew with scripts of its own.
+        if let Some((mark, sub, sup)) = self.trailing_scripts(id)
+            && pending.is_none()
+            && self.all_primes(mark)
+            && let Some(base) = self.take_prime_base(out, color)?
+        {
+            let primed = self.prime(base, &[mark])?;
+            self.set_color(primed, color);
+            out.push(primed);
+            return self.emit_script(out, ScriptSlots { sub, sup, color });
+        }
+        self.emit(out, pending, id)
+    }
+
+    fn emit(
+        &mut self,
+        out: &mut SmallVec<[NodeId; 8]>,
+        pending: &mut Option<ScriptSlots>,
+        id: NodeId,
+    ) -> Result<()> {
         let id = match pending.take() {
             // MathType draws a leading script (`tvSU_PRECEDES`) between the
             // items around it. Before an operator, a relation, punctuation or
@@ -1791,6 +1883,14 @@ impl<'a> Decoder<'a> {
             // In every real file a script before a fence template or a
             // function name is the script of the item before it.
             CompactNode::Fenced { .. } | CompactNode::Operator { .. } => false,
+            // Scripts on nothing are nothing to lead.
+            CompactNode::Subscript { .. }
+            | CompactNode::Superscript { .. }
+            | CompactNode::SubSup { .. } => self
+                .trailing_scripts(id)
+                .is_none_or(|(base, ..)| !self.is_empty_row(base)),
+            // Leading scripts of its own come between.
+            CompactNode::PreScripts { .. } => false,
             _ => true,
         }
     }
@@ -1815,6 +1915,37 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// Take the item a prime drawn in `color` is the superscript of. Zero
+    /// spaces before the prime draw nothing and normalization drops them.
+    fn take_prime_base(
+        &mut self,
+        out: &mut SmallVec<[NodeId; 8]>,
+        color: Option<u16>,
+    ) -> Result<Option<NodeId>> {
+        let Some(mut at) = out.iter().rposition(|&id| !self.draws_nothing(id)) else {
+            return Ok(None);
+        };
+        let mut base = out[at];
+        // Normalization gives scripts on nothing after a function name to it.
+        if at > 0
+            && let Some((sub, sup)) = self.scripts_on_nothing(base)
+            && let previous = out[at - 1]
+            && matches!(*self.arena.node(previous), CompactNode::Operator { .. })
+            && self.node_colors.get(&previous) == self.node_colors.get(&base)
+        {
+            let slots = ScriptSlots { sub, sup, color };
+            at -= 1;
+            base = self.script_node(previous, slots)?;
+            out.truncate(at);
+            out.push(base);
+        }
+        if self.node_colors.get(&base).copied() != color || !self.takes_prime(base) {
+            return Ok(None);
+        }
+        out.truncate(at);
+        Ok(Some(base))
+    }
+
     /// Whether a prime typed after `id` is its superscript.
     fn takes_prime(&self, id: NodeId) -> bool {
         match *self.arena.node(id) {
@@ -1824,7 +1955,12 @@ impl<'a> Decoder<'a> {
             },
             // A big operator's node includes its body.
             CompactNode::Nary { .. } => false,
+            // The prime is the led item's.
+            CompactNode::PreScripts { base, .. } => self.takes_prime(base),
             CompactNode::Space(_) | CompactNode::Text(..) | CompactNode::Row(_) => false,
+            // A coloured run of an assembled line: its last item has its
+            // primes already.
+            CompactNode::Color { .. } => false,
             _ => true,
         }
     }
@@ -1994,9 +2130,15 @@ impl<'a> Decoder<'a> {
                 i += 1;
                 continue;
             }
+            if self.is_mixed_script(children[i]) {
+                out.push(self.paint_script_parts(children[i], color)?);
+                i += 1;
+                continue;
+            }
             let start = i;
             while i < children.len()
                 && !matches!(*self.arena.node(children[i]), CompactNode::Color { .. })
+                && !self.is_mixed_script(children[i])
             {
                 i += 1;
             }
@@ -2012,6 +2154,143 @@ impl<'a> Decoder<'a> {
         Ok(painted)
     }
 
+    /// The base and the trailing scripts of a script node.
+    fn trailing_scripts(&self, id: NodeId) -> Option<(NodeId, Option<NodeId>, Option<NodeId>)> {
+        match *self.arena.node(id) {
+            CompactNode::Subscript { base, sub } => Some((base, Some(sub), None)),
+            CompactNode::Superscript { base, sup } => Some((base, None, Some(sup))),
+            CompactNode::SubSup { base, sub, sup } => Some((base, Some(sub), Some(sup))),
+            _ => None,
+        }
+    }
+
+    /// The scripts of a node that has nothing else: normalization gives them
+    /// to a neighbour.
+    fn scripts_on_nothing(&self, id: NodeId) -> Option<(Option<NodeId>, Option<NodeId>)> {
+        let (base, sub, sup) = match *self.arena.node(id) {
+            CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            } => {
+                let slot = |id: NodeId| (!id.is_none()).then_some(id);
+                (base, slot(pre_sub), slot(pre_sup))
+            },
+            _ => self.trailing_scripts(id)?,
+        };
+        self.draws_nothing(base).then_some((sub, sup))
+    }
+
+    /// The base and scripts of a script node.
+    fn script_parts(&self, id: NodeId) -> SmallVec<[NodeId; 3]> {
+        match *self.arena.node(id) {
+            CompactNode::Subscript { base, sub } => smallvec::smallvec![base, sub],
+            CompactNode::Superscript { base, sup } => smallvec::smallvec![base, sup],
+            CompactNode::SubSup { base, sub, sup } => smallvec::smallvec![base, sub, sup],
+            CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            } => [base, pre_sub, pre_sup]
+                .into_iter()
+                .filter(|id| !id.is_none())
+                .collect(),
+            _ => SmallVec::new(),
+        }
+    }
+
+    /// Whether `id` is a script node whose parts have colours of their own:
+    /// `paint` then colours the others, as they are read when written again.
+    /// (A function name must stay the direct base.)
+    fn is_mixed_script(&self, id: NodeId) -> bool {
+        let parts = self.script_parts(id);
+        parts.first().is_some_and(|&base| {
+            !matches!(*self.arena.node(base), CompactNode::Operator { .. })
+                && parts.iter().any(|&part| {
+                    matches!(*self.arena.node(part), CompactNode::Color { .. })
+                        || self.is_mixed_script(part)
+                })
+        })
+    }
+
+    /// Whether `id` is a function name with scripts.
+    fn is_scripted_name(&self, id: NodeId) -> bool {
+        self.trailing_scripts(id).is_some_and(|(base, ..)| {
+            matches!(*self.arena.node(base), CompactNode::Operator { .. })
+        })
+    }
+
+    /// Paint the parts of a script node and of the script nodes that are its
+    /// base; the node itself then has the colour around it.
+    fn paint_script_tree(&mut self, id: NodeId, color: Option<u16>) -> Result<NodeId> {
+        let node = *self.arena.node(id);
+        let id = match self.trailing_scripts(id) {
+            // (A function name with scripts is coloured as one.)
+            Some((base, ..))
+                if !self.script_parts(base).is_empty() && !self.is_scripted_name(base) =>
+            {
+                let base = self.paint_script_tree(base, color)?;
+                self.node(match node {
+                    CompactNode::Subscript { sub, .. } => CompactNode::Subscript { base, sub },
+                    CompactNode::Superscript { sup, .. } => CompactNode::Superscript { base, sup },
+                    CompactNode::SubSup { sub, sup, .. } => CompactNode::SubSup { base, sub, sup },
+                    other => other,
+                })?
+            },
+            _ => id,
+        };
+        let painted = self.paint_script_parts(id, color)?;
+        self.node_colors.remove(&painted);
+        self.set_color(painted, self.color_context);
+        Ok(painted)
+    }
+
+    fn paint_script_parts(&mut self, id: NodeId, color: Option<u16>) -> Result<NodeId> {
+        let mut painted: SmallVec<[NodeId; 3]> = SmallVec::new();
+        for part in self.script_parts(id) {
+            painted.push(if self.draws_nothing(part) {
+                part
+            } else {
+                self.paint(part, color)?
+            });
+        }
+        let base = painted[0];
+        let node = match *self.arena.node(id) {
+            CompactNode::Subscript { .. } => CompactNode::Subscript {
+                base,
+                sub: painted[1],
+            },
+            CompactNode::Superscript { .. } => CompactNode::Superscript {
+                base,
+                sup: painted[1],
+            },
+            CompactNode::SubSup { .. } => CompactNode::SubSup {
+                base,
+                sub: painted[1],
+                sup: painted[2],
+            },
+            CompactNode::PreScripts {
+                pre_sub, pre_sup, ..
+            } => {
+                let mut rest = painted[1..].iter().copied();
+                let mut next = |slot: NodeId| {
+                    if slot.is_none() {
+                        slot
+                    } else {
+                        rest.next().unwrap_or(NodeId::NONE)
+                    }
+                };
+                CompactNode::PreScripts {
+                    base,
+                    pre_sub: next(pre_sub),
+                    pre_sup: next(pre_sup),
+                }
+            },
+            _ => return Ok(id),
+        };
+        self.node(node)
+    }
+
     /// The parts of a script node and the node's colour: the colour its base
     /// and scripts share, else each part is painted on its own (a black
     /// script of a red letter stays black).
@@ -2022,7 +2301,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<(NodeId, ScriptSlots, Option<u16>)> {
         let color = self.node_colors.get(&base).copied();
         // An empty base draws nothing, in any colour.
-        if color == slots.color || self.is_empty_row(base) {
+        if color == slots.color || self.draws_nothing(base) {
             return Ok((base, slots, slots.color));
         }
         // A function name keeps its limits only as the direct base: colour
@@ -2051,15 +2330,104 @@ impl<'a> Decoder<'a> {
     fn wrap_colors(&mut self, out: SmallVec<[NodeId; 8]>) -> Result<SmallVec<[NodeId; 8]>> {
         let context = self.color_context;
         let color_of = |d: &Self, id: NodeId| d.node_colors.get(&id).copied();
-        if out.iter().all(|&id| color_of(self, id) == context) {
+        // Zero spaces show no colour and have done their part in the line
+        // (they keep scripts and runs apart); normalization drops them, and
+        // must not find them between or as coloured runs.
+        let is_zero_space = |d: &Self, id: NodeId| matches!(*d.arena.node(id), CompactNode::Space(width) if width == Rational::zero());
+        if out
+            .iter()
+            .all(|&id| color_of(self, id) == context || is_zero_space(self, id))
+        {
             return Ok(out);
         }
+        // Normalization gives scripts on nothing after a function name to it.
+        let mut items: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for id in out {
+            if is_zero_space(self, id) {
+                continue;
+            }
+            if let Some(&name) = items.last()
+                && matches!(*self.arena.node(name), CompactNode::Operator { .. })
+                && let Some((sub, sup)) = self.scripts_on_nothing(id)
+                && color_of(self, name) == color_of(self, id)
+            {
+                let color = color_of(self, id);
+                items.pop();
+                items.push(self.script_node(name, ScriptSlots { sub, sup, color })?);
+            } else {
+                items.push(id);
+            }
+        }
+        let out = items;
+        // Normalization makes scripts on nothing the leading scripts of the
+        // node after them, which would be a whole run of one colour: here
+        // they lead its first item, as they do when written again.
+        let mut led: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut items = out.into_iter().peekable();
+        while let Some(id) = items.next() {
+            let Some((sub, sup)) = self.scripts_on_nothing(id) else {
+                led.push(id);
+                continue;
+            };
+            let Some(&next) = items.peek() else {
+                led.push(id);
+                continue;
+            };
+            let color = color_of(self, next);
+            if color == context || !can_take_prescripts(*self.arena.node(next)) {
+                led.push(id);
+                continue;
+            }
+            items.next();
+            // Scripts of its own are painted one by one, as `emit_script`
+            // paints them.
+            let primed = items.peek().is_some_and(|&mark| {
+                self.all_primes(mark) && color_of(self, mark) == color_of(self, id)
+            });
+            let next = if !self.script_parts(next).is_empty() && color_of(self, id) != color {
+                if primed && self.is_scripted_name(next) {
+                    self.paint(next, color)?
+                } else {
+                    self.paint_script_tree(next, color)?
+                }
+            } else {
+                next
+            };
+            if !self.takes_leading_script(next) {
+                // Normalization makes the two one node.
+                led.push(id);
+                led.push(next);
+                continue;
+            }
+            let slots = ScriptSlots {
+                sub,
+                sup,
+                color: color_of(self, id),
+            };
+            let mut id = self.prescript_node(next, slots)?;
+            // A prime after them is now the led item's.
+            while let Some(&mark) = items.peek()
+                && self.all_primes(mark)
+                && color_of(self, mark) == color_of(self, id)
+                && self.takes_prime(id)
+            {
+                items.next();
+                let primed = self.prime(id, &[mark])?;
+                self.set_color(primed, color_of(self, id));
+                id = primed;
+            }
+            led.push(id);
+        }
+        let out = led;
         let mut wrapped: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut i = 0;
         while i < out.len() {
             let color = color_of(self, out[i]);
             let mut end = i + 1;
-            while end < out.len() && color_of(self, out[end]) == color {
+            // A zero space shows no colour, and normalization drops it.
+            while end < out.len()
+                && (color_of(self, out[end]) == color || self.draws_nothing(out[end]))
+            {
                 end += 1;
             }
             if color == context {

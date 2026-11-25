@@ -675,9 +675,16 @@ impl Decoder<'_> {
                     })?),
                     // Without limits the operator slot is drawn as it is.
                     (None, Some(base)) if sub.is_none() && sup.is_none() => {
-                        let mut ids = self.children_of(base);
-                        ids.extend(self.children_of(body));
-                        Item::Node(self.wrap(&ids)?)
+                        // Parts of zero spaces draw nothing.
+                        let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+                        for part in [base, body] {
+                            if !self.draws_nothing(part) {
+                                ids.extend(self.children_of(part));
+                            }
+                        }
+                        let id = self.wrap(&ids)?;
+                        self.template_runs.insert(id);
+                        Item::Node(id)
                     },
                     (None, Some(base)) => {
                         let slots = ScriptSlots {
@@ -705,6 +712,7 @@ impl Decoder<'_> {
                         } else {
                             self.wrap(&[id, body])?
                         };
+                        self.template_runs.insert(id);
                         Item::Node(id)
                     },
                     (None, None) => {
