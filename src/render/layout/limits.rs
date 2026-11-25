@@ -433,8 +433,15 @@ pub(super) fn layout_nary(
         // Apply axis_delta to center the operator on the math axis (TeX Rule 13a/13b).
         let op_box = {
             let w = op_box.width;
-            let h = op_box.height + axis_delta;
-            let d = (op_box.depth - axis_delta).max(0.0);
+            let (h, d) =
+                side_script_frame(op, ctx.branch_style(), op_size, op_box.height, op_box.depth);
+            let (h, d) = if sub.is_some() || sup.is_some() {
+                (h, d)
+            } else {
+                (op_box.height, op_box.depth)
+            };
+            let h = h + axis_delta;
+            let d = (d - axis_delta).max(0.0);
             LayoutBox {
                 width: w,
                 height: h,
@@ -489,6 +496,15 @@ pub(super) fn layout_nary(
             depth: op_d.max(body_d),
             kind: BoxKind::HBox { children },
         }
+    }
+}
+
+/// The height and depth of a large operator that its side scripts are placed
+/// against.
+fn side_script_frame(op: char, style: MathStyle, size: f64, height: f64, depth: f64) -> (f64, f64) {
+    match metrics::display_script_frame(op).filter(|_| style.is_display()) {
+        Some((h, d)) => (height.max(h * size), depth.max(d * size)),
+        None => (height, depth),
     }
 }
 
@@ -1198,8 +1214,14 @@ pub(super) fn layout_nary_arena(
         let op_glyph_id = {
             let b = arena.get(op_id);
             let w = b.width;
-            let h = b.height + axis_delta;
-            let d = (b.depth - axis_delta).max(0.0);
+            let (h, d) = side_script_frame(op, ctx.branch_style(), op_size, b.height, b.depth);
+            let (h, d) = if sub.is_some() || sup.is_some() {
+                (h, d)
+            } else {
+                (b.height, b.depth)
+            };
+            let h = h + axis_delta;
+            let d = (d - axis_delta).max(0.0);
             let cs = arena.begin_children();
             arena.push_child(ArenaPositionedBox {
                 dx: 0.0,

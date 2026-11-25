@@ -158,6 +158,19 @@ pub fn glyph_metrics_display(ch: char) -> GlyphMetrics {
     }
 }
 
+/// The height and depth, at the scale of [`glyph_metrics_display`], that a
+/// displayed sum-like operator has for its scripts at its side: TeX's (and
+/// KaTeX's), a tenth of an em past the glyph of Latin Modern Math, which puts
+/// the scripts where pdfTeX and XeTeX do.
+#[inline]
+pub fn display_script_frame(ch: char) -> Option<(f64, f64)> {
+    matches!(
+        ch,
+        '∑' | '∏' | '∐' | '⋂' | '⋃' | '⨄' | '⋁' | '⋀' | '⨀' | '⨁' | '⨂' | '⨆'
+    )
+    .then_some((0.656, 0.344))
+}
+
 /// ASCII characters absent from the hand-tuned tables (`^ _ ~ * @ # …`): read
 /// the real advance/bbox from the font so the box encloses the ink (the
 /// generic punctuation heuristic is x-height tall, which clipped e.g. `^`).

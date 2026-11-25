@@ -720,6 +720,31 @@ fn display_operators_are_their_variants_at_their_size() {
     assert!(!large.contains("#vg"), "{large}");
 }
 
+/// The scripts at the side of a displayed sum are where pdfTeX puts them,
+/// though its box is that of the glyph.
+#[test]
+fn side_scripts_of_displayed_operators() {
+    for (latex, height, depth) in [
+        ("\\sum\\nolimits_a^b", 1.288, 0.607),
+        ("\\sum\\nolimits^b", 1.288, 0.551),
+        ("\\prod\\nolimits_{i=1}^{n} x", 1.111, 0.607),
+        ("\\bigcup\\nolimits_{i}^{n}", 1.122, 0.596),
+        ("\\sum", 0.950, 0.450),
+        ("\\bigvee\\nolimits x", 0.947, 0.447),
+        ("\\int_a^b", 1.600, 0.918),
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Display);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Display, &default_options());
+        assert!(
+            (root.height - height).abs() < 2e-3,
+            "{latex}: {}",
+            root.height
+        );
+        assert!((root.depth - depth).abs() < 2e-3, "{latex}: {}", root.depth);
+    }
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {

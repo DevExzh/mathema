@@ -70,7 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it was scaled up to 1.6 or 2 times, wider than its box, and an operator in text
   larger than 1.2 used it too.
 - Rendering: the box of `\sum` and the other displayed operators is that of the drawn
-  glyph, so their limits are as close as TeX sets them with the font.
+  glyph, so their limits are as close as TeX sets them with the font; scripts at
+  their side stay where pdfTeX puts them.
 - Rendering: the delimiters of `\binom` and `\genfrac` have TeX's two sizes and do not
   grow with what is inside.
 - LaTeX: `\pod{6}` is `(6)`; it was read as `\pmod{6}`.
