@@ -10,9 +10,21 @@ use mathema::writer::Writer;
 use mathema::writer::latex::LatexWriter;
 use mathema::{Config, UndefinedCommands};
 
-const PAYLOADS: [&str; 3] = ["zqj", "ZQ", "@zq"];
+const PAYLOADS: [&str; 10] = [
+    "zqj",
+    "ZQ",
+    "@zq",
+    "\u{E9}zq",
+    "\u{3A7}",
+    "\u{436}zq",
+    "\u{4E2D}zq",
+    "\u{1D400}",
+    "\u{211D}",
+    "\u{301}zq",
+];
 
-/// The output's control words, as KaTeX reads them (`@` is a letter).
+/// The output's control words, as the widest lexer reads them: KaTeX's
+/// `@` and the letters and marks of XeTeX and LuaTeX.
 fn control_words(latex: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut chars = latex.chars().peekable();
@@ -22,7 +34,7 @@ fn control_words(latex: &str) -> Vec<String> {
         }
         let mut word = String::new();
         while let Some(&ch) = chars.peek()
-            && (ch == '@' || ch.is_ascii_alphabetic())
+            && (ch == '@' || ch == '\u{301}' || ch.is_alphabetic())
         {
             word.push(ch);
             chars.next();
@@ -39,7 +51,7 @@ fn control_words(latex: &str) -> Vec<String> {
 fn check(latex: &str, of: &dyn std::fmt::Debug) {
     for word in control_words(latex) {
         assert!(
-            !word.contains('@') && !word.to_lowercase().contains("zq"),
+            word.is_ascii() && !word.contains('@') && !word.to_lowercase().contains("zq"),
             "\\{word} in {latex}\nof {of:?}"
         );
     }
@@ -417,7 +429,7 @@ fn letters_after_nothing_after_a_command_are_not_part_of_it() {
     for (i, command) in commands.iter().enumerate() {
         for (j, nothing) in nothings.iter().enumerate() {
             // One payload per pair, in turn, and other formats for some.
-            for payload in [PAYLOADS[0], PAYLOADS[1 + (i + j) % 2]] {
+            for payload in [PAYLOADS[0], PAYLOADS[1 + (i + j) % 9]] {
                 let routes = payload == PAYLOADS[0] && (i + j) % 4 == 0;
                 let check_all = |nodes: &[MathNode]| check_all(nodes, routes);
                 let letters = identifier(payload);

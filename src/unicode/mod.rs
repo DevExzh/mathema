@@ -4,6 +4,7 @@ pub(crate) mod math_class;
 pub mod operators;
 mod scripts;
 pub mod symbols;
+pub(crate) mod tex_letters;
 
 pub use entities::MATHML_ENTITIES;
 pub use fonts::*;

@@ -6,6 +6,7 @@
 
 use super::LossReport;
 use crate::ast::Rational;
+use crate::unicode::tex_letters::is_tex_letter;
 
 /// A named operator gives literal punctuation different TeX math codes.
 pub(super) struct LatexBuffer {
@@ -28,15 +29,19 @@ pub(super) struct LatexBuffer {
 }
 
 /// Whether `ch` after a control word is part of its name: in TeX a letter, in
-/// KaTeX also `@`.
+/// KaTeX also `@`, in XeTeX and LuaTeX also a letter outside ASCII.
+#[inline]
 fn extends_word(ch: char) -> bool {
-    ch.is_ascii_alphabetic() || ch == '@'
+    match ch {
+        'a'..='z' | 'A'..='Z' | '@' => true,
+        _ => !ch.is_ascii() && is_tex_letter(ch),
+    }
 }
 
 /// Whether `text` ends with a control word.
 #[inline]
 fn ends_with_word(text: &str) -> bool {
-    let is_letter = |byte: &u8| extends_word(char::from(*byte));
+    let is_letter = |byte: &u8| byte.is_ascii_alphabetic() || *byte == b'@';
     text.as_bytes().last().is_some_and(is_letter)
         && text
             .bytes()
@@ -49,7 +54,7 @@ fn is_escape(text: &str) -> bool {
     !(text.len() - text.trim_end_matches('\\').len()).is_multiple_of(2)
 }
 
-/// The names of the control words in `text`, as KaTeX reads them.
+/// The names of the control words in `text`, as the widest lexer reads them.
 #[cfg(any(test, debug_assertions))]
 fn control_words(text: &str) -> impl Iterator<Item = &str> {
     let mut rest = text;
@@ -291,6 +296,26 @@ mod tests {
             buf.finish(),
             r"\int ef\limits x1y\&z\\a\\\a @\bigl(b\char`c\\bd"
         );
+    }
+
+    #[test]
+    fn a_letter_outside_ascii_is_separated_and_other_characters_are_not() {
+        let written = |text: &str| {
+            let mut whole = buffer();
+            whole.command("pi");
+            whole.push_str(text);
+            let mut apart = buffer();
+            apart.command("pi");
+            text.chars().for_each(|ch| apart.push(ch));
+            assert_eq!(&whole[..], &apart[..]);
+            whole.finish()
+        };
+        for text in ["é", "Χx", "ж", "中", "ℝ", "𝐀", "\u{301}"] {
+            assert_eq!(written(text), format!(r"\pi {text}"));
+        }
+        for text in ["∂é", "→", "²", "ⅰ", "①", "。", "\u{A0}", "𝟎"] {
+            assert_eq!(written(text), format!(r"\pi{text}"));
+        }
     }
 
     /// Text is added and taken away before the end of the output.

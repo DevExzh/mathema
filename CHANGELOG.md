@@ -312,7 +312,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security: a control word of the LaTeX output no longer takes in letters that
   follow it when what was between them writes nothing: the base of a leading
   script made `\int` + `eractionmode` into `\interactionmode`. A space is put
-  there whatever was written in between, and before `@`, a letter to KaTeX.
+  there whatever was written in between, and before `@`, a letter to KaTeX,
+  and letters and marks outside ASCII, which XeTeX and LuaTeX take as part of
+  the name (`\partialΧ`).
 - The MathML writer no longer drops size declarations: `\large` writes
   `<mstyle mathsize="120%">` around the content it scales, inside the
   `mstyle` of a math-style switch, again after a line break and across a

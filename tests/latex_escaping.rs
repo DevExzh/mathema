@@ -1362,14 +1362,15 @@ fn names_with_character_tokens_are_stable() {
 }
 
 /// What is written after a control word does not depend on how a non-ASCII
-/// letter there came to be.
+/// letter there came to be. It is a letter of XeTeX and LuaTeX too, so it is
+/// set apart.
 #[test]
 fn non_ascii_letters_after_control_words_are_stable() {
     use mathema::Format::{LaTeX, MathML};
     for (input, from, latex) in [
-        (r"\alpha\char`é", LaTeX, r"\alphaé"),
-        (r"\lVert\char17701", LaTeX, "\\lVert\u{4525}"),
-        ("<math><mi>α</mi><mo>é</mo></math>", MathML, r"\alphaé"),
+        (r"\alpha\char`é", LaTeX, r"\alpha é"),
+        (r"\lVert\char17701", LaTeX, "\\lVert \u{4525}"),
+        ("<math><mi>α</mi><mo>é</mo></math>", MathML, r"\alpha é"),
         (
             "<math><mi>α</mi><mi>ʰ</mi></math>",
             MathML,
