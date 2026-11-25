@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`\begin{array}{}\hline …`) is kept; it was read as the first cell.
 - A sizing command before something that is no delimiter (`\big\alpha`) leaves
   it in its own size in every output, as TeX does; LaTeX output already did.
+- Scripts on both sides of a `\middle` delimiter stay beside it
+  (`\left( {}_{a} \middle| {}_{b} \right)`); they moved the delimiter into a
+  group, where TeX rejects it.
 - `normalize_expr` flattens groups in the content of a fence, as the compact
   normalizer does.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets

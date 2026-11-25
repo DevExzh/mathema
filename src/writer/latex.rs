@@ -331,7 +331,7 @@ fn write_sequence(
         // the limit of a function name or big operator before it, unlike
         // TeX: `\lim{}_x` is written `\lim_x`.)
         let middle = matches!(*arena.node(id), CompactNode::Middle(sid)
-            if writes_as_delimiter(arena.str_val(sid)));
+            if writes_as_nested_middle(arena.str_val(sid)));
         if i + 1 < children.len()
             && is_script_with_empty_base(arena, children[i + 1])
             && (middle
@@ -2110,7 +2110,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // argument. Preserve its node class when emitted outside the
             // immediate `\left...\right` writer loop.
             let delim = arena.str_val(sid);
-            if writes_as_delimiter(delim) {
+            if writes_as_nested_middle(delim) {
                 buf.push_str("\\middle");
                 write_delim(buf, delim);
             } else {
@@ -3094,6 +3094,12 @@ fn writes_as_delimiter(delim: &str) -> bool {
             !ch.is_whitespace() && !ch.is_control() && !ch.is_alphabetic() && !is_combining_mark(ch)
         }),
     }
+}
+
+/// [`writes_as_delimiter`] for a `\middle` below the fence's own list, where the
+/// reader takes a `'` after it for a prime.
+fn writes_as_nested_middle(delim: &str) -> bool {
+    delim != "'" && writes_as_delimiter(delim)
 }
 
 /// Text that is no delimiter, as an atom of the delimiter's class inside a

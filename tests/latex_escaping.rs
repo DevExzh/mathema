@@ -1644,6 +1644,37 @@ fn sized_and_starred_operators_in_accents_are_stable() {
     }
 }
 
+/// A middle delimiter takes no script beside it, and stays in the fence's list.
+#[test]
+fn scripts_beside_middle_delimiters_are_stable() {
+    for (source, latex) in [
+        (
+            r"\ip{'\middle''}d",
+            r"\left\langle {}^{\prime} \middle' {}^{\prime} \middle| d \right\rangle",
+        ),
+        (
+            r"\left('\middle|'\right)",
+            r"\left( {}^{\prime} \middle| {}^{\prime} \right)",
+        ),
+        (
+            r"\left({}_a\middle|{}_b x\right)",
+            r"\left( {}_{a} \middle| {{}_{b}x} \right)",
+        ),
+        (
+            r"\left(a\middle'b\over c\right)",
+            r"\left( \frac{a\middle.\mathord{\char`'}b}{c} \right)",
+        ),
+        (
+            r"\left(\middle''\over c\right)",
+            r"\left( \frac{\middle.\mathord{\char`'}{}^{\prime}}{c} \right)",
+        ),
+    ] {
+        use mathema::Format::LaTeX;
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
 /// An empty preamble is the preamble, not the first cell.
 #[test]
 fn empty_array_preamble() {

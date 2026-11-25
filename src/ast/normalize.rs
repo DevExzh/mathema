@@ -794,28 +794,11 @@ fn normalize_span_keeping_breaks(
     let mut with_limits: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in &merged_ids {
         if is_empty_base_script(arena, id)
-            && let Some((previous, preceding)) = with_limits.split_last_mut()
+            && let Some(previous) = with_limits.last_mut()
+            && takes_limits(arena, *arena.node(*previous))
         {
-            if takes_limits(arena, *arena.node(*previous)) {
-                *previous = make_script_with_base(arena, *previous, id);
-                continue;
-            }
-            // A fraction can split a fence leaving a middle delimiter with a
-            // script on each side. Retain both attachments on that delimiter.
-            if matches!(*arena.node(*previous), CompactNode::Middle(_))
-                && let Some((&lead, prefix)) = preceding.split_last()
-                && let Some((pre_sub, pre_sup)) = empty_base_scripts(arena, lead)
-            {
-                let keep = prefix.len();
-                let base = make_script_with_base(arena, *previous, id);
-                with_limits.truncate(keep);
-                with_limits.push(arena.push_node(CompactNode::PreScripts {
-                    base,
-                    pre_sub,
-                    pre_sup,
-                }));
-                continue;
-            }
+            *previous = make_script_with_base(arena, *previous, id);
+            continue;
         }
         with_limits.push(id);
     }
