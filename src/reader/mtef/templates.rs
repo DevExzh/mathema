@@ -534,6 +534,33 @@ impl Decoder<'_> {
 
     /// The character of a node that is (a row holding only) a one-character
     /// symbol, identifier or operator.
+    /// The slot and mark of a limit template that is an accent: a tilde, caret,
+    /// dot or arrow above a character, or a combining mark below its base (as
+    /// the writer writes one).
+    fn accent_of_limits(
+        &self,
+        base: NodeId,
+        lower: Option<NodeId>,
+        upper: Option<NodeId>,
+    ) -> Option<(NodeId, char, AccentPosition)> {
+        match (lower, upper) {
+            (None, Some(slot)) => {
+                self.single_char(base)?;
+                let accent = limit_accent(self.single_char(slot)?)?;
+                Some((slot, accent, AccentPosition::Above))
+            },
+            (Some(slot), None) => {
+                let mark = self.single_char(slot)?;
+                crate::unicode::symbols::is_mark_below(mark).then_some((
+                    slot,
+                    mark,
+                    AccentPosition::Below,
+                ))
+            },
+            _ => None,
+        }
+    }
+
     pub(super) fn single_char(&self, id: NodeId) -> Option<char> {
         let children = self.children_of(id);
         let [only] = children.as_slice() else {
@@ -855,23 +882,20 @@ impl Decoder<'_> {
                             color: None,
                         },
                     )?
-                } else if lower.is_none()
-                    && self.single_char(base).is_some()
-                    && let Some(accent) = upper
-                        .and_then(|id| self.single_char(id))
-                        .and_then(limit_accent)
+                } else if let Some((slot, accent, position)) =
+                    self.accent_of_limits(base, lower, upper)
                 {
-                    // A tilde, caret, dot or arrow alone above a character
-                    // is that character's accent, typed with the limit
-                    // template.
-                    let mark = upper
-                        .and_then(|id| self.children_of(id).first().copied())
-                        .and_then(|id| self.arena.attrs(id)?.size)
+                    // An accent mark alone beside a character, typed with the
+                    // limit template.
+                    let mark = self
+                        .children_of(slot)
+                        .first()
+                        .and_then(|&id| self.arena.attrs(id)?.size)
                         .and_then(|size| self.limit_mark_size(size));
                     let id = self.node(CompactNode::Accent {
                         base,
                         accent,
-                        position: AccentPosition::Above,
+                        position,
                         wide: false,
                     })?;
                     if let Some(size) = mark {

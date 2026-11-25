@@ -1115,6 +1115,7 @@ fn write_accent_base(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Fenced { open, close, .. } => !is_bracket_pair(open, close),
         _ => false,
     };
+    let grouped = grouped || ends_in_bound(node);
     if grouped {
         out.push('〖');
     }
@@ -1149,6 +1150,7 @@ fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: Ma
         },
         _ => false,
     };
+    let grouped = grouped || ends_in_bound_c(arena, id);
     if grouped {
         out.push('〖');
     }

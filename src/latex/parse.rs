@@ -2071,6 +2071,9 @@ pub(crate) struct LatexCompactParser {
     color_at_middle: Option<(StrId, usize)>,
     /// Commands around the current one, whose arguments need no group.
     command_depth: u32,
+    /// The ordinary atom made last for an operator alone in braces, and that
+    /// operator.
+    grouped_operator: Option<(NodeId, NodeId)>,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
     /// Undefined control words met so far, each with whether it is a macro
@@ -2128,6 +2131,7 @@ impl LatexCompactParser {
             fence_list: false,
             color_at_middle: None,
             command_depth: 0,
+            grouped_operator: None,
             arrays_built: 0,
             undefined_commands: None,
             single_token: None,
@@ -2617,6 +2621,10 @@ impl LatexCompactParser {
             return self.parse_scripts(input, ordinary);
         }
 
+        if grouped && let Some(ordinary) = self.ordinary_operator(input, base) {
+            return Ok((input, ordinary));
+        }
+
         // N-ary operators consume scripts + body specially
         if self.is_nary_id(base) {
             return self.parse_nary_rest(input, base);
@@ -3012,7 +3020,8 @@ impl LatexCompactParser {
             self.command_depth += 1;
             let body = self.parse_element(input);
             self.command_depth -= 1;
-            body?
+            let (rest, body) = body?;
+            (rest, self.nary_body(body))
         };
         // A declaration scoping the rest of the list (`\sum \bf a \over b`,
         // `\sum \color{red} a \over b`) splits around an infix fraction
@@ -4963,27 +4972,23 @@ impl LatexCompactParser {
 
     fn parse_sqrt<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        // Optional index: \sqrt[n]{...}
-        let (input, index) = if input.starts_with('[') {
-            let (rest, idx_ids) = self.parse_bracket_group(input)?;
-            (rest, Some(idx_ids))
-        } else {
-            (input, None)
-        };
-        let (input, content_id) = self.parse_required_group(input)?;
-        match index {
-            Some(idx_ids) => {
-                let index_id = self.flatten_single(&idx_ids);
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Root {
-                        index: index_id,
-                        radicand: content_id,
-                    }),
-                ))
-            },
-            None => Ok((input, self.arena.push_node(CompactNode::Sqrt(content_id)))),
+        if input.starts_with('[') {
+            return self.parse_root(input);
         }
+        let (input, content) = self.parse_required_group(input)?;
+        Ok((input, self.arena.push_node(CompactNode::Sqrt(content))))
+    }
+
+    /// `\sqrt[n]{...}`, from the bracket (apart, so that the index list is not
+    /// in the frame of every nested `\sqrt`).
+    fn parse_root<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, index) = self.parse_bracket_group(input)?;
+        let index = self.flatten_single(&index);
+        let (input, radicand) = self.parse_required_group(input)?;
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Root { index, radicand }),
+        ))
     }
 
     fn parse_accent<'a>(
@@ -5194,6 +5199,7 @@ impl LatexCompactParser {
         if braced && raw.contains(['\\', '$']) {
             let mut nodes = SmallVec::new();
             self.hbox_runs(raw, style, false, &mut nodes)?;
+            self.merge_hbox_text(&mut nodes);
             if !nodes.is_empty() {
                 let content = self.flatten_single(&nodes);
                 self.ensure_node_budget(rest)?;
@@ -6133,22 +6139,51 @@ impl LatexCompactParser {
         let named = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'#' | b'!');
         if !color.is_empty()
             && color.bytes().all(named)
-            && let CompactNode::Nary {
-                op,
-                sub,
-                sup,
-                body,
-                limits: LimitStyle::Default,
-            } = *self.arena.node(content)
-            && !sub.is_some()
-            && !sup.is_some()
-            && self.is_empty_row(body)
+            && let Some(op) = self.lone_operator(content)
         {
             let sid = self.push_char_str(op);
             let symbol = CompactNode::Symbol(SymbolKind::LargeOp, sid);
             return self.arena.push_node(symbol);
         }
         content
+    }
+
+    /// Braces around an operator alone make an ordinary atom, without the space
+    /// an operator has.
+    fn ordinary_operator(&mut self, rest: &str, base: NodeId) -> Option<NodeId> {
+        self.lone_operator(base)?;
+        let scripts = &rest[self.skip_script_ws(rest.as_bytes())..];
+        if self.script_marker_at(scripts).is_some() {
+            return None;
+        }
+        let ordinary = self.arena.push_node(CompactNode::MathAtom {
+            atom_type: MathAtomType::Ord,
+            content: base,
+        });
+        self.grouped_operator = Some((ordinary, base));
+        Some(ordinary)
+    }
+
+    /// The body of an operator: braces around it only delimit it.
+    fn nary_body(&self, body: NodeId) -> NodeId {
+        match self.grouped_operator {
+            Some((ordinary, operator)) if ordinary == body => operator,
+            _ => body,
+        }
+    }
+
+    /// The operator of an n-ary node without scripts, placement or operand.
+    fn lone_operator(&self, id: NodeId) -> Option<char> {
+        match *self.arena.node(id) {
+            CompactNode::Nary {
+                op,
+                sub,
+                sup,
+                body,
+                limits: LimitStyle::Default,
+            } if !sub.is_some() && !sup.is_some() && self.is_empty_row(body) => Some(op),
+            _ => None,
+        }
     }
 
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

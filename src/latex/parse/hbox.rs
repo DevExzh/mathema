@@ -111,6 +111,7 @@ impl LatexCompactParser {
         let (rest, raw) = argument(input)?;
         let mut nodes = SmallVec::new();
         self.hbox_runs(raw, TextStyle::Normal, true, &mut nodes)?;
+        self.merge_hbox_text(&mut nodes);
         let content = self.flatten_single(&nodes);
         self.ensure_node_budget(rest)?;
         Ok((rest, content))
@@ -206,7 +207,7 @@ impl LatexCompactParser {
                 rest = remaining;
             } else {
                 let (remaining, inner) = self.parse_command(rest)?;
-                self.push_hbox_node(inner, nodes);
+                nodes.push(inner);
                 // Space after an argument is not space after a control word.
                 rest = if matches!(token, r"\reflectbox" | r"\verb") {
                     remaining
@@ -227,31 +228,46 @@ impl LatexCompactParser {
             if !text.is_empty() {
                 let sid = self.arena.push_str(&text);
                 let node = self.arena.push_node(CompactNode::Text(style, sid));
-                self.push_hbox_node(node, nodes);
+                nodes.push(node);
             }
         }
     }
 
-    fn push_hbox_node(&mut self, node: NodeId, nodes: &mut SmallVec<[NodeId; 8]>) {
-        if let CompactNode::Text(style, sid) = *self.arena.node(node)
-            && let Some(&last) = nodes.last()
-            && let CompactNode::Text(last_style, last_sid) = *self.arena.node(last)
-            && last_style == style
-        {
-            // A logo/control word such as `\KaTeX` is still text in the
-            // surrounding hbox. Merge adjacent runs of the same style so a
-            // source text group stays one canonical text node instead of
-            // gaining a structural brace row.
-            let mut joined = String::with_capacity(
-                self.arena.str_val(last_sid).len() + self.arena.str_val(sid).len(),
-            );
-            joined.push_str(self.arena.str_val(last_sid));
-            joined.push_str(self.arena.str_val(sid));
-            let joined_sid = self.arena.push_str(&joined);
-            nodes.pop();
-            nodes.push(self.arena.push_node(CompactNode::Text(style, joined_sid)));
-        } else {
-            nodes.push(node);
+    /// Merge adjacent text of the same style: a logo/control word such as
+    /// `\KaTeX` is still text in the surrounding hbox, and a source text group
+    /// stays one canonical text node instead of gaining a structural brace row.
+    pub(super) fn merge_hbox_text(&mut self, nodes: &mut SmallVec<[NodeId; 8]>) {
+        let text = |this: &Self, id: NodeId| match *this.arena.node(id) {
+            CompactNode::Text(style, sid) => Some((style, sid)),
+            _ => None,
+        };
+        let (mut read, mut kept) = (0, 0);
+        while read < nodes.len() {
+            let first = nodes[read];
+            let mut end = read + 1;
+            if let Some((style, _)) = text(self, first) {
+                while end < nodes.len()
+                    && text(self, nodes[end]).is_some_and(|(next, _)| next == style)
+                {
+                    end += 1;
+                }
+                if end - read > 1 {
+                    let joined: String = nodes[read..end]
+                        .iter()
+                        .filter_map(|&id| text(self, id))
+                        .map(|(_, sid)| self.arena.str_val(sid))
+                        .collect();
+                    let sid = self.arena.push_str(&joined);
+                    nodes[kept] = self.arena.push_node(CompactNode::Text(style, sid));
+                } else {
+                    nodes[kept] = first;
+                }
+            } else {
+                nodes[kept] = first;
+            }
+            kept += 1;
+            read = end;
         }
+        nodes.truncate(kept);
     }
 }

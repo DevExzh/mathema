@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `\sideset{_1}{}\sum x` and other operators with leading scripts are written
   with an empty operand, `{{}_{1}\sum}{}x`, where the next node would be read as
   theirs.
+- `{\sum}x` is read as the ordinary atom braces make (`\mathord{\sum}x`), without
+  the space an operator has.
+- UnicodeMath groups an accented base under a bracket or accent
+  (`〖x┴⎴〗┴⎴`).
+- Normalization reaches every nesting level the depth limit accepts; output of
+  deep tables and proofs no longer changes on a second pass. `normalize_expr`
+  also drops zero-width spaces.
+- Text with many style groups is read in linear time.
 - Deeply nested tables and scripts of sizing commands are refused before they
   overflow the stack.
 - LaTeX output keeps a script without a base before a literal closing

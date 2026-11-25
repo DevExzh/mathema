@@ -1926,6 +1926,121 @@ fn unicode_math_braces_keep_their_labels() {
     }
 }
 
+#[test]
+fn braced_operators_are_ordinary() {
+    use mathema::Format::LaTeX;
+    for (source, latex) in [
+        (r"{\sum}x", r"\mathord{\sum}x"),
+        (r"a{\int}x", r"a\mathord{\int}x"),
+        (r"\sum {\sum}x", r"\sum {\sum}x"),
+        (r"\sum{}x", r"\sum{}x"),
+        (r"{\sum x}", r"\sum x"),
+    ] {
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
+/// Text in one style around many empty groups is joined once.
+#[test]
+fn runs_of_text_groups_are_linear() {
+    let time = |n| {
+        let source = format!(r"\text{{{}}}", r"a\KaTeX ".repeat(n));
+        let start = std::time::Instant::now();
+        mathema::from_latex(&source).unwrap();
+        start.elapsed()
+    };
+    time(1_000);
+    assert!(time(20_000) < 60 * time(2_000) + std::time::Duration::from_millis(200));
+}
+
+/// Normalization reaches every level that the depth limit accepts.
+#[test]
+fn deep_proofs_are_stable() {
+    use mathema::Format::LaTeX;
+    for n in [26, 27, 30, 40] {
+        let source = format!(r"\AXC{}", r"\BIC".repeat(n));
+        let first = mathema::convert(&source, LaTeX, LaTeX).unwrap();
+        assert_eq!(
+            mathema::convert(&first, LaTeX, LaTeX).unwrap(),
+            first,
+            "{n}"
+        );
+    }
+}
+
+/// Inputs that names of other packages' tests and error messages hold.
+#[test]
+fn heap_drops_zero_spaces_and_leads_kept_groups() {
+    for source in [
+        r"\begin{array}{c}d{}'{9\\x}\end{array}",
+        r"\begin{array}{c}{}_1{9\\x}y\end{array}",
+        r"\kern/\hskip spacing does not use a mu unit",
+        r"\mkern/\mskip spacing expects a mu unit",
+        r"\v/\kern+a",
+        r"\xymatrix{dd$' {9*~S\\x}}",
+        r"\left(/\kern+\right)",
+    ] {
+        let [heap, compact] = normalized_latex(source).unwrap();
+        assert_eq!(normalized_latex(&heap).unwrap()[0], heap, "{source}");
+        assert_eq!(normalized_latex(&compact).unwrap()[1], compact, "{source}");
+    }
+}
+
+#[test]
+fn unwritable_colors_around_nothing_are_stable() {
+    use mathema::Format::LaTeX;
+    for source in [
+        r"\sideset{_1}{}\color{}((",
+        r"\sideset{_1}{}\color{}{}_|",
+        r"\sideset{_1}{}\colorbox{~}{^2}",
+        r"r\sideset{_1}{}\colorbox{~}~",
+        r"\foo{\textcolor{}\int\int}",
+        r"\left(\color{}\idotsint\right)",
+        r"^m^\colorbox{~}{}x",
+        r"^{\colorbox{~}\mathbf{}}",
+    ] {
+        let first = mathema::convert(source, LaTeX, LaTeX).unwrap();
+        assert_eq!(
+            mathema::convert(&first, LaTeX, LaTeX).unwrap(),
+            first,
+            "{source}"
+        );
+        for (index, written) in normalized_latex(source).unwrap().into_iter().enumerate() {
+            assert_eq!(
+                normalized_latex(&written).unwrap()[index],
+                written,
+                "{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_unicode_math_brackets_are_grouped() {
+    use mathema::Format::{LaTeX, UnicodeMath};
+    for (latex, unicode) in [
+        (r"\overbracket{\overbracket{x}}", "〖x┴⎴〗┴⎴"),
+        (r"\hat{\overbracket{x}}", "〖x┴⎴〗\u{302}"),
+        (r"\overbracket{\underbracket{x}}", "〖x┬⎵〗┴⎴"),
+    ] {
+        assert_eq!(
+            mathema::convert(latex, LaTeX, UnicodeMath).unwrap(),
+            unicode
+        );
+    }
+    // And a mark below survives MTEF.
+    for mark in ['\u{327}', '\u{328}', '\u{323}'] {
+        let source = format!("c{mark}");
+        let mtef = mathema::from_unicode_math(&source)
+            .unwrap()
+            .to_mtef()
+            .unwrap();
+        let back = mathema::from_mtef(&mtef).unwrap();
+        assert_eq!(back.to_unicode_math().unwrap(), source);
+    }
+}
+
 /// A bare operator in a fence is written with its body, as in a row.
 #[test]
 fn bare_operators_in_fences_are_stable() {
