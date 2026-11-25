@@ -1962,6 +1962,9 @@ fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
         } else {
             write_node(out, node, current_style);
         }
+        if matches!(selected, MathNode::Row(nodes) if nodes.len() > 1) {
+            group_argument(out, start);
+        }
         let current = operand_edge(selected);
         let current = if open && !grouped && current == OperandEdge::Naryand {
             OperandEdge::NaryandFunction
@@ -3898,6 +3901,15 @@ fn write_nodes_c_with_style(
     write_nodes_c_tracking(out, arena, arena.children(span), style, None);
 }
 
+/// The argument of a function that is several nodes is one in `〖…〗`
+/// (`sin⁡〖xy〗`, UTN #28): what is written from `start` on, after U+2061.
+fn group_argument(out: &mut String, start: usize) {
+    if out.len() > start && out[..start].trim_end().ends_with('\u{2061}') {
+        out.insert(start, '〖');
+        out.push('〗');
+    }
+}
+
 /// Compact counterpart of [`write_nodes_tracking`].
 fn write_nodes_c_tracking(
     out: &mut String,
@@ -4001,6 +4013,9 @@ fn write_nodes_c_tracking(
             write_nary_c(out, arena, selected, current_style, true);
         } else {
             write_node_c(out, arena, selected, current_style);
+        }
+        if matches!(node, CompactNode::Row(span) if span.len() > 1) {
+            group_argument(out, start);
         }
         let current = match node {
             CompactNode::Identifier(_) | CompactNode::Number(_) => OperandEdge::Operand,

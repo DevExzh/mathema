@@ -278,6 +278,44 @@ fn words_are_upright_in_omml() {
 }
 
 /// OMML with names, words and letters settles after one pass.
+/// The outline of OMML without its runs, only their text.
+fn outline(omml: &str) -> String {
+    let mut out = String::new();
+    for part in omml.split('<').skip(1) {
+        let (tag, text) = part.split_once('>').unwrap();
+        let name = tag.trim_start_matches('/').split(' ').next().unwrap();
+        if !matches!(name, "m:r" | "m:rPr" | "m:sty" | "m:t" | "m:scr") && !tag.ends_with('/') {
+            out.push_str(&format!("<{tag}>"));
+        }
+        out.push_str(text);
+    }
+    out
+}
+
+/// What each function of some OMML is, with its argument.
+fn functions(omml: &str) -> Vec<String> {
+    let outline = outline(omml);
+    outline
+        .match_indices("<m:func>")
+        .map(|(start, _)| {
+            let mut depth = 0;
+            let end = outline[start..]
+                .match_indices("m:func>")
+                .find(|(at, _)| {
+                    depth += if outline[start..][..*at].ends_with('/') {
+                        -1
+                    } else {
+                        1
+                    };
+                    depth == 0
+                })
+                .map(|(at, tag)| start + at + tag.len())
+                .unwrap();
+            outline[start..end].to_owned()
+        })
+        .collect()
+}
+
 #[test]
 fn generated_omml_settles() {
     struct Random(u64);
@@ -305,7 +343,22 @@ fn generated_omml_settles() {
             let depth = depth - 1;
             match self.below(8) {
                 0 => {
-                    let (name, argument) = (self.run(), self.run());
+                    let mut name = self.run();
+                    let argument = self.list(depth);
+                    match self.below(4) {
+                        0 => {
+                            let sup = self.run();
+                            name =
+                                format!("<m:sSup><m:e>{name}</m:e><m:sup>{sup}</m:sup></m:sSup>");
+                        },
+                        1 => {
+                            let lim = self.run();
+                            name = format!(
+                                "<m:limLow><m:e>{name}</m:e><m:lim>{lim}</m:lim></m:limLow>"
+                            );
+                        },
+                        _ => {},
+                    }
                     format!("<m:func><m:fName>{name}</m:fName><m:e>{argument}</m:e></m:func>")
                 },
                 1 => {
@@ -329,16 +382,29 @@ fn generated_omml_settles() {
         }
     }
     let mut unsettled = Vec::new();
+    let mut changed = Vec::new();
     for seed in 0..3000u64 {
         let mut random = Random(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let source = omml(&random.list(2));
         let Ok(first) = convert(&source, Format::Omml, Format::Omml) else {
             continue;
         };
+        // A name of several nodes is one only in its last.
+        let outlined = outline(&source);
+        let named = !outlined.contains("<m:fName>2x") && !outlined.contains("<m:fName>a+b");
+        if named && functions(&first) != functions(&source) {
+            changed.push((source.clone(), first.clone()));
+        }
         if omml_again(&first) != first {
             unsettled.push(source);
         }
     }
+    assert!(
+        changed.is_empty(),
+        "{} {:?}",
+        changed.len(),
+        changed.iter().min_by_key(|(s, _)| s.len())
+    );
     assert!(
         unsettled.is_empty(),
         "{} {:?}",
@@ -424,4 +490,179 @@ fn an_unnamed_operator_settles() {
             "{source}"
         );
     }
+}
+
+/// The argument of a function is one node, whatever it holds, so what follows
+/// it stays outside and nothing of it goes there.
+#[test]
+fn arguments_of_functions() {
+    use mathema::writer::{
+        Writer, mathml::MathmlWriter, omml::OmmlWriter, unicode_math::UnicodeMathWriter,
+    };
+    let config = mathema::Config::default();
+    let normalized = |read: &mathema::ConvertResult| {
+        let mut tree = read.expr();
+        mathema::ast::normalize::normalize_expr(&mut tree);
+        tree
+    };
+    let sin = "<m:r><m:rPr><m:sty m:val=\"p\"/></m:rPr><m:t>sin</m:t></m:r>";
+    let func = |name: &str, argument: &str| {
+        format!("<m:func><m:fName>{name}</m:fName><m:e>{argument}</m:e></m:func>")
+    };
+    let squared = format!(
+        "<m:sSup><m:e>{sin}</m:e><m:sup>{}</m:sup></m:sSup>",
+        run("2", "")
+    );
+    let limit = format!(
+        "<m:limLow><m:e>{}</m:e><m:lim>{}</m:lim></m:limLow>",
+        run("lim", "p"),
+        run("n", "")
+    );
+    for argument in ["x", "xy", "2x", "a+b", "-x", "xyz"] {
+        for name in [sin, &squared, &limit, &run("f", "")] {
+            let one = func(name, &run(argument, ""));
+            for source in [
+                omml(&(one.clone() + &run("z", ""))),
+                omml(&(run("z", "") + &one + &one)),
+                omml(&func(sin, &(one.clone() + &run("z", "")))),
+                omml(&format!(
+                    "<m:f><m:num>{one}{}</m:num><m:den>{one}</m:den></m:f>",
+                    run("z", "")
+                )),
+                omml(&format!("<m:d><m:e>{one}{}</m:e></m:d>", run("z", ""))),
+                omml(&format!(
+                    "<m:sSup><m:e>{}</m:e><m:sup>{one}{}</m:sup></m:sSup>",
+                    run("e", ""),
+                    run("z", "")
+                )),
+            ] {
+                let written = omml_again(&source);
+                assert_eq!(outline(&written), outline(&source));
+                assert_eq!(omml_again(&written), written);
+                // By way of MathML it is the same.
+                let mathml = convert(&source, Format::Omml, Format::MathML).unwrap();
+                let back = convert(&mathml, Format::MathML, Format::Omml).unwrap();
+                assert_eq!(functions(&back), functions(&source), "{mathml}");
+                // And normalized as a tree.
+                let tree = normalized(&from_omml(&source).unwrap());
+                assert_eq!(
+                    outline(&OmmlWriter::write(&tree, &config).unwrap()),
+                    outline(&source)
+                );
+            }
+        }
+    }
+    // A size is on the argument, and stays inside.
+    for size in ["", " mathsize=\"20pt\""] {
+        let source = format!(
+            "<math><mi>f</mi><mo>&#x2061;</mo><mrow{size}><mi>x</mi><mi>y</mi></mrow><mi>z</mi></math>"
+        );
+        assert_eq!(
+            mathml(&source, Format::MathML),
+            format!(
+                "<mi>f</mi><mo>\u{2061}</mo><mrow><mi{size}>x</mi><mi{size}>y</mi></mrow><mi>z</mi>"
+            )
+        );
+        let omml = convert(&source, Format::MathML, Format::Omml).unwrap();
+        assert!(omml.contains("y</m:t></m:r></m:e></m:func>"), "{omml}");
+    }
+    // An empty argument does not take what follows it.
+    let empty = "<math><mi>f</mi><mo>&#x2061;</mo><mrow/><mi>z</mi></math>";
+    assert_eq!(
+        functions(&convert(empty, Format::MathML, Format::Omml).unwrap()),
+        ["<m:func><m:fName>f</m:fName><m:e></m:e></m:func>"]
+    );
+    // In a fence too, as a tree and as an arena.
+    let fenced = "<math><mrow><mo>(</mo><mi>f</mi><mo>&#x2061;</mo><mrow><mi>x</mi><mi>y</mi></mrow><mi>z</mi><mo>)</mo></mrow></math>";
+    let tree = normalized(&from_mathml(fenced).unwrap());
+    for written in [
+        MathmlWriter::write(&tree, &config).unwrap(),
+        convert(fenced, Format::MathML, Format::MathML).unwrap(),
+    ] {
+        assert!(
+            written.contains("<mrow><mi>x</mi><mi>y</mi></mrow><mi>z</mi>"),
+            "{written}"
+        );
+    }
+    // UnicodeMath groups it where it is several nodes; LaTeX has none, and a
+    // group would be an atom of its own.
+    for (argument, unicode, latex) in [
+        ("x", "sin\u{2061}xz", r"\sin \mathord{}xz"),
+        ("xy", "sin\u{2061}〖xy〗z", r"\sin \mathord{}xyz"),
+        ("a+b", "sin\u{2061}〖a+b〗z", r"\sin \mathord{}a+ bz"),
+    ] {
+        let source = omml(&(func(sin, &run(argument, "")) + &run("z", "")));
+        let to = |format| convert(&source, Format::Omml, format).unwrap();
+        assert_eq!(to(Format::UnicodeMath), unicode);
+        assert_eq!(to(Format::LaTeX), latex);
+        assert_eq!(convert(latex, Format::LaTeX, Format::LaTeX).unwrap(), latex);
+        let tree = normalized(&from_omml(&source).unwrap());
+        assert_eq!(UnicodeMathWriter::write(&tree, &config).unwrap(), unicode);
+    }
+    assert_eq!(
+        mathml(r"\sin {xy}z", Format::LaTeX),
+        "<mo>sin</mo><mi>x</mi><mi>y</mi><mi>z</mi>"
+    );
+}
+
+/// What [`arguments_of_functions`] covers no source for.
+#[test]
+fn arguments_of_functions_in_trees() {
+    use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
+    use mathema::ast::{FencedItem, SymbolKind};
+    use mathema::writer::{Writer, latex::LatexWriter, unicode_math::UnicodeMathWriter};
+    let config = mathema::Config::default();
+    let letter = |c: &str| MathNode::Identifier(c.into());
+    let apply = || MathNode::Symbol(SymbolKind::Ordinary, "\u{2061}".into());
+    let nodes = || {
+        vec![
+            letter("f"),
+            apply(),
+            MathNode::Row(vec![letter("x"), letter("y")]),
+            letter("z"),
+        ]
+    };
+    let mut tree = mathema::from_latex("x").unwrap().expr();
+    let fence = |nodes: Vec<MathNode>| MathNode::Fenced {
+        open: "(".into(),
+        close: ")".into(),
+        content: nodes.into_iter().map(FencedItem::Element).collect(),
+    };
+    tree.nodes = vec![fence(nodes())];
+    normalize_expr(&mut tree);
+    assert_eq!(tree.nodes, vec![fence(nodes())]);
+    // LaTeX spells the application `\mathord{}`, and that keeps a group too.
+    for source in ["\\sin \u{2061}{xy}z", r"\sin \mathord{}{xy}z"] {
+        let read = mathema::from_latex(source).unwrap();
+        let (mut heap, mut compact) = (read.expr(), read.compact_expr().clone());
+        normalize_expr(&mut heap);
+        normalize_compact_expr(&mut compact).unwrap();
+        for written in [
+            LatexWriter::write(&heap, &config).unwrap(),
+            <LatexWriter as Writer>::write_compact(&compact, &config).unwrap(),
+        ] {
+            assert_eq!(written, r"\sin \mathord{}{xy}z");
+        }
+    }
+    // A function in an argument, and an argument written as nothing.
+    let nested = "<math><mo>sin</mo><mo>&#x2061;</mo><mrow><mo>sin</mo><mo>&#x2061;</mo><mi>x</mi></mrow><mi>z</mi></math>";
+    assert_eq!(
+        convert(nested, Format::MathML, Format::UnicodeMath).unwrap(),
+        "sin\u{2061} 〖sin\u{2061}x〗z"
+    );
+    tree.nodes = vec![
+        letter("f"),
+        apply(),
+        MathNode::Row(vec![MathNode::Row(vec![]), MathNode::Row(vec![])]),
+    ];
+    assert_eq!(
+        UnicodeMathWriter::write(&tree, &config).unwrap(),
+        "f\u{2061}"
+    );
+    // MTEF has no such group.
+    let source =
+        "<math><mi>f</mi><mo>&#x2061;</mo><mrow><mi>x</mi><mi>y</mi></mrow><mi>z</mi></math>";
+    let open = source.replace("<mrow>", "").replace("</mrow>", "");
+    let mtef = |source: &str| from_mathml(source).unwrap().to_mtef().unwrap();
+    assert_eq!(mtef(source), mtef(&open));
 }

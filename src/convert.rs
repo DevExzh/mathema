@@ -3,7 +3,10 @@
 
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
-use crate::ast::normalize::{normalize_compact_expr, normalize_compact_expr_keeping_identifiers};
+use crate::ast::normalize::{
+    normalize_compact_expr, normalize_compact_expr_keeping_identifiers,
+    normalize_compact_expr_opening_arguments,
+};
 use crate::error::{CompactParseResult, Config, Format, Result};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -50,6 +53,8 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
 fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()> {
     let normalize = if from == Format::Mtef || to == Format::Mtef {
         normalize_compact_expr_keeping_identifiers
+    } else if to == Format::LaTeX {
+        normalize_compact_expr_opening_arguments
     } else {
         normalize_compact_expr
     };

@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operand (`(ab)/c`). Only the letters of operator names (`\varinjlim`) are
   joined. A list of more than 65,535 letters is refused as any other list of
   that length is, also where groups are opened into one.
+- The argument of a function (OMML `m:func`, a MathML `mrow` after U+2061) stays
+  one node through normalization: `sin⁡(2x)` written as OMML no longer has `x`
+  outside the function, MathML keeps the `mrow`, and UnicodeMath writes
+  `sin⁡〖2x〗`. Conversion to LaTeX writes it without a group, as before.
 - **Breaking (behavior):** the letters of an italic OMML run (`sty` i, or none,
   which is Word's default) are identifiers of their own; a run of `sty` p is one
   as before, and so is the name of an `m:func`.
