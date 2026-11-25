@@ -975,16 +975,8 @@ pub(crate) fn is_brace_operator(arena: &arena::AstArena, id: compact::NodeId) ->
     use compact::CompactNode;
     let is = |id, brace| matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == brace);
     match *arena.node(id) {
-        CompactNode::Overscript {
-            over,
-            movable_limits: false,
-            ..
-        } => is(over, "\u{23DE}"),
-        CompactNode::Underscript {
-            under,
-            movable_limits: false,
-            ..
-        } => is(under, "\u{23DF}"),
+        CompactNode::Overscript { over, .. } => is(over, "\u{23DE}"),
+        CompactNode::Underscript { under, .. } => is(under, "\u{23DF}"),
         CompactNode::Accent {
             accent,
             position,

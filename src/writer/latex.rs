@@ -836,7 +836,7 @@ fn write_compound_limits(
         }
     };
     // The labels of a horizontal brace are its limits.
-    if !movable && crate::ast::is_brace_operator(arena, base) {
+    if crate::ast::is_brace_operator(arena, base) && (placed(lower) || placed(upper)) {
         write_node(buf, arena, base);
         write_limits(buf);
         return true;

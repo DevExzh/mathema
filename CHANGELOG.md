@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The scripts of `\underbrace`, `\overbrace`, `\underbracket` and
+  `\overbracket` are their labels in every format (`munder`, `m:limLow`, LaTeX
+  `\underbrace{x}_n`, MTEF brace templates); they were subscripts of a group,
+  `{\underbrace{x}}_n`, which TeX and KaTeX set beside the brace. Those of a
+  braced `{\underbrace{x}}` are now set beside it.
+- A brace, overline or underline over `\mathop{…}` keeps its command, and a
+  lone `⏞`/`⏟` over or under something is written `\overbrace`/`\underbrace`.
+- Rendering: an operator without an operand has no thin space after it.
+- `\textcolor{red}{\sum}`, `\colorbox` and `\fcolorbox` with just an operator
+  in braces are read like the operator token (`\textcolor{red}\sum`).
+- LaTeX output spells more combining accents as commands (`\overline`,
+  `\underline`, `\overleftarrow`, `\overrightharpoon`, …) and the rest by code
+  (`\overset{\char779 }{a}`). The UnicodeMath reader sets the marks that belong
+  below (U+0323, U+0331, …) below.
+- `\sideset{_1}{}\sum x` and other operators with leading scripts are written
+  with an empty operand, `{{}_{1}\sum}{}x`, where the next node would be read as
+  theirs.
+- Deeply nested tables and scripts of sizing commands are refused before they
+  overflow the stack.
 - LaTeX output keeps a script without a base before a literal closing
   delimiter where it is (``\left/ {}^{\prime} \middle. \mathclose{\char`\~}
   \right.``), and dropped or empty text in a text box no longer splits or loses

@@ -1807,6 +1807,143 @@ fn command_chains_are_bounded() {
     }
 }
 
+/// What the expression's depth limit refuses is not parsed to its end first:
+/// these overflowed a 2 MB stack.
+#[test]
+fn deep_tables_are_refused_in_time() {
+    for (open, close, accepted) in [
+        (r"\begin{matrix}", r"\end{matrix}", 64),
+        (r"\begin{cases}", r"\end{cases}", 42),
+        (r"\begin{matrix}\hat{", r"}\end{matrix}", 42),
+        (r"\begin{matrix}x_{", r"}\end{matrix}", 42),
+        (r"\left(\begin{matrix}", r"\end{matrix}\right)", 42),
+        (r"\xymatrix{", "}", 64),
+        (r"\begin{empheq}{align}", r"\end{empheq}", 64),
+        (r"\big\sum_{", "}", 60),
+        (r"\mathbf{", "}", 126),
+        (r"\textcolor{red}{", "}", 126),
+    ] {
+        let nested =
+            |n| mathema::from_latex(&format!("{}x{}", open.repeat(n), close.repeat(n))).is_ok();
+        assert!(nested(accepted), "{open} {accepted}");
+        for n in [130, 1_000] {
+            assert!(!nested(n), "{open} {n}");
+        }
+    }
+}
+
+#[test]
+fn braces_over_operators_take_labels() {
+    use mathema::Format::LaTeX;
+    for (source, latex) in [
+        (r"\underbrace{\mathop{e}}", r"\underbrace{\mathop{e}}"),
+        (r"\underbrace{\mathop{e}}_n", r"\underbrace{\mathop{e}}_n"),
+        (r"\overbrace{\max}^2", r"\overbrace{\max}^{2}"),
+        (r"\underbrace{\sum}_n^m", r"\underbrace{\sum}_n^m"),
+        (r"\overbracket{\mathop{e}}^n", r"\overbracket{\mathop{e}}^n"),
+        (r"\overline{\mathop{e}}", r"\overline{\mathop{e}}"),
+        (r"\underline{\mathop{e}}", r"\underline{\mathop{e}}"),
+        (
+            r"\overrightarrow{\mathop{e}}_n",
+            r"{\overrightarrow{\mathop{e}}}_n",
+        ),
+        (r"{\underbrace{x}}_n", r"{\underbrace{x}}_n"),
+        (r"\underbrace{x}\nolimits_n", r"{\underbrace{x}}_n"),
+        (r"\underset{n}{\underbrace{x}}", r"\underbrace{x}_n"),
+        (r"\overset{⏞}{x}", r"\overbrace{x}"),
+    ] {
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+        // And through MathML.
+        let mathml = mathema::from_latex(source).unwrap().to_mathml().unwrap();
+        let back = mathema::from_mathml(&mathml).unwrap().to_latex().unwrap();
+        assert_eq!(back, latex, "{mathml}");
+    }
+    let labelled = mathema::from_latex(r"\underbrace{x}_n").unwrap();
+    assert!(
+        labelled
+            .to_mathml()
+            .unwrap()
+            .contains("</munder><mi>n</mi></munder>")
+    );
+    assert!(
+        labelled
+            .to_omml()
+            .unwrap()
+            .contains("<m:limLow><m:e><m:groupChr>")
+    );
+}
+
+#[test]
+fn colored_operators_in_braces_are_symbols() {
+    for color in [
+        r"\textcolor{red}",
+        r"\colorbox{red}",
+        r"\fcolorbox{red}{red}",
+    ] {
+        for scripts in ["", "_a^b", "^2"] {
+            let [braced, token] = [r"{\sum}", r"\sum"].map(|operator| {
+                let source = format!("{color}{operator}{scripts} x");
+                let parsed = mathema::from_latex(&source).unwrap();
+                [
+                    parsed.to_latex().unwrap(),
+                    parsed.to_mathml().unwrap(),
+                    parsed.to_omml().unwrap(),
+                    parsed.to_unicode_math().unwrap(),
+                ]
+            });
+            assert_eq!(braced, token, "{color}{scripts}");
+            assert!(!braced[2].contains("m:nary"));
+        }
+    }
+}
+
+/// An operator without an operand has no thin space of its own.
+#[cfg(feature = "render")]
+#[test]
+fn bare_operators_have_no_space() {
+    let width = |source: &str| {
+        let svg = mathema::from_latex(source).unwrap().to_svg_text().unwrap();
+        let width = svg.split("width=\"").nth(1).unwrap();
+        width.split('"').next().unwrap().parse::<f64>().unwrap()
+    };
+    let x = r"\textcolor{red}\sum x";
+    for source in [r"\textcolor{red}{\sum}x", r"\sum x", r"\sum {}x"] {
+        assert!((width(source) - width(x)).abs() < 0.01, "{source}");
+    }
+    assert!((width(r"\underbrace{\sum}") - width(r"\textcolor{red}\sum")).abs() < 0.01);
+}
+
+#[test]
+fn combining_marks_are_accents() {
+    use mathema::Format::{LaTeX, UnicodeMath};
+    for (unicode, latex) in [
+        ("a\u{301}", r"\acute{a}"),
+        ("a\u{305}", r"\overline{a}"),
+        ("a\u{331}", r"\underline{a}"),
+        ("a\u{332}", r"\underline{a}"),
+        ("a\u{330}", r"\utilde{a}"),
+        ("a\u{20D6}", r"\overleftarrow{a}"),
+        ("a\u{20E1}", r"\overleftrightarrow{a}"),
+        ("a\u{20EE}", r"\underleftarrow{a}"),
+        ("a\u{20D1}", r"\overrightharpoon{a}"),
+        // No command: by its code, which does not join the brace.
+        ("a\u{30B}", r"\overset{\char779 }{a}"),
+        ("a\u{323}", r"\underset{\char803 }{a}"),
+    ] {
+        assert_eq!(
+            mathema::convert(unicode, UnicodeMath, LaTeX).unwrap(),
+            latex
+        );
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+        // The mark stays where it is.
+        assert_eq!(
+            mathema::convert(unicode, UnicodeMath, UnicodeMath).unwrap(),
+            unicode
+        );
+    }
+}
+
 /// An empty preamble is the preamble, not the first cell.
 #[test]
 fn empty_array_preamble() {

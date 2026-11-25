@@ -2912,7 +2912,17 @@ impl LatexCompactParser {
                     self.parse_unicode_script_arg_run(next, is_sub)?
                 },
                 ScriptMarker::Sub | ScriptMarker::Sup => {
-                    self.parse_script_arg(&next[1..], is_sub)?
+                    // An argument needs no group either.
+                    if self.command_depth >= MAX_PARSE_DEPTH {
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            next,
+                            nom::error::ErrorKind::TooLarge,
+                        )));
+                    }
+                    self.command_depth += 1;
+                    let parsed = self.parse_script_arg(&next[1..], is_sub);
+                    self.command_depth -= 1;
+                    parsed?
                 },
                 ScriptMarker::Primes => self.parse_prime_argument(next)?,
             };
@@ -6110,8 +6120,7 @@ impl LatexCompactParser {
     /// The content of a color. An operator alone in the group is the symbol: no
     /// operand belongs to it. (Text that names no color is dropped from LaTeX
     /// output, and the group with it.)
-    fn parse_color_content<'a>(&mut self, input: &'a str, color: &str) -> IResult<&'a str, NodeId> {
-        let (input, content) = self.parse_required_group(input)?;
+    fn color_content(&mut self, content: NodeId, color: &str) -> NodeId {
         let named = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'#' | b'!');
         if !color.is_empty()
             && color.bytes().all(named)
@@ -6128,15 +6137,16 @@ impl LatexCompactParser {
         {
             let sid = self.push_char_str(op);
             let symbol = CompactNode::Symbol(SymbolKind::LargeOp, sid);
-            return Ok((input, self.arena.push_node(symbol)));
+            return self.arena.push_node(symbol);
         }
-        Ok((input, content))
+        content
     }
 
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, color_str) = self.parse_color_arg(input)?;
         let color_sid = self.arena.push_str(&color_str);
-        let (input, content_id) = self.parse_color_content(input, &color_str)?;
+        let (input, content_id) = self.parse_required_group(input)?;
+        let content_id = self.color_content(content_id, &color_str);
         Ok((
             input,
             self.arena.push_node(CompactNode::Color {
@@ -6617,7 +6627,8 @@ impl LatexCompactParser {
         let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, color) = braced_text(input)?;
-        let (input, content_id) = self.parse_color_content(input, color)?;
+        let (input, content_id) = self.parse_required_group(input)?;
+        let content_id = self.color_content(content_id, color);
         let bg_color = self.resolve_box_color(model.as_deref(), color);
         let bg_sid = self.arena.push_str(&bg_color);
         let border_sid = self.arena.push_str("");
@@ -6641,7 +6652,8 @@ impl LatexCompactParser {
         let (input, frame_color) = braced_text(input)?;
         let (input, _) = ws(input)?;
         let (input, bg_color) = braced_text(input)?;
-        let (input, content_id) = self.parse_color_content(input, bg_color)?;
+        let (input, content_id) = self.parse_required_group(input)?;
+        let content_id = self.color_content(content_id, bg_color);
         let bg = self.resolve_box_color(model.as_deref(), bg_color);
         let frame = self.resolve_box_color(model.as_deref(), frame_color);
         let bg_sid = self.arena.push_str(&bg);
@@ -6996,7 +7008,29 @@ impl LatexCompactParser {
         let (input, env_name) =
             take_while1(|c: char| c.is_ascii_alphanumeric() || c == '*')(input)?;
         let (input, _) = char('}')(input)?;
+        // These build no table of their own.
+        if matches!(env_name, "equation" | "equation*" | "CD") {
+            return self.parse_environment_body(input, env_name);
+        }
+        // A table and its cell are two levels of the expression, whose depth
+        // is limited too; do not parse (in large frames) what it will refuse.
+        if self.command_depth >= MAX_PARSE_DEPTH {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        self.command_depth += 1;
+        let result = self.parse_environment_body(input, env_name);
+        self.command_depth -= 1;
+        result
+    }
 
+    fn parse_environment_body<'a>(
+        &mut self,
+        input: &'a str,
+        env_name: &str,
+    ) -> IResult<&'a str, NodeId> {
         match env_name {
             "array" => self.parse_array_env(input, env_name),
             "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Bmatrix" | "Vmatrix" | "matrix*"
@@ -7784,7 +7818,22 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
         };
-        let node = match self.build_xymatrix(body) {
+        // A table and its cell, as in `parse_environment`.
+        if self.command_depth >= MAX_PARSE_DEPTH {
+            // (A cell that fails to parse is otherwise left empty.)
+            self.abort = Some(Error::LimitExceeded {
+                kind: crate::error::LimitKind::Depth,
+                limit: MAX_PARSE_DEPTH as usize,
+            });
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                rest,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        self.command_depth += 1;
+        let built = self.build_xymatrix(body);
+        self.command_depth -= 1;
+        let node = match built {
             Ok(node) => node,
             Err(error) => {
                 self.abort = Some(error);
