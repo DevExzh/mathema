@@ -6153,7 +6153,11 @@ impl LatexCompactParser {
     fn ordinary_operator(&mut self, rest: &str, base: NodeId) -> Option<NodeId> {
         self.lone_operator(base)?;
         let scripts = &rest[self.skip_script_ws(rest.as_bytes())..];
-        if self.script_marker_at(scripts).is_some() {
+        // At the end of its list no space follows anyway.
+        if scripts.is_empty()
+            || scripts.starts_with('}')
+            || self.script_marker_at(scripts).is_some()
+        {
             return None;
         }
         let ordinary = self.arena.push_node(CompactNode::MathAtom {

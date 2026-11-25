@@ -1935,6 +1935,7 @@ fn braced_operators_are_ordinary() {
         (r"\sum {\sum}x", r"\sum {\sum}x"),
         (r"\sum{}x", r"\sum{}x"),
         (r"{\sum x}", r"\sum x"),
+        (r"{\sum}", r"\sum"),
     ] {
         assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
         assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
