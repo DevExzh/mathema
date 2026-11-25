@@ -2704,19 +2704,8 @@ impl LatexCompactParser {
         {
             *self.arena.node_mut_in_place(base) = CompactNode::Symbol(SymbolKind::Ordinary, sid);
         }
-        // `1{,}000` and `a{=}b` have no spaces.
-        if grouped
-            && let CompactNode::Symbol(
-                SymbolKind::Punctuation | SymbolKind::BinaryOp | SymbolKind::Relation,
-                _,
-            ) = *self.arena.node(base)
-        {
-            let ordinary = self.arena.push_node(CompactNode::MathAtom {
-                atom_type: MathAtomType::Ord,
-                content: base,
-            });
-            self.grouped_operator = Some((ordinary, base));
-            base = ordinary;
+        if grouped {
+            base = self.ordinary_symbol(base);
         }
         // An infix fraction command is no atom: scripts after it begin the
         // next one, the denominator's first (`a \over^2 b`).
@@ -3950,7 +3939,7 @@ impl LatexCompactParser {
             },
 
             // --- Mod operators ---
-            "pmod" | "pod" => self.parse_pmod(input),
+            "pmod" | "pod" => self.parse_pmod(input, name == "pod"),
 
             // --- Kern/space dimension commands ---
             "kern" | "mkern" | "hskip" | "mskip" => self.parse_kern(input, name),
@@ -5833,8 +5822,11 @@ impl LatexCompactParser {
         ))
     }
 
-    fn parse_pmod<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+    fn parse_pmod<'a>(&mut self, input: &'a str, bare: bool) -> IResult<&'a str, NodeId> {
         let (input, content_id) = self.parse_required_group(input)?;
+        if bare {
+            return Ok((input, self.parenthesized(&[content_id])));
+        }
         let mod_name = self.arena.push_str("mod");
         let mod_id = self.arena.push_node(CompactNode::Operator {
             name: mod_name,
@@ -5843,19 +5835,18 @@ impl LatexCompactParser {
         let space_id = self
             .arena
             .push_node(CompactNode::Space(Rational::new(5, 18)));
+        Ok((input, self.parenthesized(&[mod_id, space_id, content_id])))
+    }
+
+    fn parenthesized(&mut self, content: &[NodeId]) -> NodeId {
         let open = self.arena.push_str("(");
         let close = self.arena.push_str(")");
-        let content = self
-            .arena
-            .push_children_deferred(&[mod_id, space_id, content_id]);
-        Ok((
-            input,
-            self.arena.push_node(CompactNode::Fenced {
-                open,
-                close,
-                content,
-            }),
-        ))
+        let content = self.arena.push_children_deferred(content);
+        self.arena.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content,
+        })
     }
 
     /// A kern takes a fixed dimension. Glue additionally accepts stretch and
@@ -6295,6 +6286,24 @@ impl LatexCompactParser {
             return self.arena.push_node(symbol);
         }
         content
+    }
+
+    /// A symbol in braces without spaces, as in `1{,}000` and `a{=}b`.
+    #[inline(never)]
+    fn ordinary_symbol(&mut self, base: NodeId) -> NodeId {
+        let CompactNode::Symbol(
+            SymbolKind::Punctuation | SymbolKind::BinaryOp | SymbolKind::Relation,
+            _,
+        ) = *self.arena.node(base)
+        else {
+            return base;
+        };
+        let ordinary = self.arena.push_node(CompactNode::MathAtom {
+            atom_type: MathAtomType::Ord,
+            content: base,
+        });
+        self.grouped_operator = Some((ordinary, base));
+        ordinary
     }
 
     /// Braces around an operator alone make an ordinary atom, without the space

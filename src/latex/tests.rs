@@ -3504,6 +3504,16 @@ fn stretchy_accents_parse() {
 }
 
 #[test]
+fn pod_is_a_parenthesis() {
+    let latex = |input: &str| crate::from_latex(input).unwrap().to_latex().unwrap();
+    assert_eq!(latex(r"a\pod{6}"), r"a\left( 6 \right)");
+    assert_eq!(
+        latex(r"a\pmod 6"),
+        r"a\left( \operatorname*{mod}\;6 \right)"
+    );
+}
+
+#[test]
 fn horizontal_braces_parse() {
     use crate::ast::compact::CompactNode;
 

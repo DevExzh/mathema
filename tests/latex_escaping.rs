@@ -2270,7 +2270,7 @@ fn bare_operators_in_fences_are_stable() {
             r"\left( \sum + \middle| \int \right)",
         ),
         (
-            r"\pod{\textcolor{}\int)}",
+            r"\pmod{\textcolor{}\int)}",
             r"\left( \operatorname*{mod}\;\int ) \right)",
         ),
     ] {
