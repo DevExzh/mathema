@@ -7820,11 +7820,6 @@ impl LatexCompactParser {
         };
         // A table and its cell, as in `parse_environment`.
         if self.command_depth >= MAX_PARSE_DEPTH {
-            // (A cell that fails to parse is otherwise left empty.)
-            self.abort = Some(Error::LimitExceeded {
-                kind: crate::error::LimitKind::Depth,
-                limit: MAX_PARSE_DEPTH as usize,
-            });
             return Err(nom::Err::Failure(nom::error::Error::new(
                 rest,
                 nom::error::ErrorKind::TooLarge,
@@ -7925,6 +7920,12 @@ impl LatexCompactParser {
         if !head.is_empty() {
             match self.parse_node_list(head) {
                 Ok((_, ids)) => out.extend(ids),
+                Err(nom::Err::Failure(error)) if error.code == nom::error::ErrorKind::TooLarge => {
+                    return Err(self.abort.take().unwrap_or(Error::LimitExceeded {
+                        kind: crate::error::LimitKind::Depth,
+                        limit: MAX_PARSE_DEPTH as usize,
+                    }));
+                },
                 Err(_) => {
                     if let Some(error) = self.take_resource_error() {
                         return Err(error);
