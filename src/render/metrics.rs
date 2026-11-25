@@ -144,14 +144,16 @@ pub fn glyph_metrics_display(ch: char) -> GlyphMetrics {
         '∬' | '∯' => GlyphMetrics::new(0.680, 0.431, 0.414, 0.2955),
         '∭' | '∰' => GlyphMetrics::new(0.680, 0.431, 0.624, 0.2955),
         '⨌' => GlyphMetrics::new(0.680, 0.431, 0.834, 0.2955),
-        // Sum-like: Size2 h=1.050, d=0.550, total=1.600, scale=1.6
-        // Normalized: h=0.656, d=0.344, w=Size2_w/1.6, i=0
-        '∑' => GlyphMetrics::new(0.656, 0.344, 0.903, 0.0),
-        '∏' | '∐' => GlyphMetrics::new(0.656, 0.344, 0.799, 0.0),
-        '⋂' | '⋃' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
-        '⋁' | '⋀' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
-        '⨀' | '⨁' | '⨂' => GlyphMetrics::new(0.656, 0.344, 0.944, 0.0),
-        '⨄' | '⨆' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
+        // Sum-like: the ink of the Latin Modern Math display variant that is
+        // drawn, at scale 1.6.
+        '∑' => GlyphMetrics::new(0.594, 0.281, 0.903, 0.0),
+        '∏' | '∐' => GlyphMetrics::new(0.594, 0.281, 0.799, 0.0),
+        '⋂' => GlyphMetrics::new(0.587, 0.261, 0.694, 0.0),
+        '⋃' | '⨄' => GlyphMetrics::new(0.573, 0.274, 0.694, 0.0),
+        '⋁' => GlyphMetrics::new(0.585, 0.286, 0.694, 0.0),
+        '⋀' => GlyphMetrics::new(0.598, 0.272, 0.694, 0.0),
+        '⨀' | '⨁' | '⨂' => GlyphMetrics::new(0.564, 0.251, 0.944, 0.0),
+        '⨆' => GlyphMetrics::new(0.585, 0.272, 0.694, 0.0),
         _ => glyph_metrics(ch),
     }
 }
@@ -708,6 +710,31 @@ mod tests {
             let m = glyph_metrics_display(ch);
             assert!((m.advance() * 2.0 - display).abs() < 1e-9, "{ch}");
             assert!((m.italic * 2.0 - 0.591).abs() < 1e-9, "{ch}");
+        }
+    }
+
+    /// The box of a display operator is the ink of the variant that is drawn.
+    #[test]
+    fn display_operators_are_as_tall_as_their_glyph() {
+        for (ch, height, depth, width) in [
+            ('∑', 0.950, 0.450, 1.445),
+            ('∏', 0.950, 0.450, 1.278),
+            ('∐', 0.950, 0.450, 1.278),
+            ('⋂', 0.939, 0.417, 1.110),
+            ('⋃', 0.917, 0.439, 1.110),
+            ('⨄', 0.917, 0.439, 1.110),
+            ('⋁', 0.936, 0.458, 1.110),
+            ('⋀', 0.957, 0.436, 1.110),
+            ('⨀', 0.902, 0.402, 1.510),
+            ('⨁', 0.902, 0.402, 1.510),
+            ('⨂', 0.902, 0.402, 1.510),
+            ('⨆', 0.936, 0.436, 1.110),
+        ] {
+            let m = glyph_metrics_display(ch);
+            let scale = display_op_scale(ch);
+            assert!((m.height * scale - height).abs() < 1e-3, "{ch}");
+            assert!((m.depth * scale - depth).abs() < 1e-3, "{ch}");
+            assert!((m.advance() * scale - width).abs() < 1e-3, "{ch}");
         }
     }
 
