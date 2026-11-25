@@ -64,6 +64,12 @@ pub(crate) fn is_control_word(spelling: &str) -> bool {
         .is_some_and(|name| !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphabetic()))
 }
 
+/// Every dangerous command, without its backslash.
+#[cfg(test)]
+pub(crate) fn dangerous_names() -> impl Iterator<Item = &'static str> {
+    super::dangerous::DANGEROUS.iter().copied()
+}
+
 /// Whether `spelling` names a known TeX, LaTeX or package command that is
 /// never written back as a live command, even with
 /// [`UndefinedCommands::Keep`](crate::UndefinedCommands::Keep): an engine

@@ -10,9 +10,11 @@ use crate::writer::Writer;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+mod buffer;
 mod color_spec;
 pub(crate) mod colors;
 mod escape;
+use buffer::LatexBuffer;
 use escape::{
     Place, Spelling, ascii_needs_escape, is_no_token, needs_escape, write_char, write_char_code,
     write_char_token,
@@ -139,13 +141,10 @@ fn write_lowered(
         }
         return write_lowered(&lowered, config, report, None);
     }
-    let mut buf = LatexBuffer {
-        text: String::with_capacity(256),
-        in_operator_name: false,
-        keep_undefined: config.undefined_commands == crate::UndefinedCommands::Keep,
-        command_ends: Vec::new(),
+    let mut buf = LatexBuffer::new(
+        config.undefined_commands == crate::UndefinedCommands::Keep,
         report,
-    };
+    );
     write_sequence(
         &mut buf,
         &expr.arena,
@@ -282,87 +281,6 @@ fn warning(message: String) -> Diagnostic {
     }
 }
 
-/// A named operator gives literal punctuation different TeX math codes.
-struct LatexBuffer {
-    text: String,
-    in_operator_name: bool,
-    /// Whether undefined commands are written live
-    /// ([`UndefinedCommands::Keep`](crate::UndefinedCommands::Keep)).
-    keep_undefined: bool,
-    /// Where the output of each undefined command written as a live control
-    /// word ends, and whether it ends with the bare name. What the writer
-    /// puts next is only known at the end: a group there would read back as
-    /// another argument of the command, and a letter would extend its name.
-    command_ends: Vec<(usize, bool)>,
-    /// What the output does not keep.
-    report: LossReport,
-}
-
-impl LatexBuffer {
-    /// Insert `text` at byte offset `at`, keeping the recorded command ends
-    /// on the same output.
-    fn insert_text(&mut self, at: usize, text: &str) {
-        self.text.insert_str(at, text);
-        for (end, _) in &mut self.command_ends {
-            if *end > at {
-                *end += text.len();
-            }
-        }
-    }
-
-    /// [`Self::insert_text`] at each of the ascending offsets `at`, in one pass.
-    fn insert_text_at_each(&mut self, at: &[usize], text: &str) {
-        let Some(&first) = at.first() else {
-            return;
-        };
-        let tail = self.text.split_off(first);
-        let mut from = first;
-        for &at in at {
-            self.text.push_str(&tail[from - first..at - first]);
-            self.text.push_str(text);
-            from = at;
-        }
-        self.text.push_str(&tail[from - first..]);
-        for (end, _) in &mut self.command_ends {
-            *end += text.len() * at.partition_point(|&at| at < *end);
-        }
-    }
-
-    /// Cut the output back to `len` bytes.
-    fn truncate_text(&mut self, len: usize) {
-        self.text.truncate(len);
-        self.command_ends.retain(|&(end, _)| end <= len);
-    }
-
-    /// The finished output. After each undefined command, put `\relax`
-    /// before a group that would read back as one more of its arguments,
-    /// and a space before a letter that would extend its name.
-    fn finish(mut self) -> String {
-        self.command_ends.sort_unstable();
-        self.command_ends.dedup();
-        for &(end, bare) in self.command_ends.iter().rev() {
-            let rest = &self.text[end..];
-            if rest.trim_start().starts_with('{') {
-                self.text.insert_str(end, "\\relax");
-            } else if bare && rest.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
-                self.text.insert(end, ' ');
-            }
-        }
-        self.text
-    }
-}
-impl std::ops::Deref for LatexBuffer {
-    type Target = String;
-    fn deref(&self) -> &String {
-        &self.text
-    }
-}
-impl std::ops::DerefMut for LatexBuffer {
-    fn deref_mut(&mut self) -> &mut String {
-        &mut self.text
-    }
-}
-
 fn write_nodes(buf: &mut LatexBuffer, arena: &AstArena, span: NodeSpan) {
     write_node_slice(buf, arena, arena.children(span), false);
 }
@@ -413,8 +331,8 @@ fn write_sequence(
             .or_else(|| i.checked_sub(1).map(|j| children[j]));
 
         if let Some(cmd) = scalar_negation_command(arena, &children[i..]) {
-            buf.push_str("\\centernot\\");
-            buf.push_str(cmd);
+            buf.push_str("\\centernot");
+            buf.command(cmd);
             ends_with_command = true;
             i += 2;
             continue;
@@ -1051,8 +969,7 @@ fn write_scalar_operator_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeI
         return false;
     };
     if let Some(cmd) = single_char(arena.str_val(sid)).and_then(nary_op_to_latex) {
-        buf.push('\\');
-        buf.push_str(cmd);
+        buf.command(cmd);
         true
     } else {
         false
@@ -1466,7 +1383,7 @@ fn is_idotsint_triple(arena: &AstArena, ids: &[NodeId]) -> bool {
 }
 
 /// Write the canonical `\idotsint` command for an idotsint row.
-fn write_idotsint(buf: &mut String) {
+fn write_idotsint(buf: &mut LatexBuffer) {
     buf.push_str("\\idotsint");
 }
 
@@ -1518,7 +1435,7 @@ fn write_math_leaf_segment(buf: &mut LatexBuffer, s: &str, kind: MathLeafKind) {
 
 /// A number is written as it stands (`1.5`, `1,000`, `½`), except for
 /// characters that are not themselves in a math list.
-fn write_number_chars(buf: &mut String, s: &str) {
+fn write_number_chars(buf: &mut LatexBuffer, s: &str) {
     for ch in s.chars() {
         write_char(buf, ch, Place::Number);
     }
@@ -1578,8 +1495,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if children.len() == 2
                 && let Some(cmd) = scalar_negation_command(arena, children)
             {
-                buf.push_str("\\centernot\\");
-                buf.push_str(cmd);
+                buf.push_str("\\centernot");
+                buf.command(cmd);
                 return;
             }
             if is_idotsint_row(arena, id) {
@@ -1948,8 +1865,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     return;
                 },
             };
-            buf.push('\\');
-            buf.push_str(cmd);
+            buf.command(cmd);
             match limits {
                 LimitStyle::AboveBelow => buf.push_str("\\limits"),
                 LimitStyle::SubSup => buf.push_str("\\nolimits"),
@@ -2030,8 +1946,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 },
             };
             if let Some(cmd) = cmd {
-                buf.push('\\');
-                buf.push_str(cmd);
+                buf.command(cmd);
                 buf.push('{');
                 write_accent_base_content(buf, arena, base);
                 buf.push('}');
@@ -2346,8 +2261,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 StrokeKind::Cross => "xcancel",
                 StrokeKind::Horizontal | StrokeKind::Vertical => "cancel",
             };
-            buf.push('\\');
-            buf.push_str(cmd);
+            buf.command(cmd);
             buf.push('{');
             write_wrapped_content(buf, arena, content);
             buf.push('}');
@@ -2359,8 +2273,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // invalid (e.g. \Big\mathrel{...}); emit the content alone so the
             // sizing command does not detach from its argument on re-parse.
             if let Some(cmd) = big_delim_command(arena, factor, content) {
-                buf.push('\\');
-                buf.push_str(cmd);
+                buf.command(cmd);
                 write_big_delim(buf, arena, content);
             } else {
                 write_node(buf, arena, content);
@@ -2394,8 +2307,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
 
         CompactNode::Styled(style, span) => {
             let cmd = style_to_latex_font(style);
-            buf.push('\\');
-            buf.push_str(cmd);
+            buf.command(cmd);
             buf.push('{');
             write_nodes(buf, arena, span);
             buf.push('}');
@@ -2508,9 +2420,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 } = *arena.node(content)
                 && let Some(cmd) = big_delim_command(arena, factor, delim)
             {
-                buf.push('\\');
-                buf.push_str(cmd);
-                buf.push(suffix);
+                buf.command_with_suffix(cmd, suffix);
                 write_big_delim(buf, arena, delim);
                 return;
             }
@@ -2557,8 +2467,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if braced {
                 buf.push('}');
             } else {
-                let end = buf.len();
-                buf.command_ends.push((end, groups.is_empty()));
+                buf.end_undefined_command();
             }
         },
     }
@@ -2646,7 +2555,7 @@ fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[
     }
 }
 
-fn write_identifier_text(buf: &mut String, s: &str) {
+fn write_identifier_text(buf: &mut LatexBuffer, s: &str) {
     if !s.chars().any(|ch| unicode_to_latex(ch).is_some()) {
         for ch in s.chars() {
             if needs_escape(ch, Place::Identifier) {
@@ -2668,8 +2577,7 @@ fn write_identifier_text(buf: &mut String, s: &str) {
             write_char(buf, ch, Place::Identifier);
             previous_was_command = false;
         } else if let Some(cmd) = unicode_to_latex(ch) {
-            buf.push('\\');
-            buf.push_str(cmd);
+            buf.command(cmd);
             previous_was_command = true;
         } else {
             if previous_was_command && ch.is_ascii_alphabetic() {
@@ -2715,7 +2623,9 @@ fn kept_name(name: &str) -> Cow<'_, str> {
     let mut kept = String::with_capacity(name.len());
     for ch in name.chars() {
         if ch.is_control() {
-            write_char(&mut kept, ch, Place::Name);
+            if let Spelling::Fixed(text) = escape::spelling(ch, Place::Name) {
+                kept.push_str(text);
+            }
         } else {
             kept.push(ch);
         }
@@ -2742,8 +2652,7 @@ fn write_operator_name(buf: &mut LatexBuffer, name: &str, limits: LimitStyle) {
     if let Some(command) = latex_operator_command(name)
         && !(limits == LimitStyle::Default && !crate::unicode::symbols::operator_has_limits(name))
     {
-        buf.push('\\');
-        buf.push_str(command);
+        buf.command(command);
         match limits {
             LimitStyle::AboveBelow => buf.push_str("\\limits"),
             // A native limit command needs an explicit modifier to force
@@ -2807,13 +2716,7 @@ fn separate_leading_mark(buf: &mut LatexBuffer, start: usize) {
     else {
         return;
     };
-    let mut code = String::new();
-    write_char_code(&mut code, mark, " ");
-    // Two bytes, so the ends recorded after it stay right.
-    let rest = code.split_off(mark.len_utf8());
-    buf.text
-        .replace_range(start..start + mark.len_utf8(), &code);
-    buf.insert_text(start + mark.len_utf8(), &rest);
+    buf.replace_char(start, &escape::char_code(mark, " "));
 }
 
 fn write_operator_name_content(buf: &mut LatexBuffer, name: &str, plain: bool) {
@@ -2950,15 +2853,13 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
         && class == kind
         && !matches!(ch, '\u{2020}' | '\u{2021}')
     {
-        buf.push('\\');
-        buf.push_str(name);
+        buf.command(name);
         return;
     }
     // A compound glyph contributed by a package (`\colonapprox` is `∶≈`)
     // reparses to the same single symbol only through its command name.
     if is_compound && let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind) {
-        buf.push('\\');
-        buf.push_str(cmd);
+        buf.command(cmd);
         return;
     }
     // A scalar large-operator glyph represented as an ordinary symbol can
@@ -2970,8 +2871,7 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
         && let Some(cmd) = nary_op_to_latex(ch)
     {
         buf.push_str("\\mathord{");
-        buf.push('\\');
-        buf.push_str(cmd);
+        buf.command(cmd);
         buf.push('}');
         return;
     }
@@ -3079,8 +2979,7 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
         && class == kind
         && !matches!(ch, '†' | '‡')
     {
-        buf.push('\\');
-        buf.push_str(name);
+        buf.command(name);
         return;
     }
     let command = match (kind, ch) {
@@ -3100,12 +2999,11 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
             })
         {
             if let Some(alias) = crate::unicode::symbols::command_for_class(ch, kind) {
-                buf.push('\\');
-                buf.push_str(alias);
+                buf.command(alias);
                 return;
             }
-            buf.push_str("\\mathord{\\");
-            buf.push_str(cmd);
+            buf.push_str("\\mathord{");
+            buf.command(cmd);
             buf.push('}');
             return;
         }
@@ -3123,18 +3021,15 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
             && command_kind.is_some_and(|command_kind| command_kind != kind)
         {
             if let Some(alias) = crate::unicode::symbols::command_for_class(ch, kind) {
-                buf.push('\\');
-                buf.push_str(alias);
+                buf.command(alias);
                 return;
             }
             buf.push_str(wrapper);
-            buf.push('\\');
-            buf.push_str(cmd);
+            buf.command(cmd);
             buf.push('}');
             return;
         }
-        buf.push('\\');
-        buf.push_str(cmd);
+        buf.command(cmd);
         return;
     }
     if needs_escape(ch, Place::Class) && !is_no_token(ch) {
@@ -3142,8 +3037,7 @@ fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
         return;
     }
     if let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind) {
-        buf.push('\\');
-        buf.push_str(cmd);
+        buf.command(cmd);
         return;
     }
     // For relation/binary operators that have no direct LaTeX command in our
@@ -3219,8 +3113,8 @@ fn write_compound_symbol(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
     for ch in s.chars() {
         if let Some(cmd) = nary_op_to_latex(ch) {
             // The reader would take what follows as the operator's body.
-            buf.push_str("\\mathord{\\");
-            buf.push_str(cmd);
+            buf.push_str("\\mathord{");
+            buf.command(cmd);
             buf.push('}');
         } else {
             write_char(buf, ch, Place::Compound);
@@ -3257,7 +3151,7 @@ fn authored_math_space_symbol(arena: &AstArena, id: NodeId) -> Option<char> {
     }
 }
 
-fn write_space(buf: &mut String, r: Rational) {
+fn write_space(buf: &mut LatexBuffer, r: Rational) {
     // Named TeX spaces are retained for their canonical widths. Every other
     // rational width uses a fixed em kern so reimport preserves the AST.
     match r {
@@ -3282,12 +3176,12 @@ fn write_space(buf: &mut String, r: Rational) {
     }
 }
 
-fn write_rational_dimension(buf: &mut String, width: Rational) {
-    width.write_scaled_decimal(buf, 1);
+fn write_rational_dimension(buf: &mut LatexBuffer, width: Rational) {
+    buf.push_decimal(width, 1);
     buf.push_str("em");
 }
 
-fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<SpaceBasis>) {
+fn write_space_with_basis(buf: &mut LatexBuffer, width: Rational, basis: Option<SpaceBasis>) {
     if width.num == 0 {
         return;
     }
@@ -3298,7 +3192,7 @@ fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<Space
         Some(SpaceBasis::MathMu) => (r"\mkern", 18, "mu "),
     };
     buf.push_str(cmd);
-    width.write_scaled_decimal(buf, scale);
+    buf.push_decimal(width, scale);
     buf.push_str(unit);
 }
 
@@ -3326,11 +3220,11 @@ fn big_delim_command(arena: &AstArena, factor: Rational, content: NodeId) -> Opt
 }
 
 /// The class suffix of `\bigl`/`\bigr`/`\bigm` for an atom type.
-fn big_delim_suffix(atom_type: MathAtomType) -> Option<char> {
+fn big_delim_suffix(atom_type: MathAtomType) -> Option<&'static str> {
     match atom_type {
-        MathAtomType::Open => Some('l'),
-        MathAtomType::Close => Some('r'),
-        MathAtomType::Rel => Some('m'),
+        MathAtomType::Open => Some("l"),
+        MathAtomType::Close => Some("r"),
+        MathAtomType::Rel => Some("m"),
         _ => None,
     }
 }
@@ -3384,16 +3278,14 @@ fn write_delim_with_class(buf: &mut LatexBuffer, delim: &str, kind: Option<Symbo
         && crate::unicode::symbols::is_tex_delimiter(ch)
         && let Some(name) = delimiter_command(ch, kind)
     {
-        buf.push('\\');
-        buf.push_str(name);
+        buf.command(name);
         return;
     }
     match delim {
         "" => buf.push('.'),
         "\\" => buf.push_str("\\backslash"),
         "%" | "$" | "#" | "&" | "_" | "^" | "~" => {
-            buf.push('\\');
-            buf.push_str(delim);
+            buf.command(delim);
         },
         "{" => buf.push_str("\\{"),
         "}" => buf.push_str("\\}"),

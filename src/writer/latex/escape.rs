@@ -13,6 +13,7 @@
 //! - the decimal code `\char7 ` for a character that must not appear in the
 //!   source at all.
 
+use super::buffer::LatexBuffer;
 use crate::unicode::{decode_script_scalar, math_space_width};
 
 /// Where a character is written.
@@ -209,7 +210,7 @@ fn unicode_spelling(ch: char, place: Place) -> Spelling {
 /// Write `ch` with its spelling in `place`. Returns whether the character is
 /// in the output.
 #[inline]
-pub(super) fn write_char(buf: &mut String, ch: char, place: Place) -> bool {
+pub(super) fn write_char(buf: &mut LatexBuffer, ch: char, place: Place) -> bool {
     if needs_escape(ch, place) {
         return write_escaped(buf, ch, place);
     }
@@ -217,7 +218,7 @@ pub(super) fn write_char(buf: &mut String, ch: char, place: Place) -> bool {
     true
 }
 
-fn write_escaped(buf: &mut String, ch: char, place: Place) -> bool {
+fn write_escaped(buf: &mut LatexBuffer, ch: char, place: Place) -> bool {
     match spelling(ch, place) {
         Spelling::Raw => buf.push(ch),
         Spelling::Backslash => {
@@ -238,7 +239,7 @@ fn write_escaped(buf: &mut String, ch: char, place: Place) -> bool {
 
 /// TeX's character token. It is a single ordinary atom (the glyph's math code
 /// in TeX), and nothing after it can be taken as part of it.
-pub(super) fn write_char_token(buf: &mut String, ch: char) {
+pub(super) fn write_char_token(buf: &mut LatexBuffer, ch: char) {
     if ch.is_ascii_whitespace() || ch.is_control() {
         write_char_code(buf, ch, " ");
         return;
@@ -255,10 +256,13 @@ pub(super) fn write_char_token(buf: &mut String, ch: char) {
 }
 
 /// A decimal character code, ended before a following digit.
-pub(super) fn write_char_code(buf: &mut String, ch: char, terminator: &str) {
-    buf.push_str(r"\char");
-    buf.push_str(&(ch as u32).to_string());
-    buf.push_str(terminator);
+pub(super) fn write_char_code(buf: &mut LatexBuffer, ch: char, terminator: &str) {
+    buf.push_str(&char_code(ch, terminator));
+}
+
+/// [`write_char_code`], as a string.
+pub(super) fn char_code(ch: char, terminator: &str) -> String {
+    format!(r"\char{}{terminator}", ch as u32)
 }
 
 #[cfg(test)]

@@ -4640,7 +4640,7 @@ fn binrel_uses_the_sample_class_and_writes_only_the_body() {
     assert!(crate::from_latex(r"\@binrelExtra{+}{x}").is_err());
     assert_eq!(
         crate::from_latex(r"\alpha@x").unwrap().to_latex().unwrap(),
-        r"\alpha@x"
+        r"\alpha @x"
     );
 }
 
