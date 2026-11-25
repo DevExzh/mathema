@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<mi>a</mi><mi>b</mi>`, as TeX and `from_latex(…).to_mathml()` mean it. OMML
   gets a run per letter and UnicodeMath parentheses where a row of letters is an
   operand (`(ab)/c`). Only the letters of operator names (`\varinjlim`) are
-  joined.
+  joined. A list of more than 65,535 letters is refused as any other list of
+  that length is, also where groups are opened into one.
 - **Breaking (behavior):** the letters of an italic OMML run (`sty` i, or none,
   which is Word's default) are identifiers of their own; a run of `sty` p is one
   as before.
