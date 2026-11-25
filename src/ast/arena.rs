@@ -86,6 +86,11 @@ impl ProvenanceStore {
     }
 }
 
+/// The attributes of the nodes that have some. Boxed in the arena, which is
+/// moved more often than it has any.
+#[derive(Debug, Clone, Default)]
+struct AttrStore(HashMap<NodeId, NodeAttrs>);
+
 /// Arena-based storage for compact AST nodes.
 ///
 /// Nodes, child references, and UTF-8 text each occupy a contiguous buffer.
@@ -102,7 +107,7 @@ pub struct AstArena {
     /// Sparse provenance for explicitly typed spaces and parsed table forms.
     provenance: ProvenanceStore,
     /// Typesetting attributes of the nodes that have any.
-    attrs: Option<HashMap<NodeId, NodeAttrs>>,
+    attrs: Option<Box<AttrStore>>,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -348,8 +353,8 @@ impl AstArena {
     #[inline]
     pub fn node_mut(&mut self, id: NodeId) -> &mut CompactNode {
         if let Some(store) = &mut self.attrs {
-            store.remove(&id);
-            if store.is_empty() {
+            store.0.remove(&id);
+            if store.0.is_empty() {
                 self.attrs = None;
             }
         }
@@ -384,7 +389,7 @@ impl AstArena {
             let inner = self.attrs(source).cloned().unwrap_or_default();
             let merged = inner.or(&outer);
             if let Some(store) = &mut self.attrs {
-                store.remove(&destination);
+                store.0.remove(&destination);
             }
             self.add_attrs(destination, &merged);
         }
@@ -411,7 +416,7 @@ impl AstArena {
     #[inline]
     #[must_use]
     pub fn attrs(&self, id: NodeId) -> Option<&NodeAttrs> {
-        self.attrs.as_ref()?.get(&id)
+        self.attrs.as_ref()?.0.get(&id)
     }
 
     /// Give a node typesetting attributes; those it already has win. The
@@ -447,8 +452,8 @@ impl AstArena {
                 | CompactNode::Middle(_) => {},
                 _ => {
                     let store = self.attrs.get_or_insert_default();
-                    let own = store.remove(&id).unwrap_or_default();
-                    store.insert(id, own.or(attrs));
+                    let own = store.0.remove(&id).unwrap_or_default();
+                    store.0.insert(id, own.or(attrs));
                 },
             }
         }
@@ -457,7 +462,7 @@ impl AstArena {
     /// Move the attributes of a node that became a `Row` to its children.
     pub(crate) fn settle_attrs(&mut self, id: NodeId) {
         if let Some(store) = &mut self.attrs
-            && let Some(attrs) = store.remove(&id)
+            && let Some(attrs) = store.0.remove(&id)
         {
             self.add_attrs(id, &attrs);
         }
@@ -466,11 +471,11 @@ impl AstArena {
     /// Remove the typesetting attributes of a node, if they are `attrs`.
     pub(crate) fn remove_attrs(&mut self, id: NodeId, attrs: &NodeAttrs) {
         if let Some(store) = &mut self.attrs
-            && store.get(&id) == Some(attrs)
+            && store.0.get(&id) == Some(attrs)
         {
-            store.remove(&id);
+            store.0.remove(&id);
         }
-        if self.attrs.as_ref().is_some_and(|store| store.is_empty()) {
+        if self.attrs.as_ref().is_some_and(|store| store.0.is_empty()) {
             self.attrs = None;
         }
     }
@@ -760,7 +765,7 @@ impl AstArena {
             + self.provenance.heap_bytes()
             + self.attrs.as_ref().map_or(0, |attrs| {
                 size_of::<HashMap<NodeId, NodeAttrs>>()
-                    + attrs.capacity() * size_of::<(NodeId, NodeAttrs)>()
+                    + attrs.0.capacity() * size_of::<(NodeId, NodeAttrs)>()
             })
             + self.children.capacity() * size_of::<NodeId>()
             + self.strings.capacity()

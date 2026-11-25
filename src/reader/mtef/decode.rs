@@ -93,13 +93,47 @@ pub(super) struct Glyph {
     pub(super) size: SizeState,
 }
 
-/// The current size (SIZE and typesize records).
+/// The current size (SIZE and typesize records), in one word: it is compared
+/// for every character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SizeState {
+pub(super) struct SizeState(u32);
+
+/// What a [`SizeState`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SizeRecord {
     /// A typesize value and what is added to it, in 32nds of a point.
     Logical { level: u8, delta: i16 },
     /// An explicit size, in 32nds of a point.
     Points(i16),
+}
+
+impl SizeState {
+    const POINTS: u32 = 1 << 31;
+
+    /// The typesize itself is its own word.
+    #[inline(always)]
+    pub(super) const fn level(level: u8) -> Self {
+        Self(level as u32)
+    }
+
+    fn logical(level: u8, delta: i16) -> Self {
+        Self(u32::from(level) | u32::from(delta as u16) << 8)
+    }
+
+    fn points(points: i16) -> Self {
+        Self(u32::from(points as u16) | Self::POINTS)
+    }
+
+    pub(super) fn record(self) -> SizeRecord {
+        if self.0 & Self::POINTS != 0 {
+            SizeRecord::Points(self.0 as u16 as i16)
+        } else {
+            SizeRecord::Logical {
+                level: self.0 as u8,
+                delta: (self.0 >> 8) as u16 as i16,
+            }
+        }
+    }
 }
 
 /// Which slots of a template are smaller than the template by their place.
@@ -114,14 +148,37 @@ pub(super) enum SlotSizes {
     Limits,
 }
 
+/// The sizes that need a second look when the equation is read.
+#[derive(Debug, Default)]
+pub(super) struct RareSizes {
+    /// Characters whose symbol size was dropped.
+    pub(super) dropped_symbols: Vec<NodeId>,
+    /// Nodes at full size by a smaller slot's place. Some writers leave the
+    /// typesize records out: without any script size in the equation these
+    /// say nothing.
+    full_in_script: Vec<(NodeId, NodeAttrs)>,
+}
+
 /// A template whose lines are being read.
 #[derive(Debug, Clone, Copy)]
+#[repr(align(4))]
 pub(super) struct OpenTemplate {
     pub(super) sizes: SlotSizes,
     /// The typesize its text has without attributes of its own.
     pub(super) level: u8,
     /// The number of slots read.
     pub(super) slots: u8,
+    /// Whether there is one.
+    open: bool,
+}
+
+impl OpenTemplate {
+    pub(super) const NONE: Self = Self {
+        sizes: SlotSizes::Same,
+        level: 0,
+        slots: 0,
+        open: false,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,16 +286,12 @@ pub(super) struct Decoder<'a> {
     /// The size the lines being read have by their place in the equation:
     /// that of their text in the AST without attributes of its own.
     slot_size: u8,
-    /// Characters whose symbol size was dropped.
-    pub(super) dropped_symbols: Vec<NodeId>,
+    /// What only equations with sizes have.
+    pub(super) rare_sizes: Option<Box<RareSizes>>,
     /// The template whose own list is being read.
-    template: Option<OpenTemplate>,
+    template: OpenTemplate,
     /// Whether a typesize record names a script size.
     script_sizes: bool,
-    /// Nodes at full size by a smaller slot's place. Some writers leave the
-    /// typesize records out: without any script size in the equation these
-    /// say nothing.
-    full_in_script: Vec<(NodeId, NodeAttrs)>,
     /// Where the sizes of MTEF 5 equation preferences are.
     sizes_at: Option<usize>,
 }
@@ -271,12 +324,11 @@ impl<'a> Decoder<'a> {
             color_context: None,
             node_colors: HashMap::new(),
             template_runs: HashSet::new(),
-            size: SizeState::Logical { level: 0, delta: 0 },
+            size: SizeState::level(0),
             slot_size: 0,
-            dropped_symbols: Vec::new(),
-            template: None,
+            rare_sizes: None,
+            template: OpenTemplate::NONE,
             script_sizes: false,
-            full_in_script: Vec::new(),
             sizes_at: None,
         }
     }
@@ -537,13 +589,8 @@ impl<'a> Decoder<'a> {
         let items = self.parse_object_list(true)?;
         self.check_trailing()?;
         let line = self.assemble_line(items)?;
-        if !self.dropped_symbols.is_empty() {
-            self.lose_size("symbol sizes of characters were dropped");
-        }
-        if !self.script_sizes {
-            for (id, attrs) in std::mem::take(&mut self.full_in_script) {
-                self.arena.remove_attrs(id, &attrs);
-            }
+        if let Some(rare) = self.rare_sizes.take() {
+            self.settle_rare_sizes(*rare);
         }
         Ok(line)
     }
@@ -889,10 +936,7 @@ impl<'a> Decoder<'a> {
             SIZE => self.size_record()?,
             FULL..=SUBSYM => {
                 self.script_sizes |= matches!(rtype - FULL, 1 | 2);
-                self.size = SizeState::Logical {
-                    level: rtype - FULL,
-                    delta: 0,
-                };
+                self.size = SizeState::level(rtype - FULL);
             },
             COLOR if self.v5 => self.color()?,
             COLOR_DEF if self.v5 => self.color_def(options)?,
@@ -1268,8 +1312,9 @@ impl<'a> Decoder<'a> {
             sizes: self.slot_sizes(selector, variation),
             level: self.slot_size,
             slots: 0,
+            open: true,
         };
-        let outer_template = self.template.replace(open);
+        let outer_template = std::mem::replace(&mut self.template, open);
         let list = self.parse_list();
         self.template = outer_template;
         self.color_context = outer;
@@ -1516,16 +1561,13 @@ impl<'a> Decoder<'a> {
         self.size = match self.u8()? {
             // MTEFv5.md gives "-point size" here, but every record seen in
             // documents holds the positive size. Both are read.
-            101 => SizeState::Points((self.u16()? as i16).saturating_abs()),
+            101 => SizeState::points((self.u16()? as i16).saturating_abs()),
             100 => {
                 let level = self.u8()?;
                 let delta = self.u16()? as i16;
-                SizeState::Logical { level, delta }
+                SizeState::logical(level, delta)
             },
-            level => SizeState::Logical {
-                level,
-                delta: i16::from(self.u8()?) - 128,
-            },
+            level => SizeState::logical(level, i16::from(self.u8()?) - 128),
         };
         Ok(())
     }
@@ -1536,14 +1578,26 @@ impl<'a> Decoder<'a> {
         size == self.size_by_place()
     }
 
+    #[cold]
+    fn settle_rare_sizes(&mut self, rare: RareSizes) {
+        if !rare.dropped_symbols.is_empty() {
+            self.lose_size("symbol sizes of characters were dropped");
+        }
+        if !self.script_sizes {
+            for (id, attrs) in rare.full_in_script {
+                self.arena.remove_attrs(id, &attrs);
+            }
+        }
+    }
+
     /// Whether `size` is a symbol size. Big operators have their signs at
     /// it; what it makes of other characters is the document's setting, which
     /// MTEF 3 does not record. It is not kept.
     #[inline]
     fn is_dropped_symbol(size: SizeState) -> bool {
         matches!(
-            size,
-            SizeState::Logical {
+            size.record(),
+            SizeRecord::Logical {
                 level: 3 | 4,
                 delta: 0
             }
@@ -1553,11 +1607,11 @@ impl<'a> Decoder<'a> {
     /// The size of something drawn in `size` that does not have it by its
     /// place in the equation.
     fn own_size(&self, size: SizeState) -> Option<FontSize> {
-        match size {
-            SizeState::Points(points) => {
+        match size.record() {
+            SizeRecord::Points(points) => {
                 (points > 0).then(|| FontSize::Points(Rational::new(points.into(), 32)))
             },
-            SizeState::Logical { level, delta } => {
+            SizeRecord::Logical { level, delta } => {
                 if level == self.slot_size && delta == 0 || Self::is_dropped_symbol(size) {
                     return None;
                 }
@@ -1596,8 +1650,8 @@ impl<'a> Decoder<'a> {
     /// amounts added to a typesize count.
     #[inline(always)]
     pub(super) fn sign_size(&self, sign: &Glyph, big_operator: bool) -> Option<FontSize> {
-        match sign.size {
-            SizeState::Logical { delta: 0, .. } => None,
+        match sign.size.record() {
+            SizeRecord::Logical { delta: 0, .. } => None,
             _ => self.own_sign_size(sign, big_operator),
         }
     }
@@ -1610,10 +1664,10 @@ impl<'a> Decoder<'a> {
             (true, 1000) => 1500,
             (true, _) => 1000,
         };
-        let points = match sign.size {
-            SizeState::Points(points) => i64::from(points),
-            SizeState::Logical { delta: 0, .. } => return None,
-            SizeState::Logical { level, delta } => {
+        let points = match sign.size.record() {
+            SizeRecord::Points(points) => i64::from(points),
+            SizeRecord::Logical { delta: 0, .. } => return None,
+            SizeRecord::Logical { level, delta } => {
                 let per_mille = [1000, 700, 500, 1500, 1000, 750, 1500]
                     .get(usize::from(level))
                     .copied()?;
@@ -1671,7 +1725,10 @@ impl<'a> Decoder<'a> {
             _ => true,
         };
         if drawn && Self::is_dropped_symbol(size) {
-            self.dropped_symbols.push(id);
+            self.rare_sizes
+                .get_or_insert_default()
+                .dropped_symbols
+                .push(id);
         } else if drawn && let Some(size) = self.own_size(size) {
             self.add_size(id, size);
         }
@@ -1684,7 +1741,10 @@ impl<'a> Decoder<'a> {
     fn add_own_attrs(&mut self, id: NodeId, size: FontSize, attrs: NodeAttrs) {
         if matches!(size, FontSize::Logical { level: TypeSize::Full, delta_pt } if delta_pt.num == 0)
         {
-            self.full_in_script.push((id, attrs.clone()));
+            self.rare_sizes
+                .get_or_insert_default()
+                .full_in_script
+                .push((id, attrs.clone()));
         }
         self.arena.add_attrs(id, &attrs);
     }
@@ -1697,7 +1757,10 @@ impl<'a> Decoder<'a> {
         }
         let Some(own) = self.own_size(size) else {
             if Self::is_dropped_symbol(size) {
-                self.dropped_symbols.push(id);
+                self.rare_sizes
+                    .get_or_insert_default()
+                    .dropped_symbols
+                    .push(id);
             }
             return;
         };
@@ -1735,15 +1798,17 @@ impl<'a> Decoder<'a> {
     /// Read a slot of the open template, or a line of a pile or matrix.
     #[inline(always)]
     fn in_slot<T>(&mut self, read: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        let Some(mut open) = self.template.take() else {
+        let mut open = std::mem::replace(&mut self.template, OpenTemplate::NONE);
+        if !open.open {
             return read(self);
-        };
+        }
         let outer = self.slot_size;
         self.slot_size = self.slot_size_of(open);
         let result = read(self);
         self.slot_size = outer;
-        open.slots = open.slots.saturating_add(1);
-        self.template = Some(open);
+        // Only the first slots differ.
+        open.slots += u8::from(open.slots < 4);
+        self.template = open;
         result
     }
 
@@ -1893,10 +1958,7 @@ impl<'a> Decoder<'a> {
     /// The size that text has by its place.
     #[inline(always)]
     fn size_by_place(&self) -> SizeState {
-        SizeState::Logical {
-            level: self.slot_size,
-            delta: 0,
-        }
+        SizeState::level(self.slot_size)
     }
 
     /// Whether a glyph is drawn in the size of a run in `size`.
