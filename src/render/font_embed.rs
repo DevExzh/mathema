@@ -73,30 +73,14 @@ pub fn extract_glyph(font: FontId, ch: char) -> Option<Arc<GlyphOutline>> {
     {
         return hit.clone();
     }
-    let outline = extract_glyph_from_face(fonts_registry::face(font), ch).map(Arc::new);
+    let outline = fonts_registry::glyph_index(font, ch)
+        .and_then(|gid| extract_glyph_by_id_from_face(fonts_registry::face(font), gid.0))
+        .map(Arc::new);
     GLYPH_CACHE
         .write()
         .unwrap_or_else(PoisonError::into_inner)
         .insert((font, ch), outline.clone());
     outline
-}
-
-fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<GlyphOutline> {
-    let glyph_id = face.glyph_index(ch)?;
-    let advance = face.glyph_hor_advance(glyph_id)?;
-
-    let mut builder = SvgPathBuilder::new();
-    face.outline_glyph(glyph_id, &mut builder)?;
-
-    let path_data = builder.finish();
-    if path_data.is_empty() {
-        return None;
-    }
-
-    Some(GlyphOutline {
-        path_data,
-        advance_width: f64::from(advance),
-    })
 }
 
 /// Extract a glyph outline directly by its font glyph index.

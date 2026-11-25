@@ -117,7 +117,10 @@ fn collect_glyph(ch: char, italic: bool, font: FontId, chars: &mut HashSet<(Font
         }
     } else {
         chars.insert((font, ch));
-        chars.insert((FontId::Math, ch));
+        // (A design for scripts is only chosen where there is one.)
+        if !matches!(font, FontId::MathScript | FontId::MathScriptScript) {
+            chars.insert((FontId::Math, ch));
+        }
     }
 }
 

@@ -460,9 +460,17 @@ fn a_display_integral_has_the_correction_of_its_variant() {
         sub: Box::new(MathNode::Number("2".into())),
     }]);
     let root = layout_expr(&expr, MathStyle::Display, &default_options());
-    assert!((root.width - 0.408 - 0.4).abs() < 1e-9, "{}", root.width);
+    assert!(
+        (root.width - 0.408 - 0.3983 - 0.05).abs() < 1e-9,
+        "{}",
+        root.width
+    );
     let root = layout_expr(&expr, MathStyle::Text, &default_options());
-    assert!((root.width - 0.333 - 0.4).abs() < 1e-9, "{}", root.width);
+    assert!(
+        (root.width - 0.333 - 0.3983 - 0.05).abs() < 1e-9,
+        "{}",
+        root.width
+    );
 }
 
 /// The surd of a script is the glyph of the script's size.
@@ -484,17 +492,17 @@ fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
         layout_expr(&expr, MathStyle::Text, &default_options()).width
     };
     for (latex, expected) in [
-        ("\\mathfrak{K}_1", 0.668 + 0.4),
-        ("\\mathfrak{K}^2", 0.718 + 0.4),
-        ("\\mathnormal{V}_1", 0.583 + 0.4),
-        ("\\mathord{V}_1", 0.583 + 0.4),
-        ("\\mathord{\\vec V}_1", 0.583 + 0.4),
-        ("\\mathord{\\mathfrak K}_1", 0.668 + 0.4),
-        ("\\vec{\\mathfrak{K}}_1", 0.668 + 0.4),
-        ("\\bar{\\bar V}_1", 0.583 + 0.4),
+        ("\\mathfrak{K}_1", 0.668 + 0.448),
+        ("\\mathfrak{K}^2", 0.718 + 0.448),
+        ("\\mathnormal{V}_1", 0.583 + 0.448),
+        ("\\mathord{V}_1", 0.583 + 0.448),
+        ("\\mathord{\\vec V}_1", 0.583 + 0.448),
+        ("\\mathord{\\mathfrak K}_1", 0.668 + 0.448),
+        ("\\vec{\\mathfrak{K}}_1", 0.668 + 0.448),
+        ("\\bar{\\bar V}_1", 0.583 + 0.448),
         // As in TeX and KaTeX, not a coloured letter or a longer group.
-        ("\\textcolor{red}{V}_1", 0.797 + 0.4),
-        ("\\mathfrak{KK}_1", 2.0 * 0.718 + 0.4),
+        ("\\textcolor{red}{V}_1", 0.797 + 0.448),
+        ("\\mathfrak{KK}_1", 2.0 * 0.718 + 0.448),
         // A bold letter is the Math font's.
         ("\\boldsymbol{V}", 0.913),
         // A word has the correction of its last letter only.
@@ -518,6 +526,41 @@ fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
     };
     assert_eq!(offset("\\bar{\\bar V}"), offset("\\bar V"));
     assert_eq!(offset("\\hat{\\mathord{V}}"), offset("\\hat V"));
+}
+
+/// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
+#[test]
+fn scripts_have_the_designs_of_the_font() {
+    for (latex, expected) in [
+        ("x^2", 1.020),
+        ("x_{12}", 1.419),
+        ("x^{y^{z^w}}", 1.983),
+        ("x_{\\max}", 2.098),
+        ("x_{\\text{a b}}", 1.732),
+        ("x_{\\mathrm{f}}", 0.870),
+        ("\\mathbf{f}_{\\mathbf f}", 0.680),
+        ("x_{\\mathbf{ab}}", 1.565),
+        ("x_{\\mathcal{F}}", 1.316),
+        ("x^{\\partial f}", 1.528),
+        ("x''", 1.075),
+        ("f'''", 1.251),
+        ("\\tfrac{a}{b}", 0.674),
+        ("\\vec{v}_{\\hat T}", 1.108),
+        // No design of its own.
+        ("x^+", 1.167),
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let actual = layout_expr(&expr, MathStyle::Text, &default_options()).width;
+        assert!((actual - expected).abs() < 2e-3, "{latex}: {actual}");
+    }
+    let outlines = |latex: &str| {
+        let svg = crate::from_latex(latex).unwrap().to_svg().unwrap();
+        svg.matches("<path id=").count()
+    };
+    // One outline a size (and the letter of the base).
+    assert_eq!(outlines("x^{x^x}"), 4);
+    assert_eq!(outlines("x^xx^x"), 3);
 }
 
 /// A left-aligned column of `aligned` starts with amsmath's `{}`, as in XeTeX;
@@ -597,7 +640,7 @@ fn atoms_and_faces_of_built_trees() {
             sub: Box::new(MathNode::Number("1".into())),
         }])
     };
-    close_to(scripted(MathAtomType::Ord), 0.583 + 0.4);
+    close_to(scripted(MathAtomType::Ord), 0.583 + 0.448);
     // Declarations do not hide what follows an operator.
     let switch = || MathNode::StyleSwitch(1);
     close_to(width(vec![id("a"), plus(), switch(), close()]), 1.696);
@@ -706,16 +749,16 @@ fn labels_stretch_what_they_do_not_fit_on() {
     for (latex, width) in [
         ("\\overset{!}{=}", 0.778),
         ("\\stackrel{?}{=}", 0.778),
-        ("\\overset{(a)}{=}", 0.915),
-        ("\\overset{\\text{def}}{=}", 0.914),
+        ("\\overset{(a)}{=}", 0.979),
+        ("\\overset{\\text{def}}{=}", 1.045),
         // As wide as two signs.
         ("\\overset{\\kern1.555em}{=}", 1.555),
         ("\\xlongequal[a]{b}", 0.778),
         ("\\overset{f}{\\rightarrow}", 1.0),
         ("\\xrightarrow{f}", 1.0),
         ("\\xrightarrow[g]{f}", 1.0),
-        ("\\underset{n}{\\to}", 1.0),
-        ("\\overset{f}{\\mapsto}", 0.977),
+        ("\\underset{i}{\\to}", 1.0),
+        ("\\overset{i}{\\mapsto}", 0.977),
     ] {
         let (actual, stretched) = drawn(latex);
         assert!((actual - width).abs() < 2e-3, "{latex}: {actual}");
@@ -751,8 +794,7 @@ fn middle_delimiters_have_no_space() {
     assert!((relation - (0.278 - 5.0 / 18.0)).abs() < 1e-6, "{relation}");
 }
 
-/// TeXBook Rules 12, 17 and 18, checked against XeTeX with Latin Modern Math
-/// (whose 7pt script glyphs are 0.0485em wider than ours per digit).
+/// TeXBook Rules 12, 17 and 18, checked against XeTeX with Latin Modern Math.
 #[test]
 fn italic_correction_follows_the_texbook() {
     let place = |latex: &str, style| {
@@ -787,37 +829,37 @@ fn italic_correction_follows_the_texbook() {
     check("f", Text, 0.580, 0.0);
     check("ff", Text, 1.160, 0.580);
     check("f)", Text, 0.969, 0.580);
-    check("\\frac{f}{T}", Text, 0.732 * 0.7 + 0.24, 0.12);
+    check("\\frac{f}{T}", Text, 0.818 * 0.7 + 0.24, 0.12);
     // A superscript follows the correction, primes too; a subscript does not.
-    check("f^2", Text, 0.980, 0.580);
-    check("f'", Text, 0.8477, 0.580);
-    check("f_2", Text, 0.890, 0.490);
-    check("T_2^2", Text, 0.584 + 0.148 + 0.4, 0.584);
-    check("V_{,}", Text, 0.583 + 0.278 * 0.7 + 0.05, 0.583);
-    check("{ff}_2", Text, 1.160 + 0.4, 1.160);
+    check("f^2", Text, 1.0283, 0.580);
+    check("f'", Text, 0.9149, 0.580);
+    check("f_2", Text, 0.9383, 0.490);
+    check("T_2^2", Text, 0.584 + 0.148 + 0.4483, 0.584);
+    check("V_{,}", Text, 0.583 + 0.339 * 0.7 + 0.05, 0.583);
+    check("{ff}_2", Text, 1.160 + 0.4483, 1.160);
     // An accented character takes its scripts where the character does.
-    check("\\vec{V}_2", Text, 0.583 + 0.4, 0.583);
-    check("\\hat{T}^2", Text, 0.732 + 0.4, 0.732);
-    check("\\Gamma_2", Text, 0.625 + 0.4, 0.625);
-    check("\\mathbf{f}_2", Text, 0.351 + 0.4, 0.351);
+    check("\\vec{V}_2", Text, 0.583 + 0.4483, 0.583);
+    check("\\hat{T}^2", Text, 0.732 + 0.4483, 0.732);
+    check("\\Gamma_2", Text, 0.625 + 0.4483, 0.625);
+    check("\\mathbf{f}_2", Text, 0.351 + 0.4483, 0.351);
     // Text has no corrections.
     check("\\textit{ff}", Text, 0.980, 0.0);
     check("\\text{∫}", Text, 0.665, 0.0);
     // The subscript of an integral is under its slope.
-    check("\\int_2", Display, 0.408 + 0.4, 0.408);
-    check("\\int_2", Text, 0.333 + 0.4, 0.333);
-    check("\\int_2^2", Display, 0.999 + 0.4, 0.408);
+    check("\\int_2", Display, 0.408 + 0.4483, 0.408);
+    check("\\int_2", Text, 0.333 + 0.4483, 0.333);
+    check("\\int_2^2", Display, 0.999 + 0.4483, 0.408);
     check(
         "\\oint_2^2 f",
         Text,
-        0.665 + 0.4 + 1.0 / 6.0 + 0.580,
-        0.665 + 0.4 + 1.0 / 6.0,
+        0.665 + 0.4483 + 1.0 / 6.0 + 0.580,
+        0.665 + 0.4483 + 1.0 / 6.0,
     );
     check(
         "\\int\\limits_2",
         Display,
         0.999,
-        (0.999 - 0.35) / 2.0 - 0.591 / 2.0,
+        (0.999 - 0.3983) / 2.0 - 0.591 / 2.0,
     );
 }
 

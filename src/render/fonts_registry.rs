@@ -52,6 +52,10 @@ pub enum FontId {
     MonoBold,
     /// Latin Modern Mono (light), bold oblique.
     MonoBoldItalic,
+    /// The designs of Latin Modern Math for scripts (OpenType `ssty`).
+    MathScript,
+    /// Its designs for scripts of scripts.
+    MathScriptScript,
 }
 
 impl Default for FontId {
@@ -62,7 +66,7 @@ impl Default for FontId {
 }
 
 /// All non-default font identities, used for eager registry population in tests.
-pub const ALL_FONTS: [FontId; 13] = [
+pub const ALL_FONTS: [FontId; 15] = [
     FontId::Math,
     FontId::RomanRegular,
     FontId::RomanBold,
@@ -76,6 +80,8 @@ pub const ALL_FONTS: [FontId; 13] = [
     FontId::MonoItalic,
     FontId::MonoBold,
     FontId::MonoBoldItalic,
+    FontId::MathScript,
+    FontId::MathScriptScript,
 ];
 
 impl FontId {
@@ -97,6 +103,8 @@ impl FontId {
             FontId::MonoItalic => 10,
             FontId::MonoBold => 11,
             FontId::MonoBoldItalic => 12,
+            FontId::MathScript => 13,
+            FontId::MathScriptScript => 14,
         }
     }
 
@@ -114,7 +122,7 @@ impl FontId {
 #[inline]
 pub fn font_bytes(id: FontId) -> &'static [u8] {
     match id {
-        FontId::Math => super::FONT_DATA,
+        FontId::Math | FontId::MathScript | FontId::MathScriptScript => super::FONT_DATA,
         FontId::RomanRegular => include_bytes!("fonts/lmroman10-regular.otf"),
         FontId::RomanBold => include_bytes!("fonts/lmroman10-bold.otf"),
         FontId::RomanItalic => include_bytes!("fonts/lmroman10-italic.otf"),
@@ -141,13 +149,97 @@ static FACE_CELLS: [OnceLock<ttf_parser::Face<'static>>; 13] = [const { OnceLock
 /// glyph-extraction hot paths.
 #[inline]
 pub fn face(id: FontId) -> &'static ttf_parser::Face<'static> {
+    let id = match id {
+        FontId::MathScript | FontId::MathScriptScript => FontId::Math,
+        id => id,
+    };
     FACE_CELLS[id.index()].get_or_init(|| {
         ttf_parser::Face::parse(font_bytes(id), 0).expect("embedded font data must be valid")
     })
 }
 
+/// The glyphs of the Math font's characters in scripts and in scripts of scripts.
+static SCRIPT_GLYPHS: LazyLock<HashMap<char, [u16; 2]>> = LazyLock::new(|| {
+    let face = face(FontId::Math);
+    let mut glyphs = HashMap::new();
+    let Some(gsub) = face.tables().gsub else {
+        return glyphs;
+    };
+    let lookups: Vec<_> = gsub
+        .features
+        .into_iter()
+        .filter(|feature| feature.tag == ttf_parser::Tag::from_bytes(b"ssty"))
+        .flat_map(|feature| feature.lookup_indices)
+        .filter_map(|index| gsub.lookups.get(index))
+        .collect();
+    let alternate = |gid, level| {
+        lookups.iter().find_map(|lookup| {
+            lookup
+                .subtables
+                .into_iter::<ttf_parser::gsub::SubstitutionSubtable<'_>>()
+                .find_map(|table| match table {
+                    ttf_parser::gsub::SubstitutionSubtable::Alternate(table) => {
+                        let set = table.alternate_sets.get(table.coverage.get(gid)?)?;
+                        set.alternates.get(level)
+                    },
+                    _ => None,
+                })
+        })
+    };
+    let Some(cmap) = face.tables().cmap else {
+        return glyphs;
+    };
+    for subtable in cmap
+        .subtables
+        .into_iter()
+        .filter(|table| table.is_unicode())
+    {
+        subtable.codepoints(|code| {
+            if let Some(ch) = char::from_u32(code)
+                && let Some(gid) = face.glyph_index(ch)
+                && let (Some(first), Some(second)) = (alternate(gid, 0), alternate(gid, 1))
+            {
+                glyphs.insert(ch, [first.0, second.0]);
+            }
+        });
+    }
+    glyphs
+});
+
+/// The font for `ch`, a character of the Math font, in a style of the given size
+/// class: the Math font has designs for scripts of most letters and digits.
+#[inline]
+pub fn script_font(ch: char, size_class: usize) -> Option<FontId> {
+    let font = match size_class {
+        0 => return None,
+        1 => FontId::MathScript,
+        _ => FontId::MathScriptScript,
+    };
+    SCRIPT_GLYPHS.contains_key(&ch).then_some(font)
+}
+
+/// The glyph of `ch` in a font.
+#[inline]
+pub fn glyph_index(id: FontId, ch: char) -> Option<ttf_parser::GlyphId> {
+    let level = match id {
+        FontId::MathScript => 0,
+        FontId::MathScriptScript => 1,
+        _ => return face(id).glyph_index(ch),
+    };
+    SCRIPT_GLYPHS
+        .get(&ch)
+        .map(|glyphs| ttf_parser::GlyphId(glyphs[level]))
+}
+
+/// The point of `ch` in a design for scripts that an accent is centred on, em.
+pub fn script_top_accent(id: FontId, ch: char) -> Option<f64> {
+    let info = face(id).tables().math?.glyph_info?;
+    let at = info.top_accent_attachments?.get(glyph_index(id, ch)?)?;
+    Some(f64::from(at.value) / font_info(id).units_per_em)
+}
+
 /// Per-id cached font-level info (units per em).
-static FONT_INFO_CELLS: [OnceLock<FontInfo>; 13] = [const { OnceLock::new() }; 13];
+static FONT_INFO_CELLS: [OnceLock<FontInfo>; 15] = [const { OnceLock::new() }; 15];
 
 /// Font-level metrics (units per em) for a font identity.
 #[inline]
@@ -242,7 +334,7 @@ pub fn text_metrics(ch: char, italic: bool, font: FontId) -> GlyphMetrics {
 fn face_glyph_metrics(font: FontId, ch: char) -> Option<GlyphMetrics> {
     let f = face(font);
     let upem = f64::from(f.units_per_em());
-    let gid = f.glyph_index(ch)?;
+    let gid = glyph_index(font, ch)?;
     let width = f64::from(f.glyph_hor_advance(gid).unwrap_or(0)) / upem;
     let (height, depth) = match f.glyph_bounding_box(gid) {
         Some(bbox) => (
@@ -251,8 +343,13 @@ fn face_glyph_metrics(font: FontId, ch: char) -> Option<GlyphMetrics> {
         ),
         None => (0.0, 0.0),
     };
-    // Italic correction comes only from the Math font's MATH table.
-    Some(GlyphMetrics::new(height, depth, width, 0.0))
+    // Only the Math font has a MATH table.
+    let italic = f
+        .tables()
+        .math
+        .and_then(|math| math.glyph_info?.italic_corrections?.get(gid))
+        .map_or(0.0, |value| f64::from(value.value) / upem);
+    Some(GlyphMetrics::new(height, depth, width, italic))
 }
 
 #[cfg(test)]

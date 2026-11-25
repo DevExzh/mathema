@@ -54,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has no space around it, `\colon` has amsmath's, `!` and `?` close,
   `\underbrace` and its like are operators, and a binary operator at the end of a
   list or before a relation or a closing is ordinary.
+- Rendering: scripts are drawn with the script designs of Latin Modern Math (OpenType
+  `ssty`), in the sizes and widths of XeTeX; TeX's space after scripts and beside
+  fractions does not shrink in scripts.
 - Rendering: the left-aligned columns of `aligned`, `align`, `split` and the like
   start with an ordinary atom, as in amsmath: `a &= b` has a space before `=`.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over

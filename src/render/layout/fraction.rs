@@ -85,7 +85,7 @@ pub(super) fn layout_fraction(
 
     let frac_width = num_box.width.max(den_box.width);
     // TeX's null delimiters, outside of the bar.
-    let side_padding = NULL_DELIMITER_SPACE_EM * size;
+    let side_padding = NULL_DELIMITER_SPACE_EM * ctx.text_size();
     let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_box.height;
     let total_depth = den_down + den_box.depth;
@@ -198,7 +198,7 @@ pub(super) fn layout_fraction_arena(
     }
 
     let frac_width = num_w.max(den_w);
-    let side_padding = NULL_DELIMITER_SPACE_EM * size;
+    let side_padding = NULL_DELIMITER_SPACE_EM * ctx.text_size();
     let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_h;
     let total_depth = den_down + den_d;

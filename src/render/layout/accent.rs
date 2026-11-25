@@ -582,6 +582,10 @@ pub(super) fn accent_skew(base: &LayoutBox) -> f64 {
 }
 
 fn glyph_skew(ch: char, size: f64, italic: bool, font: FontId, width: f64) -> f64 {
+    if let FontId::MathScript | FontId::MathScriptScript = font {
+        return fonts_registry::script_top_accent(font, ch)
+            .map_or(0.0, |at| at * size - width / 2.0);
+    }
     if !font.is_math() {
         return 0.0;
     }

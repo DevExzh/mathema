@@ -126,7 +126,7 @@ fn svg_italic_char(ch: char, italic: bool) -> (char, bool) {
 #[inline]
 fn font_css(font: FontId) -> Option<(Option<&'static str>, bool, bool)> {
     Some(match font {
-        FontId::Math => return None,
+        FontId::Math | FontId::MathScript | FontId::MathScriptScript => return None,
         FontId::RomanRegular => (None, false, false),
         FontId::RomanBold => (None, true, false),
         FontId::RomanItalic => (None, false, true),

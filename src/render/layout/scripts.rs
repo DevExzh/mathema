@@ -38,7 +38,7 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let total_width = base_box.width + sup_box.width + SCRIPT_SPACE * size;
+    let total_width = base_box.width + sup_box.width + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -91,7 +91,7 @@ pub(super) fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx)
     // italic correction its box includes.
     let ic = italic_correction(script_nucleus(base, &base_box));
     let sub_dx = (base_box.width - ic).max(0.0);
-    let total_width = sub_dx + sub_box.width + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_box.width + SCRIPT_SPACE * ctx.text_size();
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -187,7 +187,7 @@ pub(super) fn layout_subsup(
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
         .max(0.0);
-    let total_width = base_box.width + script_width + SCRIPT_SPACE * size;
+    let total_width = base_box.width + script_width + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -236,7 +236,7 @@ pub(super) fn layout_superscript_from_box_heap(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let total_width = base_box.width + sup_box.width + SCRIPT_SPACE * size;
+    let total_width = base_box.width + sup_box.width + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -281,7 +281,7 @@ pub(super) fn layout_subscript_from_box_heap(
 
     let sub_dx = base_box.width - base_ic;
 
-    let total_width = sub_dx + sub_box.width + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_box.width + SCRIPT_SPACE * ctx.text_size();
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -363,7 +363,7 @@ pub(super) fn layout_subsup_from_box_heap(
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
         .max(0.0);
-    let total_width = base_box.width + script_width + SCRIPT_SPACE * size;
+    let total_width = base_box.width + script_width + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -597,7 +597,7 @@ pub(super) fn layout_prescripts(
     }
 
     let base_width = base_box.width;
-    let kern = SCRIPT_SPACE * size;
+    let kern = SCRIPT_SPACE * ctx.text_size();
     children.push(PositionedBox::new(pre_width + kern, 0.0, base_box));
 
     LayoutBox {
@@ -658,7 +658,7 @@ pub(super) fn layout_superscript_arena(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_d);
 
-    let total_width = base_w + sup_w + SCRIPT_SPACE * size;
+    let total_width = base_w + sup_w + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
@@ -730,7 +730,7 @@ pub(super) fn layout_subscript_arena(
     }
     let shift_down = shift_down.max(sub_h - (4.0 * p.x_height * size / 5.0));
 
-    let total_width = sub_dx + sub_w + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_w + SCRIPT_SPACE * ctx.text_size();
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -841,7 +841,7 @@ pub(super) fn layout_subsup_arena(
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)
         .max(0.0);
-    let total_width = base_w + script_width + SCRIPT_SPACE * size;
+    let total_width = base_w + script_width + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -911,7 +911,7 @@ pub(super) fn layout_superscript_from_box_arena(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_d);
 
-    let total_width = base_w + sup_w + SCRIPT_SPACE * size;
+    let total_width = base_w + sup_w + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
@@ -973,7 +973,7 @@ pub(super) fn layout_subscript_from_box_arena(
     }
     let shift_down = shift_down.max(sub_h - (4.0 * p.x_height * size / 5.0));
 
-    let total_width = sub_dx + sub_w + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_w + SCRIPT_SPACE * ctx.text_size();
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -1075,7 +1075,7 @@ pub(super) fn layout_subsup_from_box_arena(
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)
         .max(0.0);
-    let total_width = base_w + script_width + SCRIPT_SPACE * size;
+    let total_width = base_w + script_width + SCRIPT_SPACE * ctx.text_size();
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -1205,7 +1205,7 @@ pub(super) fn layout_prescripts_arena(
             id: sid,
         });
     }
-    let kern = SCRIPT_SPACE * size;
+    let kern = SCRIPT_SPACE * ctx.text_size();
     arena.push_child(ArenaPositionedBox {
         dx: pre_width + kern,
         dy: 0.0,

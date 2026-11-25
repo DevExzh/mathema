@@ -356,7 +356,7 @@ pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &Layout
     match node {
         MathNode::Identifier(s) => {
             if let Some(font) = letter_font(style, s) {
-                if s.chars().count() == 1 {
+                if s.chars().count() == 1 && script_run(s, false, font, ctx.style).is_none() {
                     let ch = s.chars().next().expect("non-empty checked");
                     LayoutBox::glyph_font(ch, ctx.size(), false, font)
                 } else {
@@ -798,7 +798,7 @@ pub(super) fn layout_styled_node_arena(
         CompactNode::Identifier(sid) => {
             let s = ast.str_val(sid);
             if let Some(font) = letter_font(style, s) {
-                if s.chars().count() == 1 {
+                if s.chars().count() == 1 && script_run(s, false, font, ctx.style).is_none() {
                     let ch = s.chars().next().expect("non-empty checked");
                     alloc_glyph_font(arena, ch, ctx.size(), false, font)
                 } else {
@@ -811,7 +811,9 @@ pub(super) fn layout_styled_node_arena(
                     .collect();
                 if mapped.chars().count() == 1 {
                     let ch = mapped.chars().next().expect("non-empty checked");
-                    alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
+                    let class = ctx.style.size_class();
+                    let (ch, italic, font) = math_glyph(ch, is_math_italic_char(ch), class);
+                    alloc_glyph_font(arena, ch, ctx.size(), italic, font)
                 } else {
                     layout_text_run_arena(&mapped, arena, ctx, false, None)
                 }

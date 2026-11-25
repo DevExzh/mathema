@@ -323,6 +323,81 @@ pub(crate) fn math_italic_codepoint(ch: char) -> Option<char> {
     }
 }
 
+/// The character, slant and font a math character is drawn with in a style of
+/// the given size class. The designs for scripts are those of the character
+/// that is drawn.
+#[inline]
+fn math_glyph(ch: char, italic: bool, size_class: usize) -> (char, bool, FontId) {
+    if size_class == 0 {
+        return (ch, italic, FontId::Math);
+    }
+    let drawn = match ch {
+        // Slanted by the emitters in the text size.
+        '\u{2202}' => '\u{1D715}',
+        _ if italic => math_italic_codepoint(ch).unwrap_or(ch),
+        _ => ch,
+    };
+    match fonts_registry::script_font(drawn, size_class) {
+        Some(font) => (drawn, false, font),
+        None => (ch, italic, FontId::Math),
+    }
+}
+
+/// A roman run in a script, when the Math font has its characters in the designs
+/// for scripts, which the text faces have not.
+fn script_run(text: &str, italic: bool, font: FontId, style: MathStyle) -> Option<ScriptRun> {
+    let class = style.size_class();
+    if class == 0 || italic || !matches!(font, FontId::RomanRegular | FontId::RomanBold) {
+        return None;
+    }
+    let mut run = None;
+    let mut glyphs = SmallVec::new();
+    for ch in text.chars() {
+        if ch == ' ' {
+            glyphs.push(None);
+            continue;
+        }
+        let drawn = match font {
+            FontId::RomanBold => crate::unicode::fonts::styled_char(ch, TextStyle::Bold)?,
+            _ => ch,
+        };
+        run = Some(fonts_registry::script_font(drawn, class).filter(|_| ch.is_ascii_graphic())?);
+        glyphs.push(Some(drawn));
+    }
+    Some(ScriptRun { font: run?, glyphs })
+}
+
+/// The characters of a run in a design for scripts, `None` for a space.
+struct ScriptRun {
+    font: FontId,
+    glyphs: SmallVec<[Option<char>; 8]>,
+}
+
+/// The word space of Latin Modern Roman 7 and 5.
+fn script_word_space(font: FontId) -> f64 {
+    match font {
+        FontId::MathScript => 0.385,
+        _ => 0.472,
+    }
+}
+
+fn is_prime(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(SymbolKind::Ordinary, s) if s == "\u{2032}")
+}
+
+fn is_prime_c(ast: &AstArena, id: NodeId) -> bool {
+    matches!(*ast.node(id), CompactNode::Symbol(SymbolKind::Ordinary, s) if ast.str_val(s) == "\u{2032}")
+}
+
+/// How much closer primes are in scripts: like those of the font's double prime.
+fn prime_kern(style: MathStyle) -> f64 {
+    match style.size_class() {
+        0 => 0.0,
+        1 => 0.167,
+        _ => 0.189,
+    }
+}
+
 /// The space amsmath's `\colon` has on each side, in every style.
 fn colon_space(size: f64) -> (f64, f64) {
     (2.0 / 18.0 * size, 6.0 / 18.0 * size)
@@ -436,6 +511,12 @@ struct LayoutCtx<'a> {
 }
 
 impl<'a> LayoutCtx<'a> {
+    /// The size of the text a script is of, which TeX's `\scriptspace` and
+    /// `\nulldelimiterspace` keep in scripts.
+    fn text_size(&self) -> f64 {
+        self.size() / self.style.size_multiplier()
+    }
+
     fn size(&self) -> f64 {
         self.style.size_multiplier() * self.size_scale
     }
@@ -586,6 +667,9 @@ fn layout_row_after(before: Option<AtomType>, nodes: &[MathNode], ctx: &LayoutCt
             prev_atom = Some(spacing::right_atom(node, cur_atom, style));
         }
 
+        if index > 0 && is_prime(node) && is_prime(&nodes[index - 1]) {
+            cursor_x -= prime_kern(current_ctx.style) * current_ctx.size();
+        }
         let layout = layout_node(node, &current_ctx);
         max_height = max_height.max(layout.height);
         max_depth = max_depth.max(layout.depth);
@@ -659,7 +743,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 // Single-char identifiers are italic; chars().next() is safe
                 // because chars().count() == 1 guarantees at least one char
                 let ch = s.chars().next().expect("non-empty checked");
-                LayoutBox::glyph(ch, ctx.size(), is_math_italic_char(ch))
+                let class = ctx.style.size_class();
+                let (ch, italic, font) = math_glyph(ch, is_math_italic_char(ch), class);
+                LayoutBox::glyph_font(ch, ctx.size(), italic, font)
             } else {
                 layout_text_run(s, ctx, false, None)
             }
@@ -677,7 +763,8 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                     let m = metrics::glyph_metrics_display(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
-                    let glyph = LayoutBox::glyph(ch, ctx.size(), false);
+                    let (ch, _, font) = math_glyph(ch, false, ctx.style.size_class());
+                    let glyph = LayoutBox::glyph_font(ch, ctx.size(), false, font);
                     if *kind == SymbolKind::Punctuation && ch == ':' {
                         let (before, after) = colon_space(ctx.size());
                         LayoutBox {
@@ -948,6 +1035,30 @@ fn layout_text_run(
 ) -> LayoutBox {
     let size = ctx.size();
     let font = fonts_registry::font_for_text_run(text_style);
+    if let Some(script) = script_run(text, italic, font, ctx.style) {
+        let mut run = LayoutBox {
+            width: 0.0,
+            height: 0.0,
+            depth: 0.0,
+            kind: BoxKind::Kern,
+        };
+        let mut children = Vec::with_capacity(text.len());
+        for ch in script.glyphs {
+            let Some(ch) = ch else {
+                run.width += script_word_space(script.font) * size;
+                continue;
+            };
+            let glyph = LayoutBox::glyph_font(ch, size, false, script.font);
+            // Text has no italic corrections.
+            let advance = fonts_registry::text_metrics(ch, false, script.font).width * size;
+            run.height = run.height.max(glyph.height);
+            run.depth = run.depth.max(glyph.depth);
+            children.push(PositionedBox::new(run.width, 0.0, glyph));
+            run.width += advance;
+        }
+        run.kind = BoxKind::HBox { children };
+        return run;
+    }
     if text
         .chars()
         .any(|c| glyph_fallback::text_run_needs_rewrite(c, font))
@@ -1347,6 +1458,12 @@ struct ArenaLayoutCtx<'a> {
 }
 
 impl<'a> ArenaLayoutCtx<'a> {
+    /// The size of the text a script is of, which TeX's `\scriptspace` and
+    /// `\nulldelimiterspace` keep in scripts.
+    fn text_size(&self) -> f64 {
+        self.size() / self.style.size_multiplier()
+    }
+
     fn size(&self) -> f64 {
         self.style.size_multiplier() * self.size_scale
     }
@@ -1646,6 +1763,37 @@ fn layout_text_run_arena(
 ) -> LayoutBoxId {
     let size = ctx.size();
     let font = fonts_registry::font_for_text_run(text_style);
+    if let Some(script) = script_run(text, italic, font, ctx.style) {
+        let (mut width, mut height, mut depth) = (0.0, 0.0_f64, 0.0_f64);
+        let mut glyphs: SmallVec<[ArenaPositionedBox; 8]> = SmallVec::new();
+        for ch in script.glyphs {
+            let Some(ch) = ch else {
+                width += script_word_space(script.font) * size;
+                continue;
+            };
+            let id = alloc_glyph_font(arena, ch, size, false, script.font);
+            let glyph = arena.get(id);
+            height = height.max(glyph.height);
+            depth = depth.max(glyph.depth);
+            glyphs.push(ArenaPositionedBox {
+                dx: width,
+                dy: 0.0,
+                id,
+            });
+            width += fonts_registry::text_metrics(ch, false, script.font).width * size;
+        }
+        let start = arena.begin_children();
+        for glyph in glyphs {
+            arena.push_child(glyph);
+        }
+        let children = arena.finish_children(start);
+        return arena.alloc(ArenaLayoutBox {
+            width,
+            height,
+            depth,
+            kind: ArenaBoxKind::HBox { children },
+        });
+    }
     if text
         .chars()
         .any(|c| glyph_fallback::text_run_needs_rewrite(c, font))
@@ -1836,6 +1984,9 @@ fn layout_row_segment_arena(
             prev_atom = Some(spacing::right_atom_c(ast, id, cur_atom, style));
         }
 
+        if index > 0 && is_prime_c(ast, id) && is_prime_c(ast, ids[index - 1]) {
+            cursor_x -= prime_kern(current_ctx.style) * current_ctx.size();
+        }
         let box_id = layout_node_arena(ast, id, arena, &current_ctx);
         let b = arena.get(box_id);
         max_height = max_height.max(b.height);
@@ -1922,7 +2073,9 @@ fn layout_node_arena(
             let s = ast.str_val(sid);
             if s.chars().count() == 1 {
                 let ch = s.chars().next().expect("non-empty checked");
-                alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
+                let class = ctx.style.size_class();
+                let (ch, italic, font) = math_glyph(ch, is_math_italic_char(ch), class);
+                alloc_glyph_font(arena, ch, ctx.size(), italic, font)
             } else {
                 layout_text_run_arena(s, arena, ctx, false, None)
             }
@@ -1943,7 +2096,8 @@ fn layout_node_arena(
                     let m = metrics::glyph_metrics_display(ch);
                     alloc_glyph_with_metrics(arena, ch, m, size, false)
                 } else {
-                    let glyph_id = alloc_glyph(arena, ch, ctx.size(), false);
+                    let (ch, _, font) = math_glyph(ch, false, ctx.style.size_class());
+                    let glyph_id = alloc_glyph_font(arena, ch, ctx.size(), false, font);
                     if kind == SymbolKind::Punctuation && ch == ':' {
                         let (before, after) = colon_space(ctx.size());
                         let (width, height, depth) = {

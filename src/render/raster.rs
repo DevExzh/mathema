@@ -32,13 +32,28 @@ static FONTDUE_CELLS: [std::sync::OnceLock<Font>; 13] = [const { std::sync::Once
 
 /// `fontdue` font for a font identity (used to rasterize text-face glyphs).
 fn fontdue_font(id: FontId) -> &'static Font {
-    if id.is_math() {
+    if matches!(
+        id,
+        FontId::Math | FontId::MathScript | FontId::MathScriptScript
+    ) {
         return &MATH_FONT;
     }
     FONTDUE_CELLS[id.index()].get_or_init(|| {
         Font::from_bytes(fonts_registry::font_bytes(id), FontSettings::default())
             .expect("embedded font must be valid")
     })
+}
+
+/// Rasterize the glyph of `ch` in a font.
+fn rasterize(id: FontId, ch: char, px: f32) -> (fontdue::Metrics, Vec<u8>) {
+    let font = fontdue_font(id);
+    match id {
+        FontId::MathScript | FontId::MathScriptScript => {
+            let gid = fonts_registry::glyph_index(id, ch).map_or(0, |gid| gid.0);
+            font.rasterize_indexed(gid, px)
+        },
+        _ => font.rasterize(ch, px),
+    }
 }
 
 /// Lazily-parsed ttf-parser face for MATH-table variant outline extraction.
@@ -1005,7 +1020,7 @@ fn draw_glyph(
         let (m, bm) = &*ctx
             .cache
             .entry(key)
-            .or_insert_with(|| fontdue_font(font).rasterize(ch, font_size_px));
+            .or_insert_with(|| rasterize(font, ch, font_size_px));
         if m.width > 0 && m.height > 0 && !bm.is_empty() {
             (font, ch, false)
         } else {
@@ -1018,7 +1033,7 @@ fn draw_glyph(
     let (metrics, bitmap) = &*ctx
         .cache
         .entry(key)
-        .or_insert_with(|| fontdue_font(used_font).rasterize(render_ch, font_size_px));
+        .or_insert_with(|| rasterize(used_font, render_ch, font_size_px));
     if metrics.width == 0 || metrics.height == 0 || bitmap.is_empty() {
         // No face can draw it (and it is not a space/control): draw a hollow
         // notdef box instead of a silent gap. The SVG emitters keep `<text>`.

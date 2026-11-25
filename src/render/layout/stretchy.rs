@@ -687,7 +687,7 @@ pub(super) fn layout_fenced(
     // Open delimiter
     let mut push_delimiter = |text: &str, x: f64, children: &mut Vec<PositionedBox>| {
         let Some(ch) = fence_char(text) else {
-            return NULL_DELIMITER_SPACE_EM * ctx.size();
+            return NULL_DELIMITER_SPACE_EM * ctx.text_size();
         };
         let delim = fence.heap(ch);
         max_h = max_h.max(delim.height);
@@ -699,7 +699,7 @@ pub(super) fn layout_fenced(
     cursor_x += push_delimiter(open, cursor_x, &mut children);
     // The delimiters of `\binom` take the place of its null delimiters.
     if is_genfrac {
-        cursor_x -= NULL_DELIMITER_SPACE_EM * ctx.size();
+        cursor_x -= NULL_DELIMITER_SPACE_EM * ctx.text_size();
     }
 
     // Content + middle delimiters
@@ -739,7 +739,7 @@ pub(super) fn layout_fenced(
 
     // Close delimiter
     if is_genfrac {
-        cursor_x -= NULL_DELIMITER_SPACE_EM * ctx.size();
+        cursor_x -= NULL_DELIMITER_SPACE_EM * ctx.text_size();
     }
     cursor_x += push_delimiter(close, cursor_x, &mut children);
 
@@ -859,7 +859,7 @@ pub(super) fn layout_fenced_arena(
         max_d = max_d.max(arena.get(id).depth);
     }
     let mut middles = middles.into_iter();
-    let null = NULL_DELIMITER_SPACE_EM * ctx.size();
+    let null = NULL_DELIMITER_SPACE_EM * ctx.text_size();
     // The delimiters of `\binom` take the place of its null delimiters.
     let inner = if is_genfrac { -null } else { 0.0 };
 
