@@ -649,7 +649,9 @@ impl<'a> Emitter<'a> {
                     (Some(c), None) if c.is_alphabetic() => (None, None),
                     // One of several letters is upright (see the MathML writer)
                     // unless it is in an italic style.
-                    _ if fmt.style.is_none() && text.chars().all(char::is_alphabetic) => {
+                    (Some(_), Some(_))
+                        if fmt.style.is_none() && text.chars().all(char::is_alphabetic) =>
+                    {
                         (Some("p"), None)
                     },
                     _ => (Some("i"), None),

@@ -268,6 +268,8 @@ fn words_are_upright_in_omml() {
     // What is no word is left alone.
     let written = convert("<math><mi>x1</mi></math>", Format::MathML, Format::Omml).unwrap();
     assert!(written.contains(&run("x1", "i")), "{written}");
+    let written = convert("<math><mi/><mi>x</mi></math>", Format::MathML, Format::Omml).unwrap();
+    assert!(!written.contains(r#"m:val="p""#), "{written}");
     let italic = r#"<math><mi mathvariant="italic">foo</mi></math>"#;
     let written = convert(italic, Format::MathML, Format::Omml).unwrap();
     assert!(written.contains(&run("foo", "i")), "{written}");
