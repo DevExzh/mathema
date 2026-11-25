@@ -208,6 +208,24 @@ fn function_names_of_omml() {
             "{name} {nodes}"
         );
     }
+    // Nor in what follows a function, or in the argument of one in a name, and
+    // what follows that is a name again.
+    let nested = func(&run("tr", ""), &run("AB", "")).replace(&omml(""), "");
+    let nested = &nested[nested.find("<m:func>").unwrap()..nested.rfind("</m:oMath>").unwrap()];
+    let read = from_omml(&omml(&format!(
+        "<m:func><m:fName>{nested}{}</m:fName><m:e>{}</m:e></m:func>{}",
+        run("foo", ""),
+        run("uv", ""),
+        run("yz", "")
+    )))
+    .unwrap();
+    let nodes = format!("{:?}", read.expr().nodes);
+    for name in ["tr", "A", "B", "foo", "u", "v", "y", "z"] {
+        assert!(
+            nodes.contains(&format!("Identifier(\"{name}\")")),
+            "{name} {nodes}"
+        );
+    }
     // In a script of a name there is none either, and in a function inside an
     // argument there is one again.
     let inner = "<m:func><m:fName><m:r><m:t>tr</m:t></m:r></m:fName><m:e><m:r><m:t>AB</m:t></m:r></m:e></m:func>";
@@ -247,6 +265,9 @@ fn words_are_upright_in_omml() {
         ];
         assert!(upright.iter().any(|w| mathml.contains(w)), "{mathml}");
     }
+    // What is no word is left alone.
+    let written = convert("<math><mi>x1</mi></math>", Format::MathML, Format::Omml).unwrap();
+    assert!(written.contains(&run("x1", "i")), "{written}");
     let italic = r#"<math><mi mathvariant="italic">foo</mi></math>"#;
     let written = convert(italic, Format::MathML, Format::Omml).unwrap();
     assert!(written.contains(&run("foo", "i")), "{written}");
@@ -345,14 +366,49 @@ fn where_letters_are_not_joined() {
         written.contains(r#"<mi mathvariant="bold">ab</mi>"#),
         "{written}"
     );
-    let source = r"\operatorname{\underline{a}bc}";
-    let mtef = convert(source, Format::LaTeX, Format::Mtef).unwrap();
-    let apart = convert(
-        r"\mathord{\underline{\mathrm{a}}}\mathrm{b}\mathrm{c}",
-        Format::LaTeX,
-        Format::Mtef,
+    let source = r"\mathbf{\operatorname{\underline{a}bc}}";
+    let written = convert(source, Format::LaTeX, Format::MathML).unwrap();
+    assert!(
+        written.contains(r#"<mi mathvariant="normal">bc</mi>"#),
+        "{written}"
     );
-    assert!(apart.is_ok() && !mtef.is_empty());
+    // So is a name that is all of a cell.
+    let source = r"\begin{aligned}&\operatorname*{\underline{lim}}\end{aligned}";
+    let written = convert(source, Format::LaTeX, Format::MathML).unwrap();
+    assert!(written.contains(">lim<"), "{written}");
+    let name = MathNode::StructuredOperator {
+        content: Box::new(MathNode::Row(
+            ["l", "i", "m"]
+                .map(|l| MathNode::Identifier(l.into()))
+                .to_vec(),
+        )),
+        form: mathema::ast::OperatorNameForm::Unstarred,
+    };
+    let cell = MathNode::AlignedCell {
+        alignment: mathema::ast::ColumnAlign::Left,
+        content: Box::new(name),
+    };
+    let table = MathNode::Array {
+        columns: vec![mathema::ast::ColumnAlign::Center],
+        rows: vec![vec![vec![cell]]],
+        arraystretch: None,
+        add_jot: false,
+    };
+    let mut expr =
+        mathema::ast::compact::CompactExpr::from_math_expr(&mathema::MathExpr::block(vec![table]))
+            .unwrap();
+    mathema::ast::normalize::normalize_compact_expr(&mut expr).unwrap();
+    let nodes = format!("{:?}", expr.to_math_expr());
+    assert!(nodes.contains(r#"Identifier("lim")"#), "{nodes}");
+    // On the heap route too.
+    for source in [r"\mathord{ab}", r"\foo{ab}"] {
+        let mut heap = mathema::from_latex(source).unwrap().expr();
+        mathema::ast::normalize::normalize_expr(&mut heap);
+        assert!(
+            !format!("{heap:?}").contains(r#"Identifier("ab")"#),
+            "{heap:?}"
+        );
+    }
 }
 
 /// An operator without a command has no group for what it applies to.
