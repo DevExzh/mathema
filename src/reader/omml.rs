@@ -446,6 +446,8 @@ impl SizedRuns {
 
 struct Parser<'i> {
     sizes: RunSizes,
+    /// Whether the name of a function is being read.
+    in_name: bool,
     /// The math style of what is being read.
     style: MathStyle,
     reader: NsReader<&'i [u8]>,
@@ -530,6 +532,7 @@ impl<'i> Parser<'i> {
         cfg.check_comments = true;
         Self {
             sizes: RunSizes::default(),
+            in_name: false,
             style: config.display.into(),
             reader,
             arena: AstArena::new(),
@@ -1177,7 +1180,15 @@ impl<'i> Parser<'i> {
     fn arg(&mut self, name: &'static str) -> Result<Ids> {
         let outer = self.style;
         self.style = argument_style(outer, name);
+        // What a name has above, below or beside it is no part of it.
+        let in_name = match name {
+            "m:fName" => true,
+            "m:e" => self.in_name,
+            _ => false,
+        };
+        let outer_name = std::mem::replace(&mut self.in_name, in_name);
         let result = self.arg_content(name);
+        self.in_name = outer_name;
         self.style = outer;
         result
     }
@@ -1566,7 +1577,9 @@ impl<'i> Parser<'i> {
     }
 
     /// Classify a run of letters. Without an explicit style (math italic)
-    /// or with upright style, a known function name becomes an operator.
+    /// or with upright style, a known function name becomes an operator. The
+    /// letters of an italic run are identifiers of their own; those of a run in
+    /// another style (upright, bold, bold italic or a script) are one in it.
     fn letters(&mut self, text: &str, style: Option<TextStyle>, out: &mut Ids) -> Result<()> {
         let sid = self.arena.push_str(text);
         let is_operator =
@@ -1582,8 +1595,9 @@ impl<'i> Parser<'i> {
                     .push_node(CompactNode::Operator { name: sid, limits })
             },
             // Italic, which is Word's default ([MS-OI29500] 2.1.1705): a run
-            // has no word to keep together, each letter is a variable.
-            None | Some(TextStyle::Italic) => {
+            // has no word to keep together, each letter is a variable. The name
+            // of a function is one, whatever its style.
+            None | Some(TextStyle::Italic) if !self.in_name => {
                 let mut letter = [0u8; 4];
                 for c in text.chars() {
                     let sid = self.arena.push_str(c.encode_utf8(&mut letter));
@@ -1591,6 +1605,7 @@ impl<'i> Parser<'i> {
                 }
                 return Ok(());
             },
+            None | Some(TextStyle::Italic) => self.arena.push_node(CompactNode::Identifier(sid)),
             Some(st) => {
                 let ident = self.arena.push_node(CompactNode::Identifier(sid));
                 self.styled(st, ident)?
@@ -2050,7 +2065,9 @@ impl<'i> Parser<'i> {
                     self.set_once(&mut name, id, "fName", "m:func")?;
                 },
                 (Ns::Math, "e") => {
+                    let outer = std::mem::replace(&mut self.in_name, false);
                     let id = self.arg_id("m:e")?;
+                    self.in_name = outer;
                     self.set_once(&mut arg, id, "e", "m:func")?;
                 },
                 _ => self.unknown(&c, "m:func")?,

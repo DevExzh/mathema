@@ -62,7 +62,7 @@ fn number_and_identifier() {
     assert!(write(MathNode::Number("42".into())).contains("<m:r><m:t>42</m:t></m:r>"));
     // A single letter is math italic by default and needs no properties.
     assert!(write(id("x")).contains("<m:r><m:t>x</m:t></m:r>"));
-    assert!(write(id("ab")).contains(r#"<m:rPr><m:sty m:val="i"/></m:rPr><m:t>ab</m:t>"#));
+    assert!(write(id("ab")).contains(r#"<m:rPr><m:sty m:val="p"/></m:rPr><m:t>ab</m:t>"#));
 }
 
 #[test]

@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that length is, also where groups are opened into one.
 - **Breaking (behavior):** the letters of an italic OMML run (`sty` i, or none,
   which is Word's default) are identifiers of their own; a run of `sty` p is one
-  as before.
+  as before, and so is the name of an `m:func`.
+- The OMML writer writes an identifier of several letters upright (`sty` p), as
+  MathML draws `<mi>kr</mi>`; it wrote it italic. One in an italic style is
+  written as an italic run, whose letters come back as identifiers of their own.
 - The MathML writer spells the style on the letters of `\mathrm`
   (`<mi mathvariant="normal">`), as MathML Core has no `mathvariant` on
   `mstyle`, and that of a styled word on its `mi`, which was upright.

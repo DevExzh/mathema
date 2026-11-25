@@ -2520,11 +2520,9 @@ fn write_identifier(buf: &mut LatexBuffer, arena: &AstArena, sid: compact::StrId
 }
 
 fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[NodeId]) {
-    // MathML represents a multi-letter `<mi>` as one upright identifier even
-    // when the cell also contains operators or other siblings. Native TeX
-    // groups retain one identifier node per letter because cell normalization
-    // disables only identifier coalescing, so wrapping each remaining
-    // multi-letter node is safe for both sources.
+    // An identifier of several letters is one upright identifier (a MathML
+    // `<mi>`), whatever else the cell contains: letters of TeX are nodes of
+    // their own.
     let writes_upright_text = |id: &NodeId| match *arena.node(*id) {
         CompactNode::Identifier(sid) => arena.str_val(sid).chars().nth(1).is_some(),
         CompactNode::Text(TextStyle::Normal, _) => true,
@@ -3443,10 +3441,23 @@ fn write_unnamed_nary(
     {
         buf.push(' ');
     }
-    if matches!(*arena.node(body), CompactNode::Nary { .. }) {
-        write_node(buf, arena, body);
-    } else {
-        write_node_slice(buf, arena, &[body], false);
+    match *arena.node(body) {
+        CompactNode::Nary { .. } => write_node(buf, arena, body),
+        // A group after an atom would be opened when it is normalized again.
+        CompactNode::Row(span)
+            if arena.children(span).iter().all(|&id| {
+                matches!(
+                    *arena.node(id),
+                    CompactNode::Identifier(_) | CompactNode::Number(_) | CompactNode::Symbol(..)
+                )
+            }) && matches!(
+                arena.children(span).first().map(|&id| *arena.node(id)),
+                Some(CompactNode::Identifier(_) | CompactNode::Number(_))
+            ) =>
+        {
+            write_node_slice(buf, arena, arena.children(span), false);
+        },
+        _ => write_node_slice(buf, arena, &[body], false),
     }
 }
 

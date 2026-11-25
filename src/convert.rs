@@ -41,10 +41,9 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
     write_compact(&compact.expr, to, config)
 }
 
-/// Normalize a freshly read expression. MTEF characters are atoms of their
-/// own: a run of variable-style letters is several italic variables, not
-/// one multi-letter identifier, so identifiers are merged neither on the
-/// way from MTEF nor on the way to it.
+/// Normalize a freshly read expression. The letters of an operator's name are
+/// merged neither on the way from MTEF, whose characters are atoms of their own,
+/// nor on the way to it.
 ///
 /// What the target does not write goes first: it must not keep apart what
 /// normalization joins.

@@ -647,6 +647,11 @@ impl<'a> Emitter<'a> {
                 match (chars.next(), chars.next()) {
                     // A single letter is math italic by default.
                     (Some(c), None) if c.is_alphabetic() => (None, None),
+                    // One of several letters is upright (see the MathML writer)
+                    // unless it is in an italic style.
+                    _ if fmt.style.is_none() && text.chars().all(char::is_alphabetic) => {
+                        (Some("p"), None)
+                    },
                     _ => (Some("i"), None),
                 }
             },
