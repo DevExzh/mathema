@@ -23,14 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In a text box, text in one face around dropped characters is written as one,
   and a combining mark no longer joins a math shift or brace of inline math.
 - A space after `\reflectbox{…}` or `\verb|…|` in a text box is kept, as in TeX.
-- LaTeX output of a lone accent glyph set over or under something that is no
+- LaTeX output of a lone combining mark set over or under something that is no
   accent (`\xrightarrow{…}`), of `\sideset` without an operator, of
   `\overset{}{\mathop{…}}` and of scripts beside `\mathop{\max}` reads back as
   written.
 - `normalize_expr` flattens groups in the content of a fence, as the compact
   normalizer does. It keeps `\idotsint` in one piece, and a `\middle` below
   the fence's own list becomes the symbol it names.
-- A chain of sizing commands (`\big\big…`) has a depth limit.
+- A chain of commands that take each other without braces (`\hat\hat…`,
+  `\big\big…`, `\sum\sum…`) has a depth limit in the reader; a long one
+  overflowed the stack.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
 - MTEF writer: stretchy bar accents over several letters no longer warn as

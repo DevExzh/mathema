@@ -1741,25 +1741,61 @@ fn heap_and_compact_normalize_alike() {
     }
 }
 
+/// A colored operator token stays the bare operator, whose body is beside it.
 #[test]
-fn colored_operator_tokens_are_groups() {
+fn colored_operator_tokens_stay_operators() {
     use mathema::Format::LaTeX;
     for (source, latex) in [
         ("_1\\textcolor{}\\int\u{300}", "{{}_{1}\\int}{}\u{300}"),
-        (r"\textcolor{red}\int x", r"\textcolor{red}{\int}x"),
+        (
+            r"\foo{\textcolor{}\int}",
+            r"\mathord{\text{\textbackslash{}foo}\{\int \}}",
+        ),
+        (r"\textcolor{red}\sum x", r"\textcolor{red}{\sum}x"),
     ] {
         assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
         assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
     }
+    for color in [
+        r"\textcolor{red}",
+        r"\colorbox{red}",
+        r"\fcolorbox{red}{red}",
+    ] {
+        let parsed = mathema::from_latex(&format!(r"{color}\sum x")).unwrap();
+        assert!(!parsed.to_omml().unwrap().contains("m:nary"), "{color}");
+        assert_eq!(
+            parsed.to_mathml().unwrap().matches("largeop").count(),
+            mathema::from_latex(&format!(r"{color}\sum"))
+                .unwrap()
+                .to_mathml()
+                .unwrap()
+                .matches("largeop")
+                .count(),
+        );
+    }
 }
 
-/// Sizing commands recurse without a group, so they have a depth limit.
+/// Command arguments and operator bodies recurse without a group, so they
+/// have a depth limit.
 #[test]
-fn sizing_command_chains_are_bounded() {
-    let chain = |n| mathema::from_latex(&format!(r"{}\alpha", r"\big".repeat(n)));
-    assert_eq!(chain(100).unwrap().to_latex().unwrap(), r"\alpha");
-    for n in [200, 8_000, 100_000] {
-        assert!(chain(n).is_err(), "{n}");
+fn command_chains_are_bounded() {
+    let chain = |command: &str, n| mathema::from_latex(&format!(r"{}\alpha", command.repeat(n)));
+    assert_eq!(chain(r"\big", 100).unwrap().to_latex().unwrap(), r"\alpha");
+    for command in [
+        r"\big",
+        r"\hat",
+        r"\sum",
+        r"\mathop",
+        r"\sqrt",
+        r"\frac",
+        r"\big\mathop",
+        r"\big\sum",
+        r"\textcolor{red}",
+        r"\color{red}",
+    ] {
+        for n in [200, 8_000] {
+            assert!(chain(command, n).is_err(), "{command} {n}");
+        }
     }
 }
 

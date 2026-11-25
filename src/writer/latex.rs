@@ -516,7 +516,7 @@ fn write_escaped_undefined_command(
         }
         if !empty_nary_body
             && let Some(&last) = children.last()
-            && needs_space(arena, Some(last), group)
+            && (needs_space(arena, Some(last), group) || is_bare_large_op(arena, last))
         {
             buf.push(' ');
         }
@@ -637,7 +637,9 @@ fn ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
 
 fn output_ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
-        CompactNode::PreScripts { base, .. } => output_ends_with_empty_body_nary(arena, base),
+        CompactNode::PreScripts { base, .. } => {
+            is_bare_large_op(arena, base) || output_ends_with_empty_body_nary(arena, base)
+        },
         CompactNode::Nary { body, .. } if is_empty_body(arena, body) => {
             is_empty_body_nary(arena, id)
         },
@@ -762,13 +764,13 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
 }
 
 /// The first argument of `\overset` or `\underset`, where the reader takes a
-/// lone accent glyph for an accent.
+/// lone combining mark for an accent.
 fn write_stacked_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     let glyph = match *arena.node(written_script_content(arena, content)) {
         CompactNode::Symbol(_, sid) => single_char(arena.str_val(sid)),
         _ => None,
     };
-    if glyph.is_some_and(crate::unicode::symbols::is_accent_glyph) {
+    if glyph.is_some_and(is_combining_mark) {
         buf.push_str("\\mathord{");
         write_atom_content(buf, arena, content);
         buf.push('}');
@@ -2664,6 +2666,11 @@ fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
 }
 
 fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
+    // A null `\middle.` below the fence's own list.
+    if kind == SymbolKind::Fence && s.is_empty() {
+        buf.push_str("\\mathord{}");
+        return;
+    }
     let ch = s.chars().next().unwrap_or('?');
     let is_compound = s.len() > ch.len_utf8();
     // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
