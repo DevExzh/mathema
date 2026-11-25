@@ -757,12 +757,12 @@ impl<'a> Emitter<'a> {
     /// `m:func`.
     fn seq(&mut self, ids: &[NodeId], fmt: Fmt) {
         let previous_style = self.style;
-        let mut i = 0;
+        let mut i = self.after_empty_applications(ids, 0);
         while i < ids.len() {
             if let CompactNode::StyleSwitch(value) = *self.arena.node(ids[i]) {
                 self.style = MathStyle::branch_from_switch(value);
                 self.loss("OMML output does not preserve math style or size switches");
-                i += 1;
+                i = self.after_empty_applications(ids, i + 1);
                 continue;
             }
             if i + 1 < ids.len() && self.is_apply(ids[i + 1]) {
@@ -776,7 +776,7 @@ impl<'a> Emitter<'a> {
                 }
                 self.close("m:e");
                 self.close("m:func");
-                i += 3;
+                i = self.after_empty_applications(ids, i + 3);
             } else {
                 self.node(ids[i], fmt);
                 i += 1;
@@ -788,6 +788,19 @@ impl<'a> Emitter<'a> {
     fn is_apply(&self, id: NodeId) -> bool {
         matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
             if self.arena.str_val(sid) == FUNCTION_APPLICATION)
+    }
+
+    /// Where `ids` go on at `i`, past applications of no function (first, or
+    /// in a chain `f⁡g⁡`) that have an empty argument: they would read back
+    /// with the next group as their argument.
+    fn after_empty_applications(&self, ids: &[NodeId], mut i: usize) -> usize {
+        while let Some(&[apply, argument]) = ids.get(i..i + 2)
+            && self.is_apply(apply)
+            && matches!(*self.arena.node(argument), CompactNode::Row(span) if span.is_empty())
+        {
+            i += 2;
+        }
+        i
     }
 
     /// Write `<tag>` + node + `</tag>`; `NONE` gives an empty argument.

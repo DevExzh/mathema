@@ -12,51 +12,11 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(input) = std::str::from_utf8(data) {
         let config = Config::default();
 
-        // First pass: parse → normalize → write
-        let Ok(mut r1) = LatexReader::parse_compact(input, &config) else {
-            return;
-        };
-        // `from_latex` and `convert` refuse a tree that nests too deep, before
-        // they normalize: normalization goes no deeper, so what it leaves
-        // below would be normalized in the second pass only.
-        let limit = config.effective_max_depth();
-        if validate_compact_depth_with(&r1.expr.arena, r1.expr.roots, limit).is_err() {
-            return;
+        // U+2061 has an argument until LaTeX is written, which has none: only
+        // conversion to LaTeX opens it.
+        if !input.contains('\u{2061}') {
+            normalize_and_rewrite(input, &config);
         }
-        if normalize_compact_expr(&mut r1.expr).is_err() {
-            return;
-        }
-        let Ok(out1) = LatexWriter::write_compact(&r1.expr, &config) else {
-            return;
-        };
-
-        // Second pass: parse → normalize → write
-        let Ok(mut r2) = LatexReader::parse_compact(&out1, &config) else {
-            panic!(
-                "round-trip failed: first write output could not be re-parsed.\n\
-                 input:  {input:?}\n\
-                 write1: {out1:?}"
-            );
-        };
-        if normalize_compact_expr(&mut r2.expr).is_err() {
-            return;
-        }
-        let Ok(out2) = LatexWriter::write_compact(&r2.expr, &config) else {
-            panic!(
-                "round-trip failed: second write panicked.\n\
-                 input:  {input:?}\n\
-                 write1: {out1:?}"
-            );
-        };
-
-        // Idempotency check
-        assert_eq!(
-            out1, out2,
-            "LaTeX round-trip not idempotent.\n\
-             input:  {input:?}\n\
-             write1: {out1:?}\n\
-             write2: {out2:?}"
-        );
 
         // The public conversion drops the colors LaTeX cannot hold before it
         // normalizes.
@@ -71,3 +31,51 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
+
+fn normalize_and_rewrite(input: &str, config: &Config) {
+    // First pass: parse → normalize → write
+    let Ok(mut r1) = LatexReader::parse_compact(input, config) else {
+        return;
+    };
+    // `from_latex` and `convert` refuse a tree that nests too deep, before
+    // they normalize: normalization goes no deeper, so what it leaves
+    // below would be normalized in the second pass only.
+    let limit = config.effective_max_depth();
+    if validate_compact_depth_with(&r1.expr.arena, r1.expr.roots, limit).is_err() {
+        return;
+    }
+    if normalize_compact_expr(&mut r1.expr).is_err() {
+        return;
+    }
+    let Ok(out1) = LatexWriter::write_compact(&r1.expr, config) else {
+        return;
+    };
+
+    // Second pass: parse → normalize → write
+    let Ok(mut r2) = LatexReader::parse_compact(&out1, config) else {
+        panic!(
+            "round-trip failed: first write output could not be re-parsed.\n\
+                 input:  {input:?}\n\
+                 write1: {out1:?}"
+        );
+    };
+    if normalize_compact_expr(&mut r2.expr).is_err() {
+        return;
+    }
+    let Ok(out2) = LatexWriter::write_compact(&r2.expr, config) else {
+        panic!(
+            "round-trip failed: second write panicked.\n\
+                 input:  {input:?}\n\
+                 write1: {out1:?}"
+        );
+    };
+
+    // Idempotency check
+    assert_eq!(
+        out1, out2,
+        "LaTeX round-trip not idempotent.\n\
+             input:  {input:?}\n\
+             write1: {out1:?}\n\
+             write2: {out2:?}"
+    );
+}

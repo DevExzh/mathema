@@ -468,6 +468,22 @@ fn where_letters_are_not_joined() {
     mathema::ast::normalize::normalize_compact_expr(&mut expr).unwrap();
     let nodes = format!("{:?}", expr.to_math_expr());
     assert!(nodes.contains(r#"Identifier("lim")"#), "{nodes}");
+    // But letters that are no name are apart, in a cell of one node too.
+    let atom = MathNode::AlignedCell {
+        alignment: mathema::ast::ColumnAlign::Left,
+        content: Box::new(MathNode::MathAtom {
+            atom_type: mathema::ast::MathAtomType::Ord,
+            content: Box::new(MathNode::Row(
+                ["a", "b"].map(|l| MathNode::Identifier(l.into())).to_vec(),
+            )),
+        }),
+    };
+    let mut expr =
+        mathema::ast::compact::CompactExpr::from_math_expr(&mathema::MathExpr::block(vec![atom]))
+            .unwrap();
+    mathema::ast::normalize::normalize_compact_expr(&mut expr).unwrap();
+    let nodes = format!("{:?}", expr.to_math_expr());
+    assert!(!nodes.contains(r#"Identifier("ab")"#), "{nodes}");
     // On the heap route too.
     for source in [r"\mathord{ab}", r"\foo{ab}"] {
         let mut heap = mathema::from_latex(source).unwrap().expr();
@@ -490,6 +506,9 @@ fn an_unnamed_operator_settles() {
             "{source}"
         );
     }
+    // A row that a symbol starts keeps its group.
+    let latex = convert(r"\bbsum {+u}y", Format::LaTeX, Format::LaTeX).unwrap();
+    assert!(latex.ends_with("{+ u}y"), "{latex}");
 }
 
 /// The argument of a function is one node, whatever it holds, so what follows
@@ -610,7 +629,7 @@ fn arguments_of_functions() {
 fn arguments_of_functions_in_trees() {
     use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
     use mathema::ast::{FencedItem, SymbolKind};
-    use mathema::writer::{Writer, latex::LatexWriter, unicode_math::UnicodeMathWriter};
+    use mathema::writer::{Writer, unicode_math::UnicodeMathWriter};
     let config = mathema::Config::default();
     let letter = |c: &str| MathNode::Identifier(c.into());
     let apply = || MathNode::Symbol(SymbolKind::Ordinary, "\u{2061}".into());
@@ -631,19 +650,35 @@ fn arguments_of_functions_in_trees() {
     tree.nodes = vec![fence(nodes())];
     normalize_expr(&mut tree);
     assert_eq!(tree.nodes, vec![fence(nodes())]);
-    // LaTeX spells the application `\mathord{}`, and that keeps a group too.
-    for source in ["\\sin \u{2061}{xy}z", r"\sin \mathord{}{xy}z"] {
-        let read = mathema::from_latex(source).unwrap();
+    // Nor is an application a node with the scripts before it, and an empty
+    // argument stays one.
+    for source in [
+        "<msup><mrow/><mn>2</mn></msup><mo>&#x2061;</mo><mrow><mi>a</mi><mi>b</mi></mrow><mi>z</mi>",
+        "<mi>f</mi><mo>&#x2061;</mo><mrow/><mi>z</mi>",
+        "<mi>f</mi><mo>&#x2061;</mo><mrow><mspace width=\"0\"/></mrow><mi>z</mi>",
+    ] {
+        let source = format!("<math>{source}</math>");
+        let read = from_mathml(&source).unwrap();
         let (mut heap, mut compact) = (read.expr(), read.compact_expr().clone());
-        normalize_expr(&mut heap);
-        normalize_compact_expr(&mut compact).unwrap();
-        for written in [
-            LatexWriter::write(&heap, &config).unwrap(),
-            <LatexWriter as Writer>::write_compact(&compact, &config).unwrap(),
-        ] {
-            assert_eq!(written, r"\sin \mathord{}{xy}z");
+        for _ in 0..2 {
+            normalize_expr(&mut heap);
+            normalize_compact_expr(&mut compact).unwrap();
+            assert!(
+                matches!(&heap.nodes[..], [_, _, MathNode::Row(_), MathNode::Identifier(z)] if z == "z"),
+                "{heap:?}"
+            );
+            assert_eq!(heap.nodes, compact.to_math_expr().nodes);
         }
     }
+    // What LaTeX spells the application with is an atom like another.
+    for source in ["\\sin \u{2061}{xy}z", r"\sin \mathord{}{xy}z"] {
+        let written = convert(source, Format::LaTeX, Format::LaTeX).unwrap();
+        assert_eq!(written, r"\sin \mathord{}xyz");
+    }
+    assert_eq!(
+        mathml(r"a\mathord{}{xy}z", Format::LaTeX),
+        mathml(r"a\mathord{}xyz", Format::LaTeX)
+    );
     // A function in an argument, and an argument written as nothing.
     let nested = "<math><mo>sin</mo><mo>&#x2061;</mo><mrow><mo>sin</mo><mo>&#x2061;</mo><mi>x</mi></mrow><mi>z</mi></math>";
     assert_eq!(
@@ -659,6 +694,36 @@ fn arguments_of_functions_in_trees() {
         UnicodeMathWriter::write(&tree, &config).unwrap(),
         "f\u{2061}"
     );
+    // Nor an argument of one node, before normalization.
+    for (argument, expected) in [(vec![letter("x")], "f\u{2061}x"), (vec![], "f\u{2061}")] {
+        let nodes = vec![letter("f"), apply(), MathNode::Row(argument)];
+        let expr = mathema::MathExpr::block(nodes);
+        let compact = mathema::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+        assert_eq!(UnicodeMathWriter::write(&expr, &config).unwrap(), expected);
+        assert_eq!(
+            <UnicodeMathWriter as Writer>::write_compact(&compact, &config).unwrap(),
+            expected
+        );
+    }
+    // What an empty group follows is written.
+    let expr = mathema::MathExpr::block(vec![letter("x"), MathNode::Row(vec![])]);
+    let compact = mathema::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+    let written =
+        <mathema::writer::omml::OmmlWriter as Writer>::write_compact(&compact, &config).unwrap();
+    assert!(written.contains("<m:t>x</m:t>"), "{written}");
+    // On the way to LaTeX scripts lead an application, as they are read back.
+    for rest in ["<mi>z</mi>", "<mrow><mi>a</mi><mi>b</mi></mrow><mi>z</mi>"] {
+        let source = format!("<math><msup><mrow/><mn>2</mn></msup><mo>&#x2061;</mo>{rest}</math>");
+        let latex = convert(&source, Format::MathML, Format::LaTeX).unwrap();
+        assert_eq!(
+            convert(&latex, Format::LaTeX, Format::LaTeX).unwrap(),
+            latex
+        );
+    }
+    // An application in a chain with an empty argument settles as OMML.
+    let chain = "<math><mi>f</mi><mo>&#x2061;</mo><mi>g</mi><mo>&#x2061;</mo><mrow/><mi>h</mi><mo>&#x2061;</mo><mi>k</mi><mo>&#x2061;</mo><mn>2</mn></math>";
+    let written = convert(chain, Format::MathML, Format::Omml).unwrap();
+    assert_eq!(omml_again(&written), written);
     // MTEF has no such group.
     let source =
         "<math><mi>f</mi><mo>&#x2061;</mo><mrow><mi>x</mi><mi>y</mi></mrow><mi>z</mi></math>";

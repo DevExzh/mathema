@@ -66,30 +66,16 @@ impl Rules {
     }
 }
 
-/// Whether a node applies what is before it to the one node after it, which
-/// is the argument whatever it holds: U+2061, FUNCTION APPLICATION, or the
-/// `\mathord{}` that LaTeX has for it.
+/// Whether a node is U+2061, FUNCTION APPLICATION: it applies what is before
+/// it to the one node after it, which is the argument whatever it holds. Scripts
+/// do not lead it: they would be a node with it, and the argument would be none.
 fn applies_to_next(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(id) {
-        CompactNode::Symbol(_, sid) => arena.str_val(sid) == "\u{2061}",
-        CompactNode::MathAtom {
-            atom_type: MathAtomType::Ord,
-            content,
-        } => matches!(*arena.node(content), CompactNode::Row(span) if span.is_empty()),
-        _ => false,
-    }
+    matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{2061}")
 }
 
 /// Heap form of [`applies_to_next`].
 fn applies_to_next_math(node: &MathNode) -> bool {
-    match node {
-        MathNode::Symbol(_, text) => text == "\u{2061}",
-        MathNode::MathAtom {
-            atom_type: MathAtomType::Ord,
-            content,
-        } => matches!(&**content, MathNode::Row(nodes) if nodes.is_empty()),
-        _ => false,
-    }
+    matches!(node, MathNode::Symbol(_, text) if text == "\u{2061}")
 }
 
 fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
@@ -162,7 +148,8 @@ fn normalize_nodes_keeping_breaks(
     }
 
     // Phase 2b: drop zero-width spaces (see the compact normalizer).
-    flattened.retain(|node| !is_zero_space_math(node));
+    // (A group here is an argument, or holds something.)
+    flattened.retain(|node| matches!(node, MathNode::Row(_)) || !is_zero_space_math(node));
 
     // Phase 3: merge adjacent Text nodes with the same style
     let mut merged = Vec::with_capacity(flattened.len());
@@ -484,7 +471,11 @@ fn can_be_led_math(next: &MathNode) -> bool {
         MathNode::Row(nodes) if nodes.contains(&MathNode::LineBreak) => {
             nodes.first().is_some_and(can_be_led_math)
         },
-        _ => can_take_prescripts_math(next) && !is_empty_base_script_math(next),
+        _ => {
+            can_take_prescripts_math(next)
+                && !is_empty_base_script_math(next)
+                && !applies_to_next_math(next)
+        },
     }
 }
 
@@ -967,8 +958,9 @@ fn normalize_span_keeping_breaks(
     }
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in with_limits.iter().rev() {
-        if let Some(&next_id) = coalesced.last()
-            && let Some(prescripts) = leading_scripts_on(arena, id, next_id)?
+        if is_empty_base_script(arena, id)
+            && let Some(&next_id) = coalesced.last()
+            && let Some(prescripts) = leading_scripts_on(arena, id, next_id, rules)?
         {
             coalesced.pop();
             coalesced.push(prescripts);
@@ -999,6 +991,7 @@ fn leading_scripts_on(
     arena: &mut AstArena,
     script: NodeId,
     next: NodeId,
+    rules: Rules,
 ) -> crate::error::Result<Option<NodeId>> {
     let Some((pre_sub, pre_sup)) = empty_base_scripts(arena, script) else {
         return Ok(None);
@@ -1010,7 +1003,7 @@ fn leading_scripts_on(
         let Some(&first) = children.first() else {
             return Ok(None);
         };
-        let Some(led) = leading_scripts_on(arena, script, first)? else {
+        let Some(led) = leading_scripts_on(arena, script, first, rules)? else {
             return Ok(None);
         };
         children[0] = led;
@@ -1019,7 +1012,8 @@ fn leading_scripts_on(
     }
     let takes = can_take_prescripts(*arena.node(next))
         && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_declaration(arena, span))
-        && !is_empty_base_script(arena, next);
+        && !is_empty_base_script(arena, next)
+        && !(rules.keeps_arguments && applies_to_next(arena, next));
     Ok(takes.then(|| {
         for part in [pre_sub, pre_sup].into_iter().filter(|part| part.is_some()) {
             arena.move_attrs(script, part);
