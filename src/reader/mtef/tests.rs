@@ -1556,7 +1556,7 @@ fn leading_scripts_stay_outside_trailing_ones() {
 #[test]
 fn a_leading_script_leads_the_first_item_of_a_template_row() {
     // tmSUP with tvSU_PRECEDES, then a tmINTOP whose operator is empty and
-    // whose body starts with a space.
+    // whose body starts with a space, which it cannot lead.
     let equation = eq5(&cat(&[
         &[0x03, 0, 28, 1, 0, 0x01, 0x01],
         &line5(&c5(0, 3, 'l')),
@@ -1569,7 +1569,7 @@ fn a_leading_script_leads_the_first_item_of_a_template_row() {
     ]));
     let decoded = format!("{:?}", nodes(&equation));
     assert!(
-        decoded.contains("PreScripts") && !decoded.contains("PreScripts { base: Row([Space"),
+        decoded.contains("Superscript { base: Row([])") && decoded.contains("Space"),
         "{decoded}"
     );
 }
@@ -1886,6 +1886,416 @@ fn scripts_in_several_colours_settle() {
         assert_eq!(back.to_mathml().unwrap(), mathml);
         settles(&data);
     }
+}
+
+/// The MathML both of `data` and of every rewrite of it.
+#[track_caller]
+fn settled_mathml(data: &[u8]) -> String {
+    settles(data);
+    let first = crate::from_mtef_bytes(data).unwrap();
+    let written = first
+        .to_mtef_bytes(&crate::MtefWriteOptions::default())
+        .unwrap();
+    let mathml = first.to_mathml().unwrap();
+    let back = crate::from_mtef_bytes(&written).unwrap();
+    assert_eq!(back.to_mathml().unwrap(), mathml);
+    mathml
+}
+
+/// An MTEF 5 template of three slots, `None` a null line.
+fn template5(selector: u8, variation: u8, slots: &[Option<&[u8]>]) -> Vec<u8> {
+    let mut data = vec![0x03, 0, selector, variation, 0];
+    for slot in slots {
+        match slot {
+            Some(content) => data.extend(line5(content)),
+            None => data.extend_from_slice(&[0x01, 0x01]),
+        }
+    }
+    data.push(0);
+    data
+}
+
+fn script5(variation: u8, content: &[u8]) -> Vec<u8> {
+    template5(27, variation, &[Some(content), None])
+}
+
+/// A limit template without limits is its content, in the line's runs.
+#[test]
+fn a_limit_template_without_limits_joins_its_line() {
+    let x = [&[0x0F, 1][..], &c5(0, 3, 'x')].concat();
+    let limit = template5(23, 0x30, &[Some(&x), None, None]);
+    let data = eq5(&[colours(), vec![0x0F, 2], limit, c5(0, 3, 'y')].concat());
+    let mathml = settled_mathml(&data);
+    assert_eq!(mathml.matches("#0000ff").count(), 1, "{mathml}");
+}
+
+/// A prime belongs to the nucleus in its colour, whatever the colours of the
+/// scripts between.
+#[test]
+fn a_prime_belongs_to_the_nucleus_in_its_colour() {
+    let (blue, black) = (vec![0x0F, 1], vec![0x0F, 2]);
+    let (x, prime) = (c5(0, 3, 'x'), c5(0, 2, '\''));
+    let a = script5(0, &c5(0, 3, 'a'));
+    // Blue x and prime, black subscript; and the same after a black leading
+    // script.
+    let plain = [&blue[..], &x, &black, &a, &blue, &prime].concat();
+    let led = [
+        &black[..],
+        &script5(1, &c5(0, 3, 'b')),
+        &blue,
+        &x,
+        &black,
+        &a,
+        &blue,
+        &prime,
+    ]
+    .concat();
+    for content in [plain, led] {
+        let mathml = settled_mathml(&eq5(&[colours(), content].concat()));
+        assert!(mathml.contains("<msup>"), "{mathml}");
+        assert!(mathml.contains("′"), "{mathml}");
+    }
+}
+
+/// Primes typed as embellishments of a prime count one by one.
+#[test]
+fn a_prime_with_prime_embellishments_is_so_many_primes() {
+    let mut embellished = c5(0, 2, '\'');
+    embellished[1] |= 0x01;
+    embellished.extend_from_slice(&[0x06, 0, 5, 0]);
+    let template = template5(21, 0, &[Some(&[]), None, None, Some(&embellished)]);
+    let subscript = script5(0, &c5(0, 3, 'a'));
+    let prime = c5(0, 2, '\'');
+    let x = c5(0, 3, 'x');
+    // In the line and drawn by a template, after `x`, `x′` and `x_a`.
+    for item in [&embellished, &template] {
+        for (before, marks) in [
+            (x.clone(), 2),
+            ([&x[..], &prime].concat(), 3),
+            ([&x[..], &subscript].concat(), 2),
+        ] {
+            let data = eq5(&[&before[..], item, &subscript, &prime].concat());
+            let mathml = settled_mathml(&data);
+            assert_eq!(mathml.matches('′').count(), marks + 1, "{mathml}");
+        }
+    }
+}
+
+/// Leading scripts of nothing are scripts on nothing, also below the depth
+/// normalization reaches.
+#[test]
+fn leading_scripts_of_nothing_settle_in_deep_tables() {
+    let zero = c5(0, 24, '\u{EF01}');
+    let mut content = [script5(0, &c5(0, 3, 'b')), script5(1, &c5(0, 3, 'a')), zero].concat();
+    // Every depth up to the limit of the reader.
+    while let Ok(result) = crate::from_mtef_bytes(&eq5(&content)) {
+        if result
+            .to_mtef_bytes(&crate::MtefWriteOptions::default())
+            .is_err()
+        {
+            break;
+        }
+        assert!(!result.to_mathml().unwrap().contains("mprescripts"));
+        settles(&eq5(&content));
+        let mut pile = vec![0x04, 0, 2, 1];
+        pile.extend(line5(&content));
+        pile.push(0);
+        content = pile;
+    }
+    assert!(content.len() > 200);
+}
+
+/// A possessive `'s` ends before another letter in a zero space.
+#[test]
+fn a_possessive_and_zero_spaces_settle() {
+    let zero = c5(0, 24, '\u{EF01}');
+    let (a, quote, s) = (c5(0, 3, 'a'), c5(0, 2, '\''), c5(0, 3, 's'));
+    // The zero space before the s does not count; the one after it does.
+    for parts in [
+        vec![&a, &quote, &zero, &s],
+        vec![&a, &quote, &s, &zero, &a],
+        vec![&a, &quote, &s],
+    ] {
+        let data = eq5(&parts.into_iter().flatten().copied().collect::<Vec<_>>());
+        let mathml = settled_mathml(&data);
+        assert!(!mathml.contains("<msup>"), "{mathml}");
+    }
+    // A template's letter after the s counts: a variable, not a possessive.
+    let limit = template5(23, 0x30, &[Some(&a), None, None]);
+    let data = eq5(&[a, quote, s, limit].concat());
+    assert!(settled_mathml(&data).contains("<msup>"));
+}
+
+/// `y′` and a subscript in another colour are one node.
+#[test]
+fn a_prime_and_a_subscript_in_two_colours_are_one_node() {
+    let prime = template5(
+        28,
+        0,
+        &[None, Some(&[&[0x0F, 1][..], &c5(0, 2, '\'')].concat())],
+    );
+    let content = [
+        &[0x0F, 1][..],
+        &c5(0, 3, 'y'),
+        &prime,
+        &[0x0F, 2],
+        &script5(0, &c5(0, 3, 'a')),
+    ]
+    .concat();
+    let mathml = settled_mathml(&eq5(&[colours(), content].concat()));
+    assert!(mathml.contains("<msubsup>"), "{mathml}");
+}
+
+/// Primes that join one by one take linear time.
+#[test]
+fn many_primes_in_template_runs_are_cheap() {
+    let mut data = c5(0, 3, 'x');
+    let prime = template5(21, 0, &[Some(&[]), None, None, Some(&c5(0, 2, '\''))]);
+    for _ in 0..20_000 {
+        data.extend_from_slice(&prime);
+    }
+    let start = std::time::Instant::now();
+    let mathml = crate::from_mtef_bytes(&eq5(&data))
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert_eq!(mathml.matches('′').count(), 20_000);
+    // 20 ms in release; copying the primes each time took a second there.
+    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+}
+
+/// Runs of one colour in the content of a script are one run, in whatever
+/// templates the colour was selected.
+#[test]
+fn runs_of_one_colour_in_a_script_are_one_run() {
+    // A generated equation, reduced.
+    let digits = concat!(
+        "05534d54360000100000000000e803100000000000000010000000000a010003001b00",
+        "01000f0103001b0000010003001c010001010100010002008831000f02020081610000",
+        "00000300173000010002009801ef03001b000001000f02730002008273000001010002",
+        "0082270003001b0100010101010000010101010002008632200101000f020000",
+    );
+    let data: Vec<u8> = (0..digits.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
+        .collect();
+    settles(&data);
+}
+
+/// Generated equations, reduced, that each need one rule.
+#[test]
+fn reduced_generated_equations_settle() {
+    for digits in [
+        // a prime after scripts on nothing that a big operator takes
+        concat!(
+            "05010006000000100000000000e80310000000000000001003000000000a0200",
+            "0001000200861122030015000001000200822700030000010100030017300001",
+            "000f0100000001010101010003001b0000010002000100000000000000",
+        ),
+        // scripts after leading scripts of nothing
+        concat!(
+            "05534d54360000100000000000e803100000000000000010000000000a010003",
+            "00816100000100030015000001000300150000010003001c0100010101000200",
+            "883100020200837802008273000000000101010101000200837800000003001b",
+            "000001000300150000018611220200863d000f02020088310000010101010198",
+            "01ef0f0100010002008378000001010002008227000001010002010600050000",
+            "010101010100030086280003001c000001010100020082730001010101000001",
+            "0100000002008227000f02020082270003001d00000100010101000200837900",
+            "000001010000",
+        ),
+        // scripts on nothing as the base of scripts in another colour
+        concat!(
+            "05000654360000100000000000000a010401000200822700010003001b010001",
+            "0003000b00010100020082270003000001010181010002008161000288310002",
+            "008273000000000100020083790000000200862c000f01020082730000000300",
+            "1c00000300150000010002008632200300173000010002008227000200863d00",
+            "000100020083730002008373000f030001010002008632200001010101010003",
+            "001d00010003001c010101860101023220000000000300000200000000000000",
+            "0000",
+        ),
+        // a script on a number in a row beside a number
+        concat!(
+            "05000654360000100000000000000a01000f01000200863d0002008831000100",
+            "0200883100020082270002008227000003001b0100030001010001010000",
+        ),
+    ] {
+        let data: Vec<u8> = (0..digits.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
+            .collect();
+        let mathml = crate::from_mtef_bytes_with(&data, &lenient())
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(mathml.contains("<mo"), "{mathml}");
+        settles(&data);
+    }
+}
+
+/// A prime glyph with prime embellishments is the glyph once and as many
+/// primes, for every glyph and embellishment.
+#[test]
+fn prime_glyphs_with_prime_embellishments_keep_their_marks() {
+    let marks = |mathml: &str| -> Vec<char> {
+        let is_mark = |ch: &char| matches!(ch, '\u{2032}'..='\u{2034}' | '\u{2057}');
+        mathml.chars().filter(is_mark).collect()
+    };
+    for glyph in ['\'', '\u{2032}', '\u{2033}', '\u{2034}', '\u{2057}'] {
+        for (kind, count) in [(5, 1), (6, 2), (18, 3)] {
+            let typeface = if glyph == '\'' { 2 } else { 6 };
+            let mut five = c5(0, typeface, glyph);
+            five[1] |= 0x01;
+            five.extend_from_slice(&[0x06, 0, kind, 0]);
+            let mut three = c3(0, typeface, glyph);
+            three[0] |= 0x20;
+            three.extend_from_slice(&[0x06, kind, 0, 0]);
+            let mut expected = vec!['\u{2032}'; count];
+            expected.insert(0, if glyph == '\'' { '\u{2032}' } else { glyph });
+            for data in [
+                eq5(&[c5(0, 3, 'x'), five].concat()),
+                eq3(&[c3(0, 3, 'x'), three].concat()),
+            ] {
+                let result = crate::from_mtef_bytes(&data).unwrap();
+                let mathml = result.to_mathml().unwrap();
+                assert_eq!(marks(&mathml), expected, "{mathml}");
+                assert!(mathml.contains("<msup>"), "{mathml}");
+                settles(&data);
+                for version in [MtefVersion::V3, MtefVersion::V5] {
+                    let written = result
+                        .to_mtef_bytes(&crate::MtefWriteOptions::new(version))
+                        .unwrap();
+                    let again = crate::from_mtef_bytes(&written).unwrap();
+                    assert_eq!(marks(&again.to_mathml().unwrap()), expected);
+                }
+            }
+        }
+    }
+    let mtef = crate::convert("x″^{\\prime}", crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+    let mathml = crate::convert(&mtef, crate::Format::Mtef, crate::Format::MathML).unwrap();
+    assert_eq!(marks(&mathml), ['\u{2033}', '\u{2032}'], "{mathml}");
+}
+
+/// Also one that a template drew, with embellishments on embellishments.
+#[test]
+fn an_embellished_prime_in_a_template_is_so_many_primes() {
+    let mut embellished = c5(0, 2, '\'');
+    embellished[1] |= 0x01;
+    embellished.extend_from_slice(&[0x06, 0, 5, 0x06, 0, 18, 0]);
+    let template = template5(21, 0, &[Some(&[]), None, None, Some(&embellished)]);
+    let mathml = settled_mathml(&eq5(&[c5(0, 3, 'x'), template].concat()));
+    assert!(mathml.contains("<msup><mi>x</mi>"), "{mathml}");
+    assert_eq!(mathml.matches("<msup>").count(), 1, "{mathml}");
+    assert_eq!(mathml.matches('′').count(), 5, "{mathml}");
+}
+
+/// What a leading script leads is coloured part by part, also where the line
+/// it was read in joins one in another colour.
+#[test]
+fn a_led_item_is_coloured_part_by_part() {
+    let (blue, red) = (vec![0x0F, 1], vec![0x0F, 3]);
+    let define = [
+        0x10, 0, 0, 0, 0, 0, 0xE8, 0x03, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x10, 0, 0xE8, 0x03, 0, 0, 0, 0,
+    ];
+    let led = [
+        blue.clone(),
+        script5(1, &c5(0, 3, 'a')),
+        red.clone(),
+        c5(0, 3, 'x'),
+        c5(0, 2, '\''),
+    ]
+    .concat();
+    let drawn = template5(23, 0x30, &[Some(&led), None, None]);
+    let content = [&red[..], &drawn, &blue, &c5(0, 6, '=')].concat();
+    let script = template5(28, 0, &[None, Some(&content)]);
+    let data = eq5(&[&define[..], &blue, &c5(0, 3, 'y'), &script].concat());
+    let mathml = settled_mathml(&data);
+    assert_eq!(mathml.matches("#ff0000").count(), 2, "{mathml}");
+}
+
+/// A prime in another colour that its item does not take changes nothing.
+#[test]
+fn a_prime_that_is_not_taken_leaves_the_colours() {
+    let (blue, black) = (vec![0x0F, 1], vec![0x0F, 2]);
+    let sin = [c5(0, 2, 's'), c5(0, 2, 'i'), c5(0, 2, 'n')].concat();
+    let prime = c5(0, 2, '\'');
+    let script = script5(0, &c5(0, 3, 'a'));
+    let drawn = template5(23, 0x30, &[Some(&script), None, None]);
+    let data = eq5(&[
+        colours(),
+        black.clone(),
+        sin,
+        drawn,
+        blue.clone(),
+        prime.clone(),
+    ]
+    .concat());
+    let mathml = settled_mathml(&data);
+    assert_eq!(mathml.matches("#0000ff").count(), 1, "{mathml}");
+    assert!(
+        mathml.contains("<mstyle mathcolor=\"#0000ff\"><mo>′"),
+        "{mathml}"
+    );
+    // Blue template, black x with a leading script, black prime.
+    let content = [script5(1, &c5(0, 3, 'a')), black.clone(), c5(0, 3, 'x')].concat();
+    let template = template5(23, 0x30, &[Some(&content), None, None]);
+    let data = eq5(&[colours(), blue, template, black, prime].concat());
+    let mathml = settled_mathml(&data);
+    let after = mathml.rsplit_once("#0000ff").unwrap().1;
+    assert!(!after.contains('′'), "{mathml}");
+}
+
+/// A possessive after a script on an empty fence, which is not written.
+#[test]
+fn a_possessive_after_a_script_on_an_empty_fence_settles() {
+    let fence = template5(1, 0, &[Some(&[])]);
+    let content = [
+        fence,
+        script5(0, &c5(0, 3, 'c')),
+        c5(0, 2, '\''),
+        c5(0, 3, 's'),
+        line5(&c5(0, 3, 'x')),
+    ]
+    .concat();
+    let data = eq5(&content);
+    settles(&data);
+    let mut result = crate::from_mtef_bytes(&data).unwrap();
+    for _ in 0..3 {
+        let mathml = result.to_mathml().unwrap();
+        assert!(!mathml.contains('′'), "{mathml}");
+        let written = result
+            .to_mtef_bytes(&crate::MtefWriteOptions::default())
+            .unwrap();
+        result = crate::from_mtef_bytes(&written).unwrap();
+    }
+}
+
+/// The zero space that keeps an apostrophe is written before whatever draws a
+/// letter, and not at the start of the next line.
+#[test]
+fn a_possessive_keeps_its_apostrophe() {
+    for rest in [
+        r"\hat{y}",
+        "y_1",
+        r"\mathbf{y}",
+        r"\textcolor{red}{y}",
+        r"\vec{y}",
+        "yz",
+    ] {
+        for latex in [
+            format!(r"x\char`'s{rest}"),
+            format!(r"{{\color{{blue}}x\char`'s}}{rest}"),
+        ] {
+            let mtef = crate::convert(&latex, crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+            let mathml = crate::convert(&mtef, crate::Format::Mtef, crate::Format::MathML).unwrap();
+            assert!(
+                mathml.contains("&apos;") && !mathml.contains('′'),
+                "{latex}: {mathml}"
+            );
+        }
+    }
+    let latex = r"\begin{gathered} x\char`'s \\ y \end{gathered}";
+    let mtef = crate::convert(latex, crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+    assert!(!mtef.contains("9801ef"), "{mtef}");
 }
 
 /// COLOR_DEF blue, black; COLOR `n` selects one.

@@ -178,6 +178,7 @@ impl MtefReader {
         };
         match outcome {
             Ok(roots) => {
+                decoder.settle_leading_scripts()?;
                 let full_size = decoder
                     .arena
                     .has_attrs()

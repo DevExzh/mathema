@@ -50,6 +50,13 @@ pub(super) const ENCODING_DEF: u8 = 19;
 /// Record types from this value up carry their own length (MTEFv5.md).
 pub(super) const FUTURE: u8 = 100;
 
+/// The scripts on scripts an item may have to take another prime.
+const MAX_PRIMED_CHAIN: usize = 16;
+
+/// The primes an item may have to take another run of as many: the list of
+/// both has room.
+const MAX_PRIMES: usize = 30_000;
+
 // Option flags shared by both versions.
 const OPT_NUDGE: u8 = 0x08;
 const OPT_LINE_NULL: u8 = 0x01;
@@ -338,6 +345,16 @@ pub(super) struct Decoder<'a> {
     sizes_at: Option<usize>,
     /// The sizes there, read when first asked for.
     preferences: std::cell::OnceCell<Box<Preferences>>,
+    /// The colour each colour node was painted with, in the order of nodes.
+    painted: Vec<(NodeId, Option<u16>)>,
+    /// The marks of the prime rows of the line being assembled, which get
+    /// them at its end: joining primes one by one must not copy them.
+    open_primes: HashMap<NodeId, Vec<NodeId>>,
+    /// The nodes in colours of template runs that joined the lines around.
+    spliced: usize,
+    /// Whether there are zero spaces, and leading scripts.
+    has_zero_spaces: bool,
+    has_leading_scripts: bool,
 }
 
 impl<'a> Decoder<'a> {
@@ -377,6 +394,11 @@ impl<'a> Decoder<'a> {
             met_full: std::cell::Cell::new(false),
             sizes_at: None,
             preferences: std::cell::OnceCell::new(),
+            painted: Vec::new(),
+            open_primes: HashMap::new(),
+            spliced: 0,
+            has_zero_spaces: false,
+            has_leading_scripts: false,
         }
     }
 
@@ -510,6 +532,9 @@ impl<'a> Decoder<'a> {
 
     /// The children a node contributes to a surrounding list.
     pub(super) fn children_of(&self, id: NodeId) -> SmallVec<[NodeId; 8]> {
+        if let Some(open) = self.open_primes.get(&id) {
+            return open.iter().copied().collect();
+        }
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.arena.children(span).into(),
             _ => smallvec::smallvec![id],
@@ -2084,7 +2109,7 @@ impl<'a> Decoder<'a> {
         let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut pending: Option<ScriptSlots> = None;
         let mut items: VecDeque<Item> = items.into();
-        mark_primes(items.make_contiguous());
+        self.mark_primes(items.make_contiguous());
         while let Some(item) = items.pop_front() {
             match item {
                 Item::Glyph(glyph) => {
@@ -2101,6 +2126,28 @@ impl<'a> Decoder<'a> {
                         );
                     }
                     if !glyph.embells.is_empty() {
+                        // A prime with primes is that many primes.
+                        if chars::is_prime(glyph.ch)
+                            && pending.is_none()
+                            && let Some(count) = primes_of(&glyph.embells)
+                            && let Some(base) = self.take_prime_base(&mut out, glyph.color)?
+                        {
+                            let mut marks: SmallVec<[NodeId; 4]> = SmallVec::new();
+                            for at in 0..=count {
+                                let mark = if at == 0 {
+                                    self.glyph_node(&glyph, class)?
+                                } else {
+                                    self.char_node('\u{2032}', |s| {
+                                        CompactNode::Symbol(SymbolKind::Ordinary, s)
+                                    })?
+                                };
+                                self.set_prime_size(mark, glyph.size);
+                                marks.push(mark);
+                            }
+                            let id = self.prime_in(base, &marks, glyph.color)?;
+                            out.push(id);
+                            continue;
+                        }
                         let mut id = self.glyph_node(&glyph, class)?;
                         // A zero space or a marker draws nothing to embellish.
                         if self.draws_nothing(id) {
@@ -2122,7 +2169,8 @@ impl<'a> Decoder<'a> {
                         let mark = self.glyph_node(&glyph, class)?;
                         self.set_prime_size(mark, glyph.size);
                         marks.push(mark);
-                        while let Some(Item::Glyph(next)) = items.front()
+                        while marks.len() < MAX_PRIMES
+                            && let Some(Item::Glyph(next)) = items.front()
                             && next.embells.is_empty()
                             && next.color == glyph.color
                             && chars::is_prime(next.ch)
@@ -2133,8 +2181,7 @@ impl<'a> Decoder<'a> {
                             self.set_prime_size(mark, next.size);
                             marks.push(mark);
                         }
-                        let id = self.prime(base, &marks)?;
-                        self.set_color(id, glyph.color);
+                        let id = self.prime_in(base, &marks, glyph.color)?;
                         out.push(id);
                         continue;
                     }
@@ -2309,10 +2356,25 @@ impl<'a> Decoder<'a> {
 
     /// A script template: a script of the item before it.
     fn emit_script(&mut self, out: &mut SmallVec<[NodeId; 8]>, slots: ScriptSlots) -> Result<()> {
-        let base = match out.pop() {
+        let mut base = match out.pop() {
             Some(base) => base,
             None => self.empty_row()?,
         };
+        // Leading scripts of nothing are how the writer spells scripts on
+        // nothing (`x{}_1`); these then have the scripts.
+        if let CompactNode::PreScripts {
+            base: led,
+            pre_sub,
+            pre_sup,
+        } = *self.arena.node(base)
+            && self.is_empty_row(led)
+        {
+            let slot = |id: NodeId| (!id.is_none()).then_some(id);
+            let color = self.node_colors.get(&base).copied();
+            let (sub, sup) = (slot(pre_sub), slot(pre_sup));
+            let nothing = self.empty_row()?;
+            base = self.script_node(nothing, ScriptSlots { sub, sup, color })?;
+        }
         // A leading script belongs to the whole scripted node
         // after it (`{}_a b_c` is b with both scripts), as
         // normalization builds it for every other reader: keep
@@ -2332,10 +2394,18 @@ impl<'a> Decoder<'a> {
                 } else {
                     inner
                 };
-                let scripted = self.script_node(inner, slots)?;
-                let outer = self.node_colors.get(&scripted).copied();
+                let mut scripted = self.script_node(inner, slots)?;
+                let mut outer = self.node_colors.get(&scripted).copied();
                 let (mut pre_sub, mut pre_sup) = (pre_sub, pre_sup);
                 if outer != color {
+                    if outer != self.color_context {
+                        scripted = if self.is_scripted_name(scripted) {
+                            self.paint(scripted, outer)?
+                        } else {
+                            self.paint_script_tree(scripted, outer)?
+                        };
+                        outer = self.color_context;
+                    }
                     for slot in [&mut pre_sub, &mut pre_sup] {
                         if !slot.is_none() {
                             *slot = self.paint(*slot, color)?;
@@ -2392,6 +2462,24 @@ impl<'a> Decoder<'a> {
         if self.is_empty_row(id) {
             return Ok(());
         }
+        // A coloured part joins the line in its colour, not as one node.
+        if let CompactNode::Color { content, .. } = *self.arena.node(id)
+            && let Some(color) = self.painted_in(id)
+            && let children = self.children_of(content)
+            && self.spliced + children.len() <= (self.data.len() / 4).max(1_000)
+        {
+            // Each template around splices again what it holds: no more than
+            // some times all of the equation.
+            self.spliced += children.len();
+            for child in children {
+                match color {
+                    Some(color) => self.node_colors.insert(child, color),
+                    None => self.node_colors.remove(&child),
+                };
+                self.emit_run(out, pending, child)?;
+            }
+            return Ok(());
+        }
         if matches!(*self.arena.node(id), CompactNode::Row(span) if !span.is_empty()) {
             for child in self.children_of(id) {
                 if !self.node_colors.contains_key(&child) {
@@ -2406,8 +2494,19 @@ impl<'a> Decoder<'a> {
             && let Some(base) = self.take_prime_base(out, color)?
         {
             self.size_as_script(id);
-            let primed = self.prime(base, &[id])?;
-            self.set_color(primed, color);
+            let primed = self.prime_in(base, &[id], color)?;
+            out.push(primed);
+            return Ok(());
+        }
+        // A prime with primes is that many primes.
+        if pending.is_none()
+            && let Some(marks) = self.prime_marks(id)
+            && let Some(base) = self.take_prime_base(out, color)?
+        {
+            for &mark in &marks {
+                self.size_as_script(mark);
+            }
+            let primed = self.prime_in(base, &marks, color)?;
             out.push(primed);
             return Ok(());
         }
@@ -2418,8 +2517,7 @@ impl<'a> Decoder<'a> {
             && let Some(base) = self.take_prime_base(out, color)?
         {
             self.size_as_script(mark);
-            let primed = self.prime(base, &[mark])?;
-            self.set_color(primed, color);
+            let primed = self.prime_in(base, &[mark], color)?;
             out.push(primed);
             return self.emit_script(out, ScriptSlots { sub, sup, color });
         }
@@ -2516,28 +2614,358 @@ impl<'a> Decoder<'a> {
         out: &mut SmallVec<[NodeId; 8]>,
         color: Option<u16>,
     ) -> Result<Option<NodeId>> {
-        let Some(mut at) = out.iter().rposition(|&id| !self.draws_nothing(id)) else {
+        let Some(at) = out.iter().rposition(|&id| !self.draws_nothing(id)) else {
             return Ok(None);
         };
-        let mut base = out[at];
+        let base = out[at];
+        let own = self.node_colors.get(&base).copied();
         // Normalization gives scripts on nothing after a function name to it.
-        if at > 0
-            && let Some((sub, sup)) = self.scripts_on_nothing(base)
-            && let previous = out[at - 1]
-            && matches!(*self.arena.node(previous), CompactNode::Operator { .. })
-            && self.node_colors.get(&previous) == self.node_colors.get(&base)
+        let name = at
+            .checked_sub(1)
+            .map(|before| out[before])
+            .filter(|&before| {
+                self.scripts_on_nothing(base).is_some()
+                    && crate::ast::normalize::takes_limits(&self.arena, *self.arena.node(before))
+                    && self.node_colors.get(&before).copied() == own
+            });
+        let carrier = name.unwrap_or(base);
+        let same_color = own == color || self.nucleus_color(carrier) == Some(color);
+        // Each prime may nest the base deeper: a flat line of scripts and
+        // primes must not reach the depth limit.
+        if !same_color
+            || name.is_none() && !self.takes_prime(base)
+            || self.is_long_chain(carrier)
+            || self.has_many_primes(carrier)
         {
-            let slots = ScriptSlots { sub, sup, color };
-            at -= 1;
-            base = self.script_node(previous, slots)?;
-            out.truncate(at);
-            out.push(base);
-        }
-        if self.node_colors.get(&base).copied() != color || !self.takes_prime(base) {
             return Ok(None);
         }
-        out.truncate(at);
+        let Some((name, (sub, sup))) = name.zip(self.scripts_on_nothing(base)) else {
+            out.truncate(at);
+            return Ok(Some(base));
+        };
+        let slots = ScriptSlots {
+            sub,
+            sup,
+            color: own,
+        };
+        let base = self.script_node(name, slots)?;
+        out.truncate(at - 1);
         Ok(Some(base))
+    }
+
+    /// Whether `id` has [`MAX_PRIMES`].
+    fn has_many_primes(&self, mut id: NodeId) -> bool {
+        while let CompactNode::PreScripts { base, .. } = *self.arena.node(id) {
+            id = base;
+        }
+        let CompactNode::Superscript { mut sup, .. } = *self.arena.node(id) else {
+            return false;
+        };
+        if let CompactNode::Color { content, .. } = *self.arena.node(sup) {
+            sup = content;
+        }
+        let count = match (self.open_primes.get(&sup), *self.arena.node(sup)) {
+            (Some(open), _) => open.len(),
+            (None, CompactNode::Row(span)) => self.arena.children(span).len(),
+            _ => 1,
+        };
+        count >= MAX_PRIMES
+    }
+
+    /// Whether `id` has more scripts on scripts than are read as one item's
+    /// primes.
+    fn is_long_chain(&self, mut id: NodeId) -> bool {
+        for _ in 0..MAX_PRIMED_CHAIN {
+            id = match *self.arena.node(id) {
+                CompactNode::PreScripts { base, .. } => base,
+                CompactNode::Color { content, .. } => content,
+                _ => match self.trailing_scripts(id) {
+                    Some((base, ..)) => base,
+                    None => return false,
+                },
+            };
+        }
+        true
+    }
+
+    /// The colour the nucleus of a script node was painted in, when the node
+    /// has another: a script template draws nothing in its own colour.
+    fn nucleus_color(&self, mut id: NodeId) -> Option<Option<u16>> {
+        loop {
+            id = *self.script_parts(id).first()?;
+            if let Some(color) = self.painted_in(id) {
+                return Some(color);
+            }
+        }
+    }
+
+    /// The colour a colour node was painted with.
+    fn painted_in(&self, id: NodeId) -> Option<Option<u16>> {
+        let at = self
+            .painted
+            .binary_search_by_key(&id.index(), |&(node, _)| node.index())
+            .ok()?;
+        Some(self.painted[at].1)
+    }
+
+    /// Paint the base of scripts in another colour: scripts on nothing part
+    /// by part.
+    fn paint_base(&mut self, base: NodeId, color: Option<u16>) -> Result<NodeId> {
+        if self.scripts_on_nothing(base).is_some() {
+            self.paint_script_tree(base, color)
+        } else {
+            self.paint(base, color)
+        }
+    }
+
+    /// Whether `id` is primes in a colour, through rows of one node.
+    fn holds_colored_primes(&self, mut id: NodeId) -> bool {
+        let mut is_colored = false;
+        loop {
+            id = match *self.arena.node(id) {
+                CompactNode::Color { content, .. } => {
+                    is_colored = true;
+                    content
+                },
+                CompactNode::Row(span) if span.len() == 1 => self.arena.children(span)[0],
+                _ => return is_colored && self.all_primes(id),
+            };
+        }
+    }
+
+    /// The prime marks of `sup` and `marks`: `sup` itself when it is open.
+    fn join_primes(&mut self, sup: NodeId, marks: &[NodeId]) -> Result<NodeId> {
+        if let Some(open) = self.open_primes.get_mut(&sup) {
+            open.extend_from_slice(marks);
+            return Ok(sup);
+        }
+        let mut all: Vec<NodeId> = self.children_of(sup).to_vec();
+        all.extend_from_slice(marks);
+        let row = self.wrap(&all)?;
+        if matches!(*self.arena.node(row), CompactNode::Row(_)) {
+            self.open_primes.insert(row, all);
+        }
+        Ok(row)
+    }
+
+    /// Give the open prime rows their marks.
+    fn close_primes(&mut self) -> Result<()> {
+        if self.open_primes.is_empty() {
+            return Ok(());
+        }
+        for (row, marks) in std::mem::take(&mut self.open_primes) {
+            if let CompactNode::Row(span) = *self.arena.node(row)
+                && self.arena.children(span).len() < marks.len()
+            {
+                let span = self.children(&marks)?;
+                *self.arena.node_mut(row) = CompactNode::Row(span);
+            }
+        }
+        Ok(())
+    }
+
+    /// `base`, which `take_prime_base` gave for primes in `color`, with them.
+    fn prime_in(&mut self, base: NodeId, marks: &[NodeId], color: Option<u16>) -> Result<NodeId> {
+        if self.node_colors.get(&base).copied() == color {
+            let id = self.prime(base, marks)?;
+            self.set_color(id, color);
+            return Ok(id);
+        }
+        // The nucleus and the primes have a colour of their own, inside the
+        // node's.
+        let own = self.node_colors.get(&base).copied();
+        let around = std::mem::replace(&mut self.color_context, own);
+        let id = self.prime_painted(base, marks, color);
+        self.color_context = around;
+        let id = id?;
+        self.set_color(id, own);
+        Ok(id)
+    }
+
+    /// `base`, whose nucleus was painted in `color`, with primes painted in it.
+    fn prime_painted(
+        &mut self,
+        base: NodeId,
+        marks: &[NodeId],
+        color: Option<u16>,
+    ) -> Result<NodeId> {
+        match *self.arena.node(base) {
+            CompactNode::PreScripts {
+                base: led,
+                pre_sub,
+                pre_sup,
+            } => {
+                let base = self.prime_painted(led, marks, color)?;
+                self.node(CompactNode::PreScripts {
+                    base,
+                    pre_sub,
+                    pre_sup,
+                })
+            },
+            CompactNode::Superscript { base: inner, sup }
+                if matches!(*self.arena.node(sup), CompactNode::Color { content, .. }
+                    if self.painted_in(sup) == Some(color) && self.all_primes(content)) =>
+            {
+                let content = match *self.arena.node(sup) {
+                    CompactNode::Color { content, .. } => content,
+                    _ => sup,
+                };
+                let joined = self.join_primes(content, marks)?;
+                if joined == content {
+                    return Ok(base);
+                }
+                let sup = self.paint(joined, color)?;
+                self.node(CompactNode::Superscript { base: inner, sup })
+            },
+            _ => {
+                let sup = self.wrap(marks)?;
+                let sup = self.paint(sup, color)?;
+                self.node(CompactNode::Superscript { base, sup })
+            },
+        }
+    }
+
+    /// Read the apostrophes of a line as primes, except the possessive or plural
+    /// one of `ν_e's`: it follows an item and precedes a lone `s` that is not the
+    /// start of a function name.
+    fn mark_primes(&self, items: &mut [Item]) {
+        let letter = |item: Option<&Item>| match item {
+            Some(Item::Glyph(g)) if g.ch.is_alphabetic() => Some((g.typeface, g.ch)),
+            Some(&Item::Node(id)) if self.template_runs.contains(&id) => {
+                self.leading_letter(id).map(|ch| (chars::FN_FUNCTION, ch))
+            },
+            _ => None,
+        };
+        // Zero spaces do not come between (the writer adds them, and drops them).
+        let after = |items: &[Item], mut i: usize| {
+            while let Some(Item::Glyph(g)) = items.get(i + 1)
+                && matches!(classify(g), Class::Space(width) if width == Rational::zero())
+            {
+                i += 1;
+            }
+            i + 1
+        };
+        for i in 0..items.len() {
+            if !matches!(&items[i], Item::Glyph(g) if g.ch == '\'') {
+                continue;
+            }
+            let first = after(items, i);
+            let second = first + 1;
+            let possessive = i > 0
+                && letter(items.get(first))
+                    .is_some_and(|(typeface, ch)| ch == 's' && typeface != chars::FN_FUNCTION)
+                && letter(items.get(second)).is_none()
+                // A variable: `l_1 s_1 l_1's_1'`.
+                && !matches!(items.get(second), Some(Item::Script(_)))
+                && !matches!(items.get(second), Some(Item::Glyph(g))
+                    if (g.ch == '\'' || chars::is_prime(g.ch))
+                        && !matches!(g.typeface, chars::FN_TEXT | chars::FN_TEXT_FE));
+            if let Item::Glyph(glyph) = &mut items[i]
+                && glyph.ch == '\''
+                && !possessive
+                && !matches!(glyph.typeface, chars::FN_TEXT | chars::FN_TEXT_FE)
+            {
+                glyph.ch = '\u{2032}';
+            }
+        }
+    }
+
+    /// The letter a template's run starts with.
+    fn leading_letter(&self, mut id: NodeId) -> Option<char> {
+        loop {
+            id = match *self.arena.node(id) {
+                CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+                    *self.arena.children(span).first()?
+                },
+                CompactNode::Color { content, .. } => content,
+                CompactNode::Identifier(s) | CompactNode::Symbol(_, s) => {
+                    let ch = self.arena.str_val(s).chars().next()?;
+                    return ch.is_alphabetic().then_some(ch);
+                },
+                CompactNode::Operator { name, .. } => {
+                    let ch = self.arena.str_val(name).chars().next()?;
+                    return ch.is_alphabetic().then_some(ch);
+                },
+                _ => self.trailing_scripts(id)?.0,
+            }
+        }
+    }
+
+    /// Make leading scripts of nothing scripts on nothing and drop zero spaces
+    /// at the ends of lists, as normalization does where it reaches.
+    pub(super) fn settle_leading_scripts(&mut self) -> Result<()> {
+        if !self.has_zero_spaces && !self.has_leading_scripts {
+            return Ok(());
+        }
+        for raw in 0..self.arena.nodes().len() as u32 {
+            let id = NodeId::new(raw);
+            // The zero spaces at the ends of a list have done their part.
+            if let CompactNode::Row(span) = *self.arena.node(id) {
+                let is_zero = |d: &Self, id: NodeId| matches!(*d.arena.node(id), CompactNode::Space(width) if width == Rational::zero());
+                let ends = match self.arena.children(span) {
+                    [] => continue,
+                    [first, .., last] => [*first, *last],
+                    [only] => [*only; 2],
+                };
+                if ends.into_iter().any(|id| is_zero(self, id)) {
+                    let children = self.children_of(id);
+                    let mut rest = &children[..];
+                    while let [first, middle @ ..] = rest
+                        && is_zero(self, *first)
+                    {
+                        rest = middle;
+                    }
+                    while let [middle @ .., last] = rest
+                        && is_zero(self, *last)
+                    {
+                        rest = middle;
+                    }
+                    let span = self.children(rest)?;
+                    *self.arena.node_mut(id) = CompactNode::Row(span);
+                }
+                continue;
+            }
+            let CompactNode::PreScripts {
+                base,
+                pre_sub: sub,
+                pre_sup: sup,
+            } = *self.arena.node(id)
+            else {
+                continue;
+            };
+            if !self.draws_nothing(base) {
+                continue;
+            }
+            let base = self.empty_row()?;
+            *self.arena.node_mut(id) = if sup.is_none() {
+                CompactNode::Subscript { base, sub }
+            } else if sub.is_none() {
+                CompactNode::Superscript { base, sup }
+            } else {
+                CompactNode::SubSup { base, sub, sup }
+            };
+        }
+        Ok(())
+    }
+
+    /// The primes of a prime with prime embellishments.
+    fn prime_marks(&self, id: NodeId) -> Option<SmallVec<[NodeId; 4]>> {
+        let mut rest = id;
+        let mut over: SmallVec<[NodeId; 2]> = SmallVec::new();
+        while let CompactNode::Superscript { base, sup } = *self.arena.node(rest)
+            && self.all_primes(sup)
+        {
+            over.push(sup);
+            rest = base;
+        }
+        if over.is_empty() || !self.all_primes(rest) {
+            return None;
+        }
+        let mut marks: SmallVec<[NodeId; 4]> = self.children_of(rest).into_iter().collect();
+        for sup in over.into_iter().rev() {
+            marks.extend(self.children_of(sup));
+        }
+        Some(marks)
     }
 
     /// Whether a prime typed after `id` is its superscript.
@@ -2550,7 +2978,10 @@ impl<'a> Decoder<'a> {
             // A big operator's node includes its body.
             CompactNode::Nary { .. } => false,
             // The prime is the led item's.
-            CompactNode::PreScripts { base, .. } => self.takes_prime(base),
+            CompactNode::PreScripts { base, .. } => match *self.arena.node(base) {
+                CompactNode::Color { content, .. } => self.takes_prime(content),
+                _ => self.takes_prime(base),
+            },
             CompactNode::Space(_) | CompactNode::Text(..) | CompactNode::Row(_) => false,
             // A coloured run of an assembled line: its last item has its
             // primes already.
@@ -2580,10 +3011,14 @@ impl<'a> Decoder<'a> {
         if let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
             && self.all_primes(sup)
         {
-            let mut all: SmallVec<[NodeId; 4]> = self.children_of(sup).into_iter().collect();
-            all.extend_from_slice(marks);
-            let sup = self.wrap(&all)?;
-            return self.node(CompactNode::Superscript { base: inner, sup });
+            let joined = self.join_primes(sup, marks)?;
+            if joined == sup {
+                return Ok(base);
+            }
+            return self.node(CompactNode::Superscript {
+                base: inner,
+                sup: joined,
+            });
         }
         let sup = self.wrap(marks)?;
         self.node(CompactNode::Superscript { base, sup })
@@ -2591,6 +3026,9 @@ impl<'a> Decoder<'a> {
 
     /// Whether `id` is a prime mark or a row of them.
     fn all_primes(&self, id: NodeId) -> bool {
+        if self.open_primes.contains_key(&id) {
+            return true;
+        }
         let ids = self.children_of(id);
         !ids.is_empty()
             && ids.iter().all(|&id| {
@@ -2621,6 +3059,35 @@ impl<'a> Decoder<'a> {
     }
 
     fn script_node(&mut self, base: NodeId, slots: ScriptSlots) -> Result<NodeId> {
+        // `y′` and a subscript in another colour: one node, as in one colour
+        // (`script_node_inner`).
+        if let (Some(sub), None) = (slots.sub, slots.sup)
+            && let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
+        {
+            let color = self.node_colors.get(&base).copied();
+            let is_painted = self.holds_colored_primes(sup);
+            if is_painted || color != slots.color && self.all_primes(sup) {
+                // A function name is coloured as one (`paint_scripts`).
+                if !is_painted && matches!(*self.arena.node(inner), CompactNode::Operator { .. }) {
+                    let around = std::mem::replace(&mut self.color_context, color);
+                    let sub = self.paint(sub, slots.color)?;
+                    self.color_context = around;
+                    let id = self.node(CompactNode::SubSup {
+                        base: inner,
+                        sub,
+                        sup,
+                    })?;
+                    self.set_color(id, color);
+                    return Ok(id);
+                }
+                let base = self.paint_base(inner, color)?;
+                let sup = self.paint(sup, color)?;
+                let sub = self.paint(sub, slots.color)?;
+                let id = self.node(CompactNode::SubSup { base, sub, sup })?;
+                self.set_color(id, self.color_context);
+                return Ok(id);
+            }
+        }
         let (base, slots, color) = self.paint_scripts(base, slots)?;
         let id = self.script_node_inner(base, slots)?;
         self.set_color(id, color);
@@ -2672,6 +3139,7 @@ impl<'a> Decoder<'a> {
         if slots.sub.is_none() && slots.sup.is_none() {
             return Ok(base);
         }
+        self.has_leading_scripts = true;
         let (base, slots, color) = self.paint_scripts(base, slots)?;
         let id = self.node(CompactNode::PreScripts {
             base,
@@ -2725,7 +3193,7 @@ impl<'a> Decoder<'a> {
                 continue;
             }
             if self.is_mixed_script(children[i]) {
-                out.push(self.paint_script_parts(children[i], color)?);
+                out.push(self.paint_script_parts(children[i], color, false)?);
                 i += 1;
                 continue;
             }
@@ -2741,8 +3209,11 @@ impl<'a> Decoder<'a> {
             } else {
                 self.wrap(&children[start..i])?
             };
-            out.push(self.str_node(&name, |color| CompactNode::Color { color, content })?);
+            let node = self.str_node(&name, |color| CompactNode::Color { color, content })?;
+            self.painted.push((node, color));
+            out.push(node);
         }
+        let out = self.join_colors(out)?;
         let painted = if out.is_empty() { id } else { self.wrap(&out)? };
         self.set_color(painted, self.color_context);
         Ok(painted)
@@ -2807,6 +3278,41 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    /// `id` with the colour of its base, when that base has scripts, painted
+    /// part by part.
+    fn open_colored_base(&mut self, id: NodeId) -> Result<NodeId> {
+        let Some((base, ..)) = self.trailing_scripts(id) else {
+            return Ok(id);
+        };
+        let opened = match (*self.arena.node(base), self.painted_in(base)) {
+            (CompactNode::Color { content, .. }, Some(color))
+                if !self.script_parts(content).is_empty() && !self.is_scripted_name(content) =>
+            {
+                self.paint_script_tree(content, color)?
+            },
+            (CompactNode::Color { .. }, _) => base,
+            _ => self.open_colored_base(base)?,
+        };
+        if opened == base {
+            return Ok(id);
+        }
+        let node = self.with_base(id, opened)?;
+        let color = self.node_colors.get(&id).copied();
+        self.set_color(node, color);
+        Ok(node)
+    }
+
+    /// A copy of a node with trailing scripts that has another base.
+    fn with_base(&mut self, id: NodeId, base: NodeId) -> Result<NodeId> {
+        let node = match *self.arena.node(id) {
+            CompactNode::Subscript { sub, .. } => CompactNode::Subscript { base, sub },
+            CompactNode::Superscript { sup, .. } => CompactNode::Superscript { base, sup },
+            CompactNode::SubSup { sub, sup, .. } => CompactNode::SubSup { base, sub, sup },
+            other => other,
+        };
+        self.node(node)
+    }
+
     /// Whether `id` is a function name with scripts.
     fn is_scripted_name(&self, id: NodeId) -> bool {
         self.trailing_scripts(id).is_some_and(|(base, ..)| {
@@ -2817,36 +3323,47 @@ impl<'a> Decoder<'a> {
     /// Paint the parts of a script node and of the script nodes that are its
     /// base; the node itself then has the colour around it.
     fn paint_script_tree(&mut self, id: NodeId, color: Option<u16>) -> Result<NodeId> {
-        let node = *self.arena.node(id);
+        let mut has_painted_base = false;
         let id = match self.trailing_scripts(id) {
             // (A function name with scripts is coloured as one.)
             Some((base, ..))
                 if !self.script_parts(base).is_empty() && !self.is_scripted_name(base) =>
             {
                 let base = self.paint_script_tree(base, color)?;
-                self.node(match node {
-                    CompactNode::Subscript { sub, .. } => CompactNode::Subscript { base, sub },
-                    CompactNode::Superscript { sup, .. } => CompactNode::Superscript { base, sup },
-                    CompactNode::SubSup { sub, sup, .. } => CompactNode::SubSup { base, sub, sup },
-                    other => other,
-                })?
+                has_painted_base = true;
+                self.with_base(id, base)?
             },
             _ => id,
         };
-        let painted = self.paint_script_parts(id, color)?;
+        let painted = self.paint_script_parts(id, color, has_painted_base)?;
         self.node_colors.remove(&painted);
         self.set_color(painted, self.color_context);
         Ok(painted)
     }
 
-    fn paint_script_parts(&mut self, id: NodeId, color: Option<u16>) -> Result<NodeId> {
+    fn paint_script_parts(
+        &mut self,
+        id: NodeId,
+        color: Option<u16>,
+        has_painted_base: bool,
+    ) -> Result<NodeId> {
         let mut painted: SmallVec<[NodeId; 3]> = SmallVec::new();
-        for part in self.script_parts(id) {
-            painted.push(if self.draws_nothing(part) {
+        let is_led = matches!(*self.arena.node(id), CompactNode::PreScripts { .. });
+        for (at, part) in self.script_parts(id).into_iter().enumerate() {
+            let part = if has_painted_base && at == 0 || self.draws_nothing(part) {
                 part
+            } else if is_led
+                && at == 0
+                && !self.script_parts(part).is_empty()
+                && !self.is_scripted_name(part)
+            {
+                // Scripts of what leading scripts lead are painted one by one,
+                // as they are where they are read (`emit_script`).
+                self.paint_script_tree(part, color)?
             } else {
                 self.paint(part, color)?
-            });
+            };
+            painted.push(part);
         }
         let base = painted[0];
         let node = match *self.arena.node(id) {
@@ -2910,7 +3427,7 @@ impl<'a> Decoder<'a> {
             self.color_context = around;
             return Ok((base, slots, color));
         }
-        let base = self.paint(base, color)?;
+        let base = self.paint_base(base, color)?;
         for slot in [&mut slots.sub, &mut slots.sup] {
             if let Some(id) = *slot {
                 *slot = Some(self.paint(id, slots.color)?);
@@ -2922,12 +3439,48 @@ impl<'a> Decoder<'a> {
     /// Wrap each run of a line's nodes drawn in another colour than the
     /// structure around the line in a colour node.
     fn wrap_colors(&mut self, out: SmallVec<[NodeId; 8]>) -> Result<SmallVec<[NodeId; 8]>> {
+        self.close_primes()?;
         let context = self.color_context;
         let color_of = |d: &Self, id: NodeId| d.node_colors.get(&id).copied();
         // Zero spaces show no colour and have done their part in the line
-        // (they keep scripts and runs apart); normalization drops them, and
-        // must not find them between or as coloured runs.
+        // (they keep scripts and runs apart); normalization drops them, where
+        // it reaches, and must not find them between or as coloured runs.
         let is_zero_space = |d: &Self, id: NodeId| matches!(*d.arena.node(id), CompactNode::Space(width) if width == Rational::zero());
+        let mut out = out;
+        if self.has_zero_spaces && out.iter().any(|&id| is_zero_space(self, id)) {
+            let mut kept: SmallVec<[NodeId; 8]> = SmallVec::new();
+            let mut space = None;
+            for id in out {
+                if is_zero_space(self, id) {
+                    space = Some(id);
+                    continue;
+                }
+                // (At the ends of a line they keep what the line is spliced
+                // between apart.)
+                if let Some(space) = space.take()
+                    && kept.is_empty()
+                {
+                    kept.push(space);
+                }
+                kept.push(id);
+            }
+            kept.extend(space);
+            out = kept;
+        }
+        // A node normalization gives leading scripts is painted as one that
+        // has them (`emit_script`).
+        let painted = !self.painted.is_empty();
+        for i in 1..if painted { out.len() } else { 0 } {
+            if self.trailing_scripts(out[i]).is_some()
+                && self.scripts_on_nothing(out[i - 1]).is_some()
+            {
+                let own = color_of(self, out[i]);
+                let around = std::mem::replace(&mut self.color_context, own);
+                let opened = self.open_colored_base(out[i]);
+                self.color_context = around;
+                out[i] = opened?;
+            }
+        }
         if out
             .iter()
             .all(|&id| color_of(self, id) == context || is_zero_space(self, id))
@@ -3032,8 +3585,20 @@ impl<'a> Decoder<'a> {
             }
             i = end;
         }
-        // A part painted on its own (the base of a script in another colour)
-        // joins its neighbours of the same colour.
+        self.join_colors(wrapped)
+    }
+
+    /// A part painted on its own (the base of a script in another colour)
+    /// joins its neighbours of the same colour.
+    fn join_colors(&mut self, wrapped: SmallVec<[NodeId; 8]>) -> Result<SmallVec<[NodeId; 8]>> {
+        let is_color = |id: NodeId| matches!(*self.arena.node(id), CompactNode::Color { .. });
+        if !wrapped
+            .windows(2)
+            .any(|pair| is_color(pair[0]) && is_color(pair[1]))
+        {
+            return Ok(wrapped);
+        }
+        let context = self.color_context;
         let mut merged: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut i = 0;
         while i < wrapped.len() {
@@ -3094,7 +3659,10 @@ impl<'a> Decoder<'a> {
                 self.node(CompactNode::Styled(style, span))
             },
             Class::Symbol(kind) => self.char_node(ch, |s| CompactNode::Symbol(kind, s)),
-            Class::Space(width) => self.node(CompactNode::Space(width)),
+            Class::Space(width) => {
+                self.has_zero_spaces |= width == Rational::zero();
+                self.node(CompactNode::Space(width))
+            },
             Class::Marker => self.empty_row(),
         }
     }
@@ -3110,13 +3678,7 @@ impl<'a> Decoder<'a> {
             )?;
             return Ok(base);
         }
-        let primes = match kind {
-            5 => 1,
-            6 => 2,
-            18 => 3,
-            _ => 0,
-        };
-        if primes > 0 {
+        if let Some(primes) = primes_of(&[(kind, offset)]) {
             let mut marks: SmallVec<[NodeId; 3]> = SmallVec::new();
             for _ in 0..primes {
                 marks.push(
@@ -3226,31 +3788,6 @@ fn dimension_points(unit: u8, digits: &str) -> Option<Rational> {
     (units >= 1.0 && units <= f64::from(i32::MAX)).then(|| Rational::new(units as i32, 32))
 }
 
-/// Read the apostrophes of a line as primes, except the possessive or plural
-/// one of `ν_e's`: it follows an item and precedes a lone `s` that is not the
-/// start of a function name.
-fn mark_primes(items: &mut [Item]) {
-    let letter = |item: Option<&Item>| match item {
-        Some(Item::Glyph(g)) if g.ch.is_alphabetic() => Some((g.typeface, g.ch)),
-        _ => None,
-    };
-    for i in 0..items.len() {
-        let possessive = i > 0
-            && letter(items.get(i + 1))
-                .is_some_and(|(typeface, ch)| ch == 's' && typeface != chars::FN_FUNCTION)
-            && letter(items.get(i + 2)).is_none()
-            // A variable: `l_1 s_1 l_1's_1'`.
-            && !matches!(items.get(i + 2), Some(Item::Script(_)));
-        if let Item::Glyph(glyph) = &mut items[i]
-            && glyph.ch == '\''
-            && !possessive
-            && !matches!(glyph.typeface, chars::FN_TEXT | chars::FN_TEXT_FE)
-        {
-            glyph.ch = '\u{2032}';
-        }
-    }
-}
-
 /// Whether a glyph is the point of a decimal number: a full stop outside the
 /// text styles.
 fn is_decimal_point(glyph: &Glyph) -> bool {
@@ -3321,6 +3858,19 @@ fn classify(glyph: &Glyph) -> Class {
         _ if ch.is_alphabetic() => Class::Ident,
         _ => Class::Symbol(chars::symbol_kind(ch)),
     }
+}
+
+/// The number of primes embellishments draw, when they are all primes.
+fn primes_of(embells: &[(u8, usize)]) -> Option<usize> {
+    embells
+        .iter()
+        .map(|&(kind, _)| match kind {
+            5 => Some(1),
+            6 => Some(2),
+            18 => Some(3),
+            _ => None,
+        })
+        .sum()
 }
 
 /// Accent character and position for the embellishments drawn as accents.

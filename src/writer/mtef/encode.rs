@@ -236,6 +236,9 @@ pub(super) struct Encoder<'a> {
     /// The item count and number of open lists right after the last zero
     /// space: both unchanged while it is the last item of its list.
     zero_space: Option<(usize, usize)>,
+    /// The place after an apostrophe, and after the `s` that follows one.
+    apostrophe: Option<(usize, usize)>,
+    possessive_s: Option<(usize, usize)>,
     /// Set when the object lists nest deeper than the reader accepts.
     too_deep: bool,
     /// Set when Far East text was written (MTEF 5 then defines its font).
@@ -298,6 +301,8 @@ impl<'a> Encoder<'a> {
             items: 0,
             open: Vec::new(),
             zero_space: None,
+            apostrophe: None,
+            possessive_s: None,
             too_deep: false,
             far_east: false,
             alphabets: false,
@@ -582,6 +587,8 @@ impl<'a> Encoder<'a> {
     fn end(&mut self) {
         self.out.push(END);
         self.open.pop();
+        self.apostrophe = None;
+        self.possessive_s = None;
         self.last_run = None;
     }
 
@@ -697,6 +704,16 @@ impl<'a> Encoder<'a> {
 
     /// One CHAR record with its embellishment list.
     fn glyph(&mut self, size: Size, glyph: Glyph, func_start: bool, embells: &[u8]) -> Result<()> {
+        // `'s` before a letter would read back as a primed variable: a zero
+        // space ends the word.
+        if self.possessive_s.is_some()
+            && self.possessive_s == Some((self.items, self.open.len()))
+            && glyph.ch.is_alphabetic()
+        {
+            self.space_code(size, chars::SPACE_ZERO)?;
+        }
+        let ends_apostrophe =
+            self.apostrophe.is_some() && self.apostrophe == Some((self.items, self.open.len()));
         let code = self.code(glyph.ch)?;
         if self.sized {
             self.glyph_need(size);
@@ -751,6 +768,14 @@ impl<'a> Encoder<'a> {
                 }
             }
             self.end();
+        }
+        if embells.is_empty() && matches!(glyph.ch, 's' | '\'') {
+            let place = Some((self.items, self.open.len()));
+            if glyph.ch == '\'' && glyph.typeface != FN_TEXT {
+                self.apostrophe = place;
+            } else if glyph.ch == 's' && ends_apostrophe && glyph.typeface != FN_FUNCTION {
+                self.possessive_s = place;
+            }
         }
         Ok(())
     }
@@ -1883,9 +1908,11 @@ impl<'a> Encoder<'a> {
         }
         // A number or text base must not join the number or text before it,
         // or the script would take both as its base.
-        let joins = match *self.arena.node(base) {
-            CompactNode::Number(_) => matches!(self.run_before(), Some(Run::Number(_))),
-            CompactNode::Text(..) => self.run_before() == Some(Run::Text),
+        let (leaf, color) = self.leaf_and_color(base);
+        let before = self.last_run.filter(|_| self.rgb(self.last_color) == color);
+        let joins = match *self.arena.node(leaf) {
+            CompactNode::Number(_) => matches!(before, Some(Run::Number(_))),
+            CompactNode::Text(..) => before == Some(Run::Text),
             _ => false,
         };
         if joins {
@@ -3132,6 +3159,31 @@ impl<'a> Encoder<'a> {
             _ => return None,
         };
         self.is_empty(self.unwrap_row(base)).then_some((sub, sup))
+    }
+
+    /// The colour an index stands for, black when there is none.
+    fn rgb(&self, color: Option<u16>) -> [u8; 3] {
+        color
+            .and_then(|c| self.colors.get(usize::from(c).wrapping_sub(1)))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The node a chain of colours ends in, and the colour it is drawn in.
+    fn leaf_and_color(&self, id: NodeId) -> (NodeId, [u8; 3]) {
+        let mut color = self.rgb(self.color);
+        let mut leaf = self.unwrap_row(id);
+        while self.v5
+            && let CompactNode::Color {
+                color: name,
+                content,
+            } = *self.arena.node(leaf)
+        {
+            color =
+                crate::css_colors::resolve_named_or_hex(self.arena.str_val(name)).unwrap_or(color);
+            leaf = self.unwrap_row(content);
+        }
+        (leaf, color)
     }
 
     /// The node a row of exactly one node holds, through nested rows.

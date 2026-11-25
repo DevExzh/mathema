@@ -903,6 +903,12 @@ impl Decoder<'_> {
                     }
                     id
                 } else {
+                    if lower.is_none() && upper.is_none() {
+                        // One that draws nothing keeps scripts around it apart.
+                        if !self.draws_nothing(base) {
+                            self.template_runs.insert(base);
+                        }
+                    }
                     self.over_under(base, upper, lower)?
                 };
                 Item::Node(id)

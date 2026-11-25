@@ -1353,3 +1353,18 @@ fn whatever_is_written_can_be_written_again_at_the_depth_limit() {
     }
     assert!(written > 1000 && refused > 1000, "{written} {refused}");
 }
+
+/// A number with a script does not join a number in another colour: nothing
+/// is written to keep them apart.
+#[test]
+fn numbers_in_two_colours_need_no_space() {
+    let latex = r"\textcolor{red}{1}\textcolor{blue}{2}_a";
+    let mtef = crate::convert(latex, crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+    assert!(!mtef.contains("9801ef"), "{mtef}");
+    let mtef = crate::convert("1{2}_a", crate::Format::LaTeX, crate::Format::Mtef).unwrap();
+    let mathml = crate::convert(&mtef, crate::Format::Mtef, crate::Format::MathML).unwrap();
+    assert!(
+        mathml.contains("<msub><mn>2</mn>") || mathml.contains("<msub><mn>12</mn>"),
+        "{mathml}"
+    );
+}
