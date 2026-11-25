@@ -277,3 +277,55 @@ fn reflections_and_enclosures_are_valid_in_all_svg_outputs() {
         );
     }
 }
+
+/// Scripts and scripts of scripts are drawn with their own designs by both
+/// backends: at a large scale the outlines must agree closely.
+#[test]
+fn script_designs_match_at_a_large_scale() {
+    use mathema::render::layout::{BoxKind, LayoutBox, layout_expr};
+    use mathema::render::style::MathStyle;
+    // (The base glyph drawn instead differs by 2.1, 3.1 and 3.6%.)
+    for (tex, limit) in [
+        (r"x^{y^{z}}", 1.6),
+        (r"\text{T}_{\text{T}_{\text{T}}}", 2.2),
+        (r"a_{\Gamma_{\Gamma}}", 2.6),
+    ] {
+        let render = RenderOptions::default();
+        let parsed = mathema::from_latex(tex).unwrap();
+        let svg = mathema::render::render_to_svg_standalone_compact(parsed.compact_expr(), &render)
+            .unwrap();
+        let svg_img = rasterize_svg(&svg, 4.0).expect("resvg should rasterize");
+        let ropts = RasterOptions {
+            render: render.clone(),
+            format: ImageFormat::Png,
+            scale: 4.0,
+            background: Some([255, 255, 255, 255]),
+            quality: 90,
+        };
+        let png_img = decode_png(&parsed.to_png_with(&ropts).unwrap()).expect("decode png");
+        let diff = compare(&svg_img, &png_img);
+        assert!(diff < limit, "{tex}: SVG vs PNG differ by {diff:.3}%");
+        // The innermost script is in the designs for scripts of scripts.
+        fn fonts(b: &LayoutBox, out: &mut Vec<String>) {
+            match &b.kind {
+                BoxKind::Glyph { font, .. } => out.push(format!("{font:?}")),
+                BoxKind::HBox { children } | BoxKind::VBox { children } => {
+                    for child in children {
+                        fonts(&child.layout, out);
+                    }
+                },
+                _ => {},
+            }
+        }
+        let mut found = Vec::new();
+        fonts(
+            &layout_expr(&parsed.expr(), MathStyle::Text, &render),
+            &mut found,
+        );
+        assert_eq!(
+            found.last().map(String::as_str),
+            Some("MathScriptScript"),
+            "{tex}"
+        );
+    }
+}

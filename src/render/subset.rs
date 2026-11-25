@@ -347,6 +347,26 @@ mod tests {
             .collect()
     }
 
+    /// A character in a script is collected in its design for scripts only, and
+    /// its outline is that design.
+    #[test]
+    fn script_designs_are_collected_alone() {
+        let expr = crate::from_latex("x^{y^{z}}").unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Text, &RenderOptions::default());
+        let chars = collect_chars(&root);
+        let (y, z) = ('\u{1D466}', '\u{1D467}');
+        assert!(chars.contains(&(FontId::MathScript, y)), "{chars:?}");
+        assert!(chars.contains(&(FontId::MathScriptScript, z)), "{chars:?}");
+        assert!(!chars.contains(&(FontId::Math, y)), "{chars:?}");
+        assert!(!chars.contains(&(FontId::Math, z)), "{chars:?}");
+        let set = build_glyph_set(&chars);
+        let (outline, font, _) = set.outline(FontId::MathScriptScript, z).unwrap();
+        assert_eq!(font, FontId::MathScriptScript);
+        let base = crate::render::font_embed::extract_glyph(FontId::Math, z).unwrap();
+        assert_ne!(format!("{outline:?}"), format!("{base:?}"));
+        assert!(set.outline(FontId::Math, z).is_none());
+    }
+
     #[test]
     fn collect_chars_finds_glyphs() {
         let expr = MathExpr::inline(vec![
