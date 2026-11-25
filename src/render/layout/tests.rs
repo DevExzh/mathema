@@ -546,6 +546,40 @@ fn small_fractions_are_spaced_as_scripts() {
     }
 }
 
+/// An invisible operator is drawn as nothing and is no atom.
+#[test]
+fn invisible_operators_have_no_space() {
+    let width = |nodes: &str| {
+        let expr = crate::from_mathml(&format!("<math>{nodes}</math>"))
+            .unwrap()
+            .expr();
+        let options = default_options();
+        let compact = crate::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+        let mut arena = LayoutArena::new();
+        assert_eq!(
+            crate::render::render_to_svg(&expr, &options).unwrap(),
+            crate::render::render_to_svg_compact_arena(&compact, &options, &mut arena).unwrap()
+        );
+        layout_expr(&expr, MathStyle::Text, &options).width
+    };
+    for (before, after) in [
+        ("<mo>sin</mo>", "<mo>(</mo><mi>x</mi><mo>)</mo>"),
+        ("<mo>sin</mo>", "<mi>x</mi>"),
+        ("<mi>a</mi><mo>+</mo>", "<mi>x</mi>"),
+        ("<mi>a</mi><mo>+</mo>", "<mo>=</mo>"),
+        ("<mi>a</mi><mo>+</mo>", ""),
+    ] {
+        let plain = width(&format!("{before}{after}"));
+        for entity in ["2061", "2062", "2063", "2064"] {
+            let invisible = width(&format!("{before}<mo>&#x{entity};</mo>{after}"));
+            assert!(
+                (invisible - plain).abs() < 1e-9,
+                "{before}{entity}{after}: {invisible}, not {plain}"
+            );
+        }
+    }
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {

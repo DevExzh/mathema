@@ -61,14 +61,31 @@ fn mark_atom(text: &str) -> Option<AtomType> {
         .map(accent_atom)
 }
 
-/// Spaces are no atoms: the ones on their sides are still adjacent.
+/// Spaces and invisible operators are no atoms: the ones on their sides are still
+/// adjacent.
 pub(super) fn is_space(node: &MathNode) -> bool {
-    matches!(node, MathNode::Space(_) | MathNode::ExplicitSpace { .. })
+    match node {
+        MathNode::Space(_) | MathNode::ExplicitSpace { .. } => true,
+        MathNode::Symbol(_, text) => is_invisible(text),
+        _ => false,
+    }
+}
+
+fn is_invisible(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some('\u{2061}'..='\u{2064}'), None)
+    )
 }
 
 /// Compact-AST version of `is_space`.
 pub(super) fn is_space_c(arena: &AstArena, id: NodeId) -> bool {
-    matches!(arena.node(id), CompactNode::Space(_))
+    match *arena.node(id) {
+        CompactNode::Space(_) => true,
+        CompactNode::Symbol(_, text) => is_invisible(arena.str_val(text)),
+        _ => false,
+    }
 }
 
 /// The atom of the first of `nodes`, which a list ends with. TeX reads a binary

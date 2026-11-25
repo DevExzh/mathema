@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fractions does not shrink in scripts.
 - Rendering: fractions in text are spaced as scripts are, without spaces around
   operators and relations.
+- Rendering: the invisible operators U+2061 to U+2064 take no space, so a function
+  applied to a parenthesis has none.
 - Rendering: the left-aligned columns of `aligned`, `align`, `split` and the like
   start with an ordinary atom, as in amsmath: `a &= b` has a space before `=`.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over
