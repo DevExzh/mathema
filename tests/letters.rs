@@ -137,3 +137,29 @@ fn letters_of_operator_names() {
         assert!(format!("{normalized:?}").contains(r#"Identifier("lim")"#));
     }
 }
+
+/// The heap route spells letters as the compact one does.
+#[test]
+fn heap_and_compact_agree_on_letters() {
+    use mathema::writer::{Writer, mathml::MathmlWriter};
+    let config = mathema::Config::default();
+    for source in [
+        r"\mathrm{kr}x",
+        r"\mathit{kr}",
+        r"\mathbf{k\mathrm{r}}",
+        r"\varinjlim kr",
+    ] {
+        let read = mathema::from_latex(source).unwrap();
+        let mut heap = read.expr();
+        let mut compact = read.compact_expr().clone();
+        for _ in 0..2 {
+            assert_eq!(
+                MathmlWriter::write(&heap, &config).unwrap(),
+                <MathmlWriter as Writer>::write_compact(&compact, &config).unwrap(),
+                "{source}"
+            );
+            mathema::ast::normalize::normalize_expr(&mut heap);
+            mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        }
+    }
+}
