@@ -537,34 +537,36 @@ pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCt
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Check if base is an extensible arrow
+    // An extensible arrow with a label that does not fit on the glyph.
+    let mut label = None;
     if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
         let over_ctx = ctx.with_style(ctx.style.sup());
         let over_box = layout_node(over, &over_ctx);
-        let padding = 0.5 * size;
-        let min_width = 1.75 * size;
-        let arrow_w = over_box.width.max(min_width) + padding;
-        let arrow_box = make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
-        let arrow_d = arrow_box.depth;
+        if let Some(arrow_w) = extensible_arrow_width(arrow_ch, over_box.width, size) {
+            let arrow_box =
+                make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+            let arrow_d = arrow_box.depth;
 
-        let gap = p.big_op_spacing[2] * size;
-        let max_w = arrow_box.width.max(over_box.width);
-        let base_dx = (max_w - arrow_box.width) / 2.0;
-        let over_dx = (max_w - over_box.width) / 2.0;
-        let over_dy = arrow_box.height + gap + over_box.depth;
-        let over_h = over_box.height;
+            let gap = p.big_op_spacing[2] * size;
+            let max_w = arrow_box.width.max(over_box.width);
+            let base_dx = (max_w - arrow_box.width) / 2.0;
+            let over_dx = (max_w - over_box.width) / 2.0;
+            let over_dy = arrow_box.height + gap + over_box.depth;
+            let over_h = over_box.height;
 
-        let children = vec![
-            PositionedBox::new(base_dx, 0.0, arrow_box),
-            PositionedBox::new(over_dx, over_dy, over_box),
-        ];
+            let children = vec![
+                PositionedBox::new(base_dx, 0.0, arrow_box),
+                PositionedBox::new(over_dx, over_dy, over_box),
+            ];
 
-        return LayoutBox {
-            width: max_w,
-            height: over_dy + over_h,
-            depth: arrow_d,
-            kind: BoxKind::VBox { children },
-        };
+            return LayoutBox {
+                width: max_w,
+                height: over_dy + over_h,
+                depth: arrow_d,
+                kind: BoxKind::VBox { children },
+            };
+        }
+        label = Some(over_box);
     }
 
     let base_box = layout_node(base, ctx);
@@ -577,8 +579,11 @@ pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCt
             sym == "\u{203E}",
         )
     } else {
-        let over_ctx = ctx.with_style(ctx.style.sup());
-        (layout_node(over, &over_ctx), false)
+        let over_box = label.unwrap_or_else(|| {
+            let over_ctx = ctx.with_style(ctx.style.sup());
+            layout_node(over, &over_ctx)
+        });
+        (over_box, false)
     };
 
     // KaTeX Rule 9: overline uses 3 × defaultRuleThickness gap
@@ -594,34 +599,36 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Check if base is an extensible arrow
+    // An extensible arrow with a label that does not fit on the glyph.
+    let mut label = None;
     if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_box = layout_node(under, &under_ctx);
-        let padding = 0.5 * size;
-        let min_width = 1.75 * size;
-        let arrow_w = under_box.width.max(min_width) + padding;
-        let arrow_box = make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
-        let arrow_a = arrow_box.height;
+        if let Some(arrow_w) = extensible_arrow_width(arrow_ch, under_box.width, size) {
+            let arrow_box =
+                make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+            let arrow_a = arrow_box.height;
 
-        let gap = p.big_op_spacing[4] * size;
-        let max_w = arrow_box.width.max(under_box.width);
-        let base_dx = (max_w - arrow_box.width) / 2.0;
-        let under_dx = (max_w - under_box.width) / 2.0;
-        let under_dy = arrow_box.depth + gap + under_box.height;
-        let under_d = under_box.depth;
+            let gap = p.big_op_spacing[4] * size;
+            let max_w = arrow_box.width.max(under_box.width);
+            let base_dx = (max_w - arrow_box.width) / 2.0;
+            let under_dx = (max_w - under_box.width) / 2.0;
+            let under_dy = arrow_box.depth + gap + under_box.height;
+            let under_d = under_box.depth;
 
-        let children = vec![
-            PositionedBox::new(base_dx, 0.0, arrow_box),
-            PositionedBox::new(under_dx, -under_dy, under_box),
-        ];
+            let children = vec![
+                PositionedBox::new(base_dx, 0.0, arrow_box),
+                PositionedBox::new(under_dx, -under_dy, under_box),
+            ];
 
-        return LayoutBox {
-            width: max_w,
-            height: arrow_a,
-            depth: under_dy + under_d,
-            kind: BoxKind::VBox { children },
-        };
+            return LayoutBox {
+                width: max_w,
+                height: arrow_a,
+                depth: under_dy + under_d,
+                kind: BoxKind::VBox { children },
+            };
+        }
+        label = Some(under_box);
     }
 
     let base_box = layout_node(base, ctx);
@@ -631,8 +638,11 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
     let under_box = if let Some(sym) = get_stretchy_overunder_sym(under) {
         make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
     } else {
-        let under_ctx = ctx.with_style(ctx.style.sub());
-        layout_node(under, &under_ctx)
+        let under_box = label.unwrap_or_else(|| {
+            let under_ctx = ctx.with_style(ctx.style.sub());
+            layout_node(under, &under_ctx)
+        });
+        under_box
     };
 
     let gap = p.big_op_spacing[4] * size;
@@ -675,42 +685,46 @@ pub(super) fn layout_underover(
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Check if base is an extensible arrow
+    // An extensible arrow with a label that does not fit on the glyph.
+    let mut label = None;
     if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
         let over_ctx = ctx.with_style(ctx.style.sup());
         let over_box = layout_node(over, &over_ctx);
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_box = layout_node(under, &under_ctx);
-        let padding = 0.5 * size;
-        let min_width = 1.75 * size;
-        let content_w = over_box.width.max(under_box.width);
-        let arrow_w = content_w.max(min_width) + padding;
-        let arrow_box = make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+        if let Some(arrow_w) =
+            extensible_arrow_width(arrow_ch, over_box.width.max(under_box.width), size)
+        {
+            let arrow_box =
+                make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
 
-        let gap_above = p.big_op_spacing[2] * size;
-        let gap_below = p.big_op_spacing[4] * size;
-        let max_w = arrow_box.width.max(over_box.width).max(under_box.width);
-        let base_dx = (max_w - arrow_box.width) / 2.0;
-        let over_dx = (max_w - over_box.width) / 2.0;
-        let under_dx = (max_w - under_box.width) / 2.0;
-        let over_dy = arrow_box.height + gap_above + over_box.depth;
-        let under_dy = arrow_box.depth + gap_below + under_box.height;
-        let over_h = over_box.height;
-        let under_d = under_box.depth;
+            let gap_above = p.big_op_spacing[2] * size;
+            let gap_below = p.big_op_spacing[4] * size;
+            let max_w = arrow_box.width.max(over_box.width).max(under_box.width);
+            let base_dx = (max_w - arrow_box.width) / 2.0;
+            let over_dx = (max_w - over_box.width) / 2.0;
+            let under_dx = (max_w - under_box.width) / 2.0;
+            let over_dy = arrow_box.height + gap_above + over_box.depth;
+            let under_dy = arrow_box.depth + gap_below + under_box.height;
+            let over_h = over_box.height;
+            let under_d = under_box.depth;
 
-        let children = vec![
-            PositionedBox::new(over_dx, over_dy, over_box),
-            PositionedBox::new(base_dx, 0.0, arrow_box),
-            PositionedBox::new(under_dx, -under_dy, under_box),
-        ];
+            let children = vec![
+                PositionedBox::new(over_dx, over_dy, over_box),
+                PositionedBox::new(base_dx, 0.0, arrow_box),
+                PositionedBox::new(under_dx, -under_dy, under_box),
+            ];
 
-        return LayoutBox {
-            width: max_w,
-            height: over_dy + over_h,
-            depth: under_dy + under_d,
-            kind: BoxKind::VBox { children },
-        };
+            return LayoutBox {
+                width: max_w,
+                height: over_dy + over_h,
+                depth: under_dy + under_d,
+                kind: BoxKind::VBox { children },
+            };
+        }
+        label = Some((over_box, under_box));
     }
+    let (label_over, label_under) = label.unzip();
 
     let base_box = layout_node(base, ctx);
     let base_w = base_box.width;
@@ -721,8 +735,11 @@ pub(super) fn layout_underover(
             sym == "\u{203E}",
         )
     } else {
-        let over_ctx = ctx.with_style(ctx.style.sup());
-        (layout_node(over, &over_ctx), false)
+        let over_box = label_over.unwrap_or_else(|| {
+            let over_ctx = ctx.with_style(ctx.style.sup());
+            layout_node(over, &over_ctx)
+        });
+        (over_box, false)
     };
 
     let (under_box, is_under_line) = if let Some(sym) = get_stretchy_overunder_sym(under) {
@@ -731,8 +748,11 @@ pub(super) fn layout_underover(
             sym == "\u{203E}",
         )
     } else {
-        let under_ctx = ctx.with_style(ctx.style.sub());
-        (layout_node(under, &under_ctx), false)
+        let under_box = label_under.unwrap_or_else(|| {
+            let under_ctx = ctx.with_style(ctx.style.sub());
+            layout_node(under, &under_ctx)
+        });
+        (under_box, false)
     };
 
     let gap_above = if is_over_line {
@@ -1233,7 +1253,8 @@ pub(super) fn layout_overscript_arena(
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Check if base is an extensible arrow
+    // An extensible arrow with a label that does not fit on the glyph.
+    let mut label = None;
     if let Some(arrow_ch) = get_extensible_arrow_c(ast, base) {
         let over_ctx = ctx.with_style(ctx.style.sup());
         let over_id = layout_node_arena(ast, over, arena, &over_ctx);
@@ -1241,42 +1262,43 @@ pub(super) fn layout_overscript_arena(
         let over_h = arena.get(over_id).height;
         let over_d = arena.get(over_id).depth;
 
-        let padding = 0.5 * size;
-        let min_width = 1.75 * size;
-        let arrow_w = over_w.max(min_width) + padding;
-        let (_aw, arrow_a, arrow_d) = extensible_arrow_dims(arrow_w, size, p.axis_height * size);
-        let arrow_id = arena.alloc(ArenaLayoutBox {
-            width: arrow_w,
-            height: arrow_a,
-            depth: arrow_d,
-            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
-        });
+        if let Some(arrow_w) = extensible_arrow_width(arrow_ch, over_w, size) {
+            let (_aw, arrow_a, arrow_d) =
+                extensible_arrow_dims(arrow_w, size, p.axis_height * size);
+            let arrow_id = arena.alloc(ArenaLayoutBox {
+                width: arrow_w,
+                height: arrow_a,
+                depth: arrow_d,
+                kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
+            });
 
-        let gap = p.big_op_spacing[2] * size;
-        let max_w = arrow_w.max(over_w);
-        let base_dx = (max_w - arrow_w) / 2.0;
-        let over_dx = (max_w - over_w) / 2.0;
-        let over_dy = arrow_a + gap + over_d;
+            let gap = p.big_op_spacing[2] * size;
+            let max_w = arrow_w.max(over_w);
+            let base_dx = (max_w - arrow_w) / 2.0;
+            let over_dx = (max_w - over_w) / 2.0;
+            let over_dy = arrow_a + gap + over_d;
 
-        let children_start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox {
-            dx: base_dx,
-            dy: 0.0,
-            id: arrow_id,
-        });
-        arena.push_child(ArenaPositionedBox {
-            dx: over_dx,
-            dy: over_dy,
-            id: over_id,
-        });
-        let children = arena.finish_children(children_start);
+            let children_start = arena.begin_children();
+            arena.push_child(ArenaPositionedBox {
+                dx: base_dx,
+                dy: 0.0,
+                id: arrow_id,
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: over_dx,
+                dy: over_dy,
+                id: over_id,
+            });
+            let children = arena.finish_children(children_start);
 
-        return arena.alloc(ArenaLayoutBox {
-            width: max_w,
-            height: over_dy + over_h,
-            depth: arrow_d,
-            kind: ArenaBoxKind::VBox { children },
-        });
+            return arena.alloc(ArenaLayoutBox {
+                width: max_w,
+                height: over_dy + over_h,
+                depth: arrow_d,
+                kind: ArenaBoxKind::VBox { children },
+            });
+        }
+        label = Some(over_id);
     }
 
     let base_id = layout_node_arena(ast, base, arena, ctx);
@@ -1297,8 +1319,11 @@ pub(super) fn layout_overscript_arena(
             sym == "\u{203E}",
         )
     } else {
-        let over_ctx = ctx.with_style(ctx.style.sup());
-        (layout_node_arena(ast, over, arena, &over_ctx), false)
+        let over_box = label.unwrap_or_else(|| {
+            let over_ctx = ctx.with_style(ctx.style.sup());
+            layout_node_arena(ast, over, arena, &over_ctx)
+        });
+        (over_box, false)
     };
 
     let gap = if is_line_accent {
@@ -1319,7 +1344,8 @@ pub(super) fn layout_underscript_arena(
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Check if base is an extensible arrow
+    // An extensible arrow with a label that does not fit on the glyph.
+    let mut label = None;
     if let Some(arrow_ch) = get_extensible_arrow_c(ast, base) {
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_id = layout_node_arena(ast, under, arena, &under_ctx);
@@ -1327,42 +1353,43 @@ pub(super) fn layout_underscript_arena(
         let under_h = arena.get(under_id).height;
         let under_d = arena.get(under_id).depth;
 
-        let padding = 0.5 * size;
-        let min_width = 1.75 * size;
-        let arrow_w = under_w.max(min_width) + padding;
-        let (_aw, arrow_a, arrow_d) = extensible_arrow_dims(arrow_w, size, p.axis_height * size);
-        let arrow_id = arena.alloc(ArenaLayoutBox {
-            width: arrow_w,
-            height: arrow_a,
-            depth: arrow_d,
-            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
-        });
+        if let Some(arrow_w) = extensible_arrow_width(arrow_ch, under_w, size) {
+            let (_aw, arrow_a, arrow_d) =
+                extensible_arrow_dims(arrow_w, size, p.axis_height * size);
+            let arrow_id = arena.alloc(ArenaLayoutBox {
+                width: arrow_w,
+                height: arrow_a,
+                depth: arrow_d,
+                kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
+            });
 
-        let gap = p.big_op_spacing[4] * size;
-        let max_w = arrow_w.max(under_w);
-        let base_dx = (max_w - arrow_w) / 2.0;
-        let under_dx = (max_w - under_w) / 2.0;
-        let under_dy = arrow_d + gap + under_h;
+            let gap = p.big_op_spacing[4] * size;
+            let max_w = arrow_w.max(under_w);
+            let base_dx = (max_w - arrow_w) / 2.0;
+            let under_dx = (max_w - under_w) / 2.0;
+            let under_dy = arrow_d + gap + under_h;
 
-        let children_start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox {
-            dx: base_dx,
-            dy: 0.0,
-            id: arrow_id,
-        });
-        arena.push_child(ArenaPositionedBox {
-            dx: under_dx,
-            dy: -under_dy,
-            id: under_id,
-        });
-        let children = arena.finish_children(children_start);
+            let children_start = arena.begin_children();
+            arena.push_child(ArenaPositionedBox {
+                dx: base_dx,
+                dy: 0.0,
+                id: arrow_id,
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: under_dx,
+                dy: -under_dy,
+                id: under_id,
+            });
+            let children = arena.finish_children(children_start);
 
-        return arena.alloc(ArenaLayoutBox {
-            width: max_w,
-            height: arrow_a,
-            depth: under_dy + under_d,
-            kind: ArenaBoxKind::VBox { children },
-        });
+            return arena.alloc(ArenaLayoutBox {
+                width: max_w,
+                height: arrow_a,
+                depth: under_dy + under_d,
+                kind: ArenaBoxKind::VBox { children },
+            });
+        }
+        label = Some(under_id);
     }
 
     let base_id = layout_node_arena(ast, base, arena, ctx);
@@ -1379,8 +1406,11 @@ pub(super) fn layout_underscript_arena(
             kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
         })
     } else {
-        let under_ctx = ctx.with_style(ctx.style.sub());
-        layout_node_arena(ast, under, arena, &under_ctx)
+        let under_box = label.unwrap_or_else(|| {
+            let under_ctx = ctx.with_style(ctx.style.sub());
+            layout_node_arena(ast, under, arena, &under_ctx)
+        });
+        under_box
     };
 
     let gap = p.big_op_spacing[4] * size;
@@ -1438,7 +1468,8 @@ pub(super) fn layout_underover_arena(
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Check if base is an extensible arrow
+    // An extensible arrow with a label that does not fit on the glyph.
+    let mut label = None;
     if let Some(arrow_ch) = get_extensible_arrow_c(ast, base) {
         let over_ctx = ctx.with_style(ctx.style.sup());
         let over_id = layout_node_arena(ast, over, arena, &over_ctx);
@@ -1452,52 +1483,53 @@ pub(super) fn layout_underover_arena(
         let under_h = arena.get(under_id).height;
         let under_d = arena.get(under_id).depth;
 
-        let padding = 0.5 * size;
-        let min_width = 1.75 * size;
-        let content_w = over_w.max(under_w);
-        let arrow_w = content_w.max(min_width) + padding;
-        let (_aw, arrow_a, arrow_d) = extensible_arrow_dims(arrow_w, size, p.axis_height * size);
-        let arrow_id = arena.alloc(ArenaLayoutBox {
-            width: arrow_w,
-            height: arrow_a,
-            depth: arrow_d,
-            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
-        });
+        if let Some(arrow_w) = extensible_arrow_width(arrow_ch, over_w.max(under_w), size) {
+            let (_aw, arrow_a, arrow_d) =
+                extensible_arrow_dims(arrow_w, size, p.axis_height * size);
+            let arrow_id = arena.alloc(ArenaLayoutBox {
+                width: arrow_w,
+                height: arrow_a,
+                depth: arrow_d,
+                kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
+            });
 
-        let gap_above = p.big_op_spacing[2] * size;
-        let gap_below = p.big_op_spacing[4] * size;
-        let max_w = arrow_w.max(over_w).max(under_w);
-        let base_dx = (max_w - arrow_w) / 2.0;
-        let over_dx = (max_w - over_w) / 2.0;
-        let under_dx = (max_w - under_w) / 2.0;
-        let over_dy = arrow_a + gap_above + over_d;
-        let under_dy = arrow_d + gap_below + under_h;
+            let gap_above = p.big_op_spacing[2] * size;
+            let gap_below = p.big_op_spacing[4] * size;
+            let max_w = arrow_w.max(over_w).max(under_w);
+            let base_dx = (max_w - arrow_w) / 2.0;
+            let over_dx = (max_w - over_w) / 2.0;
+            let under_dx = (max_w - under_w) / 2.0;
+            let over_dy = arrow_a + gap_above + over_d;
+            let under_dy = arrow_d + gap_below + under_h;
 
-        let children_start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox {
-            dx: over_dx,
-            dy: over_dy,
-            id: over_id,
-        });
-        arena.push_child(ArenaPositionedBox {
-            dx: base_dx,
-            dy: 0.0,
-            id: arrow_id,
-        });
-        arena.push_child(ArenaPositionedBox {
-            dx: under_dx,
-            dy: -under_dy,
-            id: under_id,
-        });
-        let children = arena.finish_children(children_start);
+            let children_start = arena.begin_children();
+            arena.push_child(ArenaPositionedBox {
+                dx: over_dx,
+                dy: over_dy,
+                id: over_id,
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: base_dx,
+                dy: 0.0,
+                id: arrow_id,
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: under_dx,
+                dy: -under_dy,
+                id: under_id,
+            });
+            let children = arena.finish_children(children_start);
 
-        return arena.alloc(ArenaLayoutBox {
-            width: max_w,
-            height: over_dy + over_h,
-            depth: under_dy + under_d,
-            kind: ArenaBoxKind::VBox { children },
-        });
+            return arena.alloc(ArenaLayoutBox {
+                width: max_w,
+                height: over_dy + over_h,
+                depth: under_dy + under_d,
+                kind: ArenaBoxKind::VBox { children },
+            });
+        }
+        label = Some((over_id, under_id));
     }
+    let (label_over, label_under) = label.unzip();
 
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
@@ -1518,8 +1550,11 @@ pub(super) fn layout_underover_arena(
             sym == "\u{203E}",
         )
     } else {
-        let over_ctx = ctx.with_style(ctx.style.sup());
-        (layout_node_arena(ast, over, arena, &over_ctx), false)
+        let over_box = label_over.unwrap_or_else(|| {
+            let over_ctx = ctx.with_style(ctx.style.sup());
+            layout_node_arena(ast, over, arena, &over_ctx)
+        });
+        (over_box, false)
     };
 
     let (under_id, is_under_line) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
@@ -1535,8 +1570,11 @@ pub(super) fn layout_underover_arena(
             sym == "\u{203E}",
         )
     } else {
-        let under_ctx = ctx.with_style(ctx.style.sub());
-        (layout_node_arena(ast, under, arena, &under_ctx), false)
+        let under_box = label_under.unwrap_or_else(|| {
+            let under_ctx = ctx.with_style(ctx.style.sub());
+            layout_node_arena(ast, under, arena, &under_ctx)
+        });
+        (under_box, false)
     };
 
     let over_w = arena.get(over_id).width;

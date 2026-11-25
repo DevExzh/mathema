@@ -55,6 +55,24 @@ pub(super) fn get_extensible_arrow_heap(node: &MathNode) -> Option<char> {
 /// centered on the math axis with this much head on each side of the shaft.
 pub(super) const ARROW_HEAD_HALF_W_EM: f64 = 0.21;
 
+/// How far an arrow reaches past its label (amsmath's `\xrightarrow`).
+const ARROW_LABEL_PADDING_EM: f64 = 0.545;
+
+/// The width an arrow is drawn at for a label, unless the label fits on the
+/// glyph. The tree does not tell `\xrightarrow{f}` from `\overset{f}{\to}`, nor
+/// `\xlongequal` from `\overset{!}{=}`, which do not differ for a short label: an
+/// equals sign, usually an `\overset`, is drawn wider for a long one only.
+pub(super) fn extensible_arrow_width(ch: char, label: f64, size: f64) -> Option<f64> {
+    let width = label + ARROW_LABEL_PADDING_EM * size;
+    let natural = metrics::glyph_metrics_upright(ch).advance() * size;
+    let fits = if ch == '=' {
+        label <= 2.0 * natural + 1e-9
+    } else {
+        width <= natural + 1e-9
+    };
+    (!fits).then_some(width)
+}
+
 /// Build the box for an extensible arrow of the given char and total width,
 /// centered on the math axis. Shared by the heap and compact layout paths
 /// (both use `LayoutBox`); the arena path uses [`extensible_arrow_dims`].

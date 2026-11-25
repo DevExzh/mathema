@@ -296,6 +296,45 @@ fn atoms_are_spaced_as_in_tex() {
     }
 }
 
+/// A label that fits on an arrow or an equals sign does not stretch it.
+#[test]
+fn labels_stretch_what_they_do_not_fit_on() {
+    let drawn = |latex: &str| {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        (root.width, format!("{root:?}").contains("SvgPath"))
+    };
+    // As in XeTeX with Latin Modern Math.
+    for (latex, width) in [
+        ("\\overset{!}{=}", 0.778),
+        ("\\overset{\\text{def}}{=}", 0.914),
+        ("\\stackrel{?}{=}", 0.778),
+        ("\\xlongequal[a]{b}", 0.778),
+        ("\\overset{f}{\\rightarrow}", 1.0),
+        ("\\xrightarrow{f}", 1.0),
+        ("\\xrightarrow[g]{f}", 1.0),
+        ("\\underset{n}{\\to}", 1.0),
+        ("\\overset{f}{\\mapsto}", 0.977),
+    ] {
+        let (actual, stretched) = drawn(latex);
+        assert!((actual - width).abs() < 2e-3, "{latex}: {actual}");
+        assert!(!stretched, "{latex}");
+    }
+    let label = drawn("\\scriptstyle abcdefghij").0;
+    for latex in [
+        "\\xrightarrow{abcdefghij}",
+        "\\xrightarrow[abcdefghij]{f}",
+        "\\xrightarrow[f]{abcdefghij}",
+        "\\underset{abcdefghij}{\\to}",
+        "\\xlongequal{abcdefghij}",
+    ] {
+        let (actual, stretched) = drawn(latex);
+        assert!((actual - label - 0.545).abs() < 1e-6, "{latex}: {actual}");
+        assert!(stretched, "{latex}");
+    }
+}
+
 /// A `\\middle` closes what is before it and opens what is after.
 #[test]
 fn middle_delimiters_have_no_space() {

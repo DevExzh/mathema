@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the line inner ones, spaces do not hide the atoms on their sides from each
   other, what follows a big operator is spaced against its operand, `\middle`
   has no space around it, and `\colon` has amsmath's.
+- Rendering: an arrow or equals sign is drawn at its natural width under or over
+  a label that fits (`\overset{!}{=}`, `\xrightarrow{f}`), not 2.25em wide.
 - Rendering: a letter's box includes its italic correction, as in TeX, so `T)`,
   `f_1` and `\frac{V}{Y}` no longer collide. A superscript (primes too) follows
   the correction, a subscript does not, and that of an integral sits under its
