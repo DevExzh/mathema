@@ -345,6 +345,9 @@ pub(super) struct Decoder<'a> {
     sizes_at: Option<usize>,
     /// The sizes there, read when first asked for.
     preferences: std::cell::OnceCell<Box<Preferences>>,
+    /// The leaves drawn bold or italic, each with a spare node for the leaf
+    /// and the style around it.
+    styled_leaves: Vec<(NodeId, NodeId, TextStyle)>,
     /// The colour each colour node was painted with, in the order of nodes.
     painted: Vec<(NodeId, Option<u16>)>,
     /// The marks of the prime rows of the line being assembled, which get
@@ -394,6 +397,7 @@ impl<'a> Decoder<'a> {
             met_full: std::cell::Cell::new(false),
             sizes_at: None,
             preferences: std::cell::OnceCell::new(),
+            styled_leaves: Vec::new(),
             painted: Vec::new(),
             open_primes: HashMap::new(),
             spliced: 0,
@@ -664,7 +668,40 @@ impl<'a> Decoder<'a> {
         if let Some(rare) = self.rare_sizes.take() {
             self.settle_rare_sizes(*rare);
         }
+        self.style_leaves()?;
         Ok(line)
+    }
+
+    /// Note the style a number or symbol is drawn in. It is put around the
+    /// leaf once the equation is complete, so that the leaf is found as one
+    /// until then.
+    fn set_leaf_style(&mut self, id: NodeId, glyph: &Glyph) -> Result<()> {
+        let Some(style) = leaf_style(glyph) else {
+            return Ok(());
+        };
+        let spare = self.node(*self.arena.node(id))?;
+        let height = &mut self.heights[id.index()];
+        *height += 1;
+        if usize::from(*height) > self.max_depth {
+            return Err(Error::LimitExceeded {
+                kind: LimitKind::Depth,
+                limit: self.max_depth,
+            });
+        }
+        self.styled_leaves.push((id, spare, style));
+        Ok(())
+    }
+
+    fn style_leaves(&mut self) -> Result<()> {
+        for (id, spare, style) in std::mem::take(&mut self.styled_leaves) {
+            let leaf = *self.arena.node(id);
+            if matches!(leaf, CompactNode::Number(_) | CompactNode::Symbol(..)) {
+                *self.arena.node_mut(spare) = leaf;
+                let span = self.children(&[spare])?;
+                *self.arena.node_mut_in_place(id) = CompactNode::Styled(style, span);
+            }
+        }
+        Ok(())
     }
 
     /// Detect and validate an `EQNOLEFILEHDR` (cbHdr = 28 as a 16-bit value;
@@ -2275,6 +2312,7 @@ impl<'a> Decoder<'a> {
                                     && next.embells.is_empty()
                                     && next.ch.is_ascii_digit()
                                     && classify(next) == Class::Number
+                                    && leaf_style(next) == leaf_style(&glyph)
                                     && self.same_size(next, size)
                                 {
                                     // Equation Editor sets the point of a
@@ -2287,7 +2325,9 @@ impl<'a> Decoder<'a> {
                                     break;
                                 }
                             }
-                            self.str_node(&digits, CompactNode::Number)?
+                            let id = self.str_node(&digits, CompactNode::Number)?;
+                            self.set_leaf_style(id, &glyph)?;
+                            id
                         },
                         Class::Styled(style) => {
                             let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
@@ -3663,14 +3703,22 @@ impl<'a> Decoder<'a> {
                 // limit functions.
                 limits: LimitStyle::SubSup,
             }),
-            Class::Number => self.char_node(ch, CompactNode::Number),
+            Class::Number => {
+                let id = self.char_node(ch, CompactNode::Number)?;
+                self.set_leaf_style(id, glyph)?;
+                Ok(id)
+            },
             Class::Ident => self.char_node(ch, CompactNode::Identifier),
             Class::Styled(style) => {
                 let inner = self.plain_char_node(ch)?;
                 let span = self.children(&[inner])?;
                 self.node(CompactNode::Styled(style, span))
             },
-            Class::Symbol(kind) => self.char_node(ch, |s| CompactNode::Symbol(kind, s)),
+            Class::Symbol(kind) => {
+                let id = self.char_node(ch, |s| CompactNode::Symbol(kind, s))?;
+                self.set_leaf_style(id, glyph)?;
+                Ok(id)
+            },
             Class::Space(width) => {
                 self.has_zero_spaces |= width == Rational::zero();
                 self.node(CompactNode::Space(width))
@@ -3869,6 +3917,19 @@ fn classify(glyph: &Glyph) -> Class {
         _ if ch.is_ascii_digit() => Class::Number,
         _ if ch.is_alphabetic() => Class::Ident,
         _ => Class::Symbol(chars::symbol_kind(ch)),
+    }
+}
+
+/// The style of a number or symbol drawn bold in an explicit font.
+///
+/// Symbols are as `\boldsymbol` sets them: `\mathbf` is for letters and digits.
+fn leaf_style(glyph: &Glyph) -> Option<TextStyle> {
+    if !glyph.explicit?.bold {
+        None
+    } else if glyph.ch.is_ascii_digit() {
+        Some(TextStyle::Bold)
+    } else {
+        chars::is_bold_symbol(glyph.ch).then_some(TextStyle::BoldItalic)
     }
 }
 

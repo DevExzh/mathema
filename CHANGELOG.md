@@ -103,6 +103,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept and drawn relative to an assumed 12 pt.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
+- MTEF reader and writer: digits, and the symbols `+ - = < > ( ) [ ] / , . : ; ! * | %`,
+  in a bold explicit font are bold (`\mathbf{1}`, `\boldsymbol{+}`), as the
+  pictures of equations draw them. MTEF is written so for `\mathbf` around a
+  number of several digits and for `\boldsymbol` around these symbols.
 - MTEF writer: smashed content (`\smash`, `\smash[b]`, `\smash[t]`) is written,
   with an `Info` diagnostic that its height is not kept; it was dropped. A
   dropped `\vphantom`, which draws nothing, is an `Info` and no longer a warning.

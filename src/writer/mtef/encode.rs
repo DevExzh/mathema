@@ -27,7 +27,7 @@ use crate::ast::{
     Rational, SpanBoundary, StrokeKind, TextStyle, TypeSize,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
-use crate::reader::mtef::chars::negated;
+use crate::reader::mtef::chars::{is_bold_symbol, negated};
 
 // Record types (MTEFv3.md "Tag byte structure", MTEFv5.md "Record types").
 const END: u8 = 0;
@@ -252,6 +252,8 @@ pub(super) struct Encoder<'a> {
     /// The item count when the innermost `Styled` node began: its own
     /// letters continue one run and need no separator.
     styled_start: Option<usize>,
+    /// Whether a number is all that the innermost style is around.
+    lone_styled: bool,
     /// The style of an enclosing `Styled` node.
     style: Option<TextStyle>,
     /// MTEF 5 COLOR_DEF records written so far, as RGB components.
@@ -308,6 +310,7 @@ impl<'a> Encoder<'a> {
             alphabets: false,
             alphabet_typefaces: [[None; 2]; 2],
             styled_start: None,
+            lone_styled: false,
             style: None,
             colors: Vec::new(),
             color: None,
@@ -1340,6 +1343,9 @@ impl<'a> Encoder<'a> {
     fn leaf(&mut self, size: Size, kind: Leaf, sid: StrId) -> Result<()> {
         let arena = self.arena;
         let text = arena.str_val(sid);
+        if kind == Leaf::Number && self.style == Some(TextStyle::Bold) && self.lone_styled {
+            return self.bold_number(size, text);
+        }
         if kind == Leaf::Number {
             let joins = matches!(self.run_before(), Some(Run::Number(_)));
             self.decimal = text.contains('.') || joins && self.decimal;
@@ -1364,6 +1370,27 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 
+    /// A bold number of several digits, which is read back as one number in
+    /// an explicit font. The Vector-Matrix style is for letters.
+    fn bold_number(&mut self, size: Size, text: &str) -> Result<()> {
+        let typeface = self.explicit_font(1);
+        let run = Run::Number(typeface);
+        if self.run_before() == Some(run) {
+            self.space_code(size, chars::SPACE_ZERO)?;
+        }
+        self.decimal = text.contains('.');
+        let mut first = true;
+        for ch in text.chars() {
+            if std::mem::take(&mut first) {
+                self.first_glyph(size, Glyph::new(typeface, ch), Some(run), false)?;
+            } else {
+                self.glyph(size, Glyph::new(typeface, ch), false, &[])?;
+                self.set_run(Some(run));
+            }
+        }
+        Ok(())
+    }
+
     /// The glyph for one character of a leaf, and the run it continues.
     fn leaf_glyph(&mut self, kind: Leaf, ch: char) -> Result<(Glyph, Option<Run>)> {
         Ok(match kind {
@@ -1380,6 +1407,11 @@ impl<'a> Encoder<'a> {
                 // has no such flag, so adjacent names must be separated.
                 (!self.v5 && (ch.is_alphabetic() || ch == '\u{2009}')).then_some(Run::Function),
             ),
+            // As `\boldsymbol` sets it: bold, not italic.
+            Leaf::Symbol if self.style == Some(TextStyle::BoldItalic) && is_bold_symbol(ch) => {
+                let ch = if ch == '-' { '\u{2212}' } else { ch };
+                (Glyph::new(self.explicit_font(1), ch), None)
+            },
             Leaf::Symbol => (chars::symbol_glyph(ch), None),
             Leaf::Number if ch.is_ascii_digit() || ch == '.' => match self.style {
                 Some(TextStyle::Bold) if ch != '.' => {
@@ -1601,7 +1633,17 @@ impl<'a> Encoder<'a> {
         self.note_style(style);
         let outer = self.style.replace(style);
         let outer_start = self.styled_start.replace(self.items);
+        // A number the reader finds bold as a whole.
+        let lone = match *self.arena.children(span) {
+            [only] => match *self.arena.node(only) {
+                CompactNode::Number(s) => is_bold_number(self.arena.str_val(s)),
+                _ => false,
+            },
+            _ => false,
+        };
+        let outer_lone = std::mem::replace(&mut self.lone_styled, lone);
         let result = self.list(span, size);
+        self.lone_styled = outer_lone;
         self.style = outer;
         self.styled_start = outer_start;
         result
@@ -3271,4 +3313,14 @@ fn is_bracket_accent(glyph: char, position: AccentPosition) -> bool {
         (glyph, position),
         ('⎴', AccentPosition::Above) | ('⎵', AccentPosition::Below)
     )
+}
+
+/// Whether a number is of several digits, with a point only between digits:
+/// one the reader joins.
+fn is_bold_number(text: &str) -> bool {
+    text.len() > 1
+        && text.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && text.bytes().filter(|&b| b == b'.').count() <= 1
+        && !text.starts_with('.')
+        && !text.ends_with('.')
 }

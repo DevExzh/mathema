@@ -444,6 +444,32 @@ pub(crate) fn negated(ch: char) -> Option<char> {
     })
 }
 
+/// The symbols read and written as bold. The pictures of equations show these
+/// bold where the file says so; others are read without their weight.
+pub(crate) fn is_bold_symbol(ch: char) -> bool {
+    matches!(
+        ch,
+        '+' | '-'
+            | '\u{2212}'
+            | '='
+            | '<'
+            | '>'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '/'
+            | ','
+            | '.'
+            | ':'
+            | ';'
+            | '!'
+            | '*'
+            | '|'
+            | '%'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

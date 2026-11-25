@@ -291,7 +291,15 @@ impl Lowering<'_> {
             return content;
         }
         group.push(content);
-        let class = match *self.arena.node(content) {
+        // A bold symbol has the class of the symbol.
+        let symbol = match *self.arena.node(content) {
+            CompactNode::Styled(_, span) => match *self.arena.children(span) {
+                [only] if matches!(*self.arena.node(only), CompactNode::Symbol(..)) => only,
+                _ => content,
+            },
+            _ => content,
+        };
+        let class = match *self.arena.node(symbol) {
             CompactNode::Symbol(kind, _) => match kind {
                 SymbolKind::LargeOp => MathAtomType::Op,
                 SymbolKind::BinaryOp => MathAtomType::Bin,

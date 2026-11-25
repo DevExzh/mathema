@@ -2447,6 +2447,67 @@ fn font_records_give_bold_and_italic() {
     assert_eq!(equation(4, 2), r"\mathbf{x}");
 }
 
+/// Digits and symbols in a bold explicit font are bold, and rewriting keeps
+/// them so.
+#[test]
+fn digits_and_symbols_of_bold_fonts_are_bold() {
+    use crate::{MtefVersion, MtefWriteOptions};
+    let read = |style: u8, text: &str| {
+        let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, style];
+        data.extend_from_slice(b"Arial\0");
+        for code in text.encode_utf16() {
+            data.extend_from_slice(&[2, 127]);
+            data.extend_from_slice(&code.to_le_bytes());
+        }
+        data.extend_from_slice(&[0, 0]);
+        crate::from_mtef_bytes(&data).unwrap()
+    };
+    for (style, text, latex) in [
+        (0, "12.5", "12.5"),
+        (2, "12.5+", "12.5+"),
+        (1, "12.5", r"\mathbf{12.5}"),
+        (3, "12.5", r"\mathbf{12.5}"),
+        (1, "1\u{2212}2", r"\mathbf{1}\boldsymbol{-}\mathbf{2}"),
+        (1, "(7)", r"\boldsymbol{(}\mathbf{7}\boldsymbol{)}"),
+        // Not among the symbols the pictures were compared for.
+        (1, "\u{2264}", r"\leq"),
+    ] {
+        let result = read(style, text);
+        assert_eq!(result.to_latex().unwrap(), latex, "{style} {text}");
+        for version in [MtefVersion::V3, MtefVersion::V5] {
+            let bytes = result
+                .to_mtef_bytes(&MtefWriteOptions::new(version))
+                .unwrap();
+            let again = crate::from_mtef_bytes(&bytes).unwrap();
+            assert_eq!(
+                again.to_mathml().unwrap(),
+                result.to_mathml().unwrap(),
+                "{text}"
+            );
+        }
+    }
+}
+
+/// The style around a leaf counts as a node.
+#[test]
+fn bold_digits_respect_the_node_limit() {
+    let equation = |style: u8| {
+        let mut data = vec![3, 1, 1, 3, 0, 10, 1, 8, 1, style];
+        data.extend_from_slice(b"Arial\0");
+        data.extend_from_slice(&[2, 127, b'1', 0, 0, 0]);
+        data
+    };
+    let smallest = |style: u8| {
+        (1..20)
+            .find(|&nodes| {
+                let config = Config::default().with_max_nodes(Some(nodes));
+                crate::from_mtef_bytes_with(&equation(style), &config).is_ok()
+            })
+            .unwrap()
+    };
+    assert_eq!(smallest(1), smallest(0) + 1);
+}
+
 /// COLOR_DEF blue, black; COLOR `n` selects one.
 fn colours() -> Vec<u8> {
     vec![0x10, 0, 0, 0, 0, 0, 0xE8, 0x03, 0x10, 0, 0, 0, 0, 0, 0, 0]
