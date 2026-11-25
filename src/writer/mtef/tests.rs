@@ -1385,3 +1385,31 @@ fn an_apostrophe_before_a_function_name_or_in_text_needs_no_space() {
     let mtef = crate::convert(r"x\char`'sy", crate::Format::LaTeX, crate::Format::Mtef).unwrap();
     assert!(mtef.contains("9801ef"), "{mtef}");
 }
+
+#[test]
+fn smashed_content_is_written() {
+    use crate::{DiagnosticKind, MtefVersion, MtefWriteOptions};
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        let write = |latex: &str| {
+            let (bytes, diagnostics) = crate::from_latex(latex)
+                .unwrap()
+                .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(version))
+                .unwrap();
+            let kinds: Vec<_> = diagnostics.iter().map(|d| d.kind).collect();
+            let read = crate::from_mtef_bytes(&bytes).unwrap();
+            (read.to_latex().unwrap(), kinds)
+        };
+        for smash in [r"\smash", r"\smash[b]", r"\smash[t]"] {
+            let latex = format!(r"a{smash}{{\frac{{b}}{{c}}}}^{{2}}");
+            let (read, kinds) = write(&latex);
+            assert_eq!(read, r"a{\frac{b}{c}}^{2}", "{latex}");
+            assert_eq!(kinds, [DiagnosticKind::Info], "{latex}");
+        }
+        let info = (String::from("x"), vec![DiagnosticKind::Info]);
+        assert_eq!(write(r"x\vphantom{\frac{b}{c}}"), info);
+        for phantom in [r"\phantom", r"\hphantom"] {
+            let (read, kinds) = write(&format!("x{phantom}{{y}}"));
+            assert_eq!((read.as_str(), kinds), ("x", vec![DiagnosticKind::Warning]));
+        }
+    }
+}

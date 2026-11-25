@@ -23,8 +23,8 @@ use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::normalize::{can_take_prescripts, takes_limits};
 use crate::ast::style::MathStyle;
 use crate::ast::{
-    AccentPosition, ColumnAlign, DisplayStyle, FontSize, FractionKind, LimitStyle, Rational,
-    SpanBoundary, StrokeKind, TextStyle, TypeSize,
+    AccentPosition, ColumnAlign, DisplayStyle, FontSize, FractionKind, LimitStyle, PhantomKind,
+    Rational, SpanBoundary, StrokeKind, TextStyle, TypeSize,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 use crate::reader::mtef::chars::negated;
@@ -330,9 +330,18 @@ impl<'a> Encoder<'a> {
     // ── Diagnostics and limits ─────────────────────────────────────────
 
     fn lose(&mut self, message: &str) {
+        self.report(DiagnosticKind::Warning, message);
+    }
+
+    /// What is lost does not show by itself.
+    fn inform(&mut self, message: &str) {
+        self.report(DiagnosticKind::Info, message);
+    }
+
+    fn report(&mut self, kind: DiagnosticKind, message: &str) {
         if !self.diagnostics.iter().any(|d| d.message == message) {
             self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
+                kind,
                 message: message.to_owned(),
                 span: None,
             });
@@ -1224,7 +1233,18 @@ impl<'a> Encoder<'a> {
             },
             CompactNode::Cancel { stroke, content } => self.cancel(size, stroke, content),
             CompactNode::Styled(style, span) => self.styled(size, style, span),
-            CompactNode::Phantom(..) => {
+            CompactNode::Phantom(
+                content,
+                PhantomKind::SmashBoth | PhantomKind::SmashTop | PhantomKind::SmashBottom,
+            ) => {
+                self.inform("MTEF cannot represent smashed content; it was written with its own height and depth");
+                self.node(content, size)
+            },
+            CompactNode::Phantom(_, PhantomKind::Vertical) => {
+                self.inform("MTEF cannot represent a vertical phantom; it was dropped");
+                Ok(())
+            },
+            CompactNode::Phantom(_, PhantomKind::Full | PhantomKind::Horizontal) => {
                 self.lose("MTEF cannot represent a phantom; it was dropped");
                 Ok(())
             },

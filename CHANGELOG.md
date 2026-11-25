@@ -103,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept and drawn relative to an assumed 12 pt.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
+- MTEF writer: smashed content (`\smash`, `\smash[b]`, `\smash[t]`) is written,
+  with an `Info` diagnostic that its height is not kept; it was dropped. A
+  dropped `\vphantom`, which draws nothing, is an `Info` and no longer a warning.
 - MTEF 2 and 3 reader: bold and italic of explicit fonts were read the wrong way
   round. The description of MTEF 3 has the two bits swapped; the pictures stored
   with equations show it (`docs/mtef-legacy.md`). MTEF 4 and 5 are unchanged, and
