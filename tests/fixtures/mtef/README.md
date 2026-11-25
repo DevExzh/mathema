@@ -46,6 +46,7 @@ Equation Editor habit that Strict mode now accepts.
 | File | Source zip | Member | Stream | MTEF | Exercises |
 | --- | --- | --- | --- | --- | --- |
 | `govdocs-v3-buffer-slack.bin` (OLE) | `zipfiles/231.zip` | `231/231818.doc` | `ObjectPool/_988461364/Equation Native` | 3 | 3 bytes of heap fill (`EF EF EF`) after the final END, inside the size the header declares |
+| `govdocs-v3-script-before-slash.bin` (OLE) | `zipfiles/127.zip` | `127/127291.doc` | `ObjectPool/_1128754474/Equation Native` | 3 | a subscript before `/`, which belongs to the letter before it |
 | `govdocs-v5-buffer-slack.bin` (OLE) | `zipfiles/254.zip` | `254/254031.doc` | `ObjectPool/_1085980190/Equation Native` | 5 | non-zero slack after the final END (MathType 4.0) |
 | `govdocs-v5-line-ruler.bin` (OLE) | `zipfiles/816.zip` | `816/816303.ppt` | PowerPoint OLE object at offset 272930 | 5 | LINE with `mtefOPT_LP_RULER`, its tab stops written without a RULER tag (MathType 5.2) |
 | `govdocs-v5-bare-space-codes.bin` (OLE) | `zipfiles/802.zip` | `802/802059.ppt` | PowerPoint OLE object at offset 518834 | 5 | Spacing-style characters written as bare codes (MathType 5.0) |

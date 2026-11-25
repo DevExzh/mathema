@@ -638,7 +638,7 @@ pub(super) fn layout_accent(
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
         let size = ctx.size();
 
-        let single = matches!(base_box.kind, BoxKind::Glyph { .. });
+        let single = matches!(script_nucleus(base, &base_box).kind, BoxKind::Glyph { .. });
         let effective_width = accent_width(accent, wide, single, base_width, size);
 
         match accent {
@@ -883,7 +883,9 @@ pub(super) fn layout_accent(
 
     // TeX Rule 12: only for accents above, not `\overrightarrow` and its like.
     let skew = match position {
-        AccentPosition::Above if is_centred_accent(accent, wide) => accent_skew(&base_box),
+        AccentPosition::Above if is_centred_accent(accent, wide) => {
+            accent_skew(script_nucleus(base, &base_box))
+        },
         _ => 0.0,
     };
     let accent_dx = (base_width - accent_box.width) / 2.0 + skew;
@@ -984,7 +986,12 @@ pub(super) fn layout_accent_arena(
     let accent_id = if is_stretchy_accent(accent) && base_w > 0.0 {
         let size = ctx.size() * ctx.glyph_scale;
 
-        let single = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+        let single = matches!(
+            arena
+                .get(script_nucleus_arena(ast, base, base_id, arena))
+                .kind,
+            ArenaBoxKind::Glyph { .. }
+        );
         let effective_width = accent_width(accent, wide, single, base_w, size);
 
         match accent {
@@ -1268,7 +1275,7 @@ pub(super) fn layout_accent_arena(
 
     let skew = match position {
         AccentPosition::Above if is_centred_accent(accent, wide) => {
-            accent_skew_arena(base_id, arena)
+            accent_skew_arena(script_nucleus_arena(ast, base, base_id, arena), arena)
         },
         _ => 0.0,
     };

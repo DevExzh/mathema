@@ -56,22 +56,25 @@ pub(super) fn get_extensible_arrow_heap(node: &MathNode) -> Option<char> {
 /// centered on the math axis with this much head on each side of the shaft.
 pub(super) const ARROW_HEAD_HALF_W_EM: f64 = 0.21;
 
-/// How far an arrow reaches past its label (amsmath's `\xrightarrow`).
+/// How far an arrow reaches past its label (amsmath's `\xrightarrow`), and an
+/// equals sign (extpfeil's `\xlongequal`).
 const ARROW_LABEL_PADDING_EM: f64 = 0.545;
+const EQUAL_LABEL_PADDING_EM: f64 = 0.7;
 
 /// The width an arrow is drawn at for a label, unless the label fits on the
 /// glyph. The tree does not tell `\xrightarrow{f}` from `\overset{f}{\to}`, nor
 /// `\xlongequal` from `\overset{!}{=}`, which do not differ for a short label: an
-/// equals sign, usually an `\overset`, is drawn wider for a long one only.
+/// equals sign, usually an `\overset`, is drawn wider for a label wider than
+/// itself only.
 pub(super) fn extensible_arrow_width(ch: char, label: f64, size: f64) -> Option<f64> {
-    let width = label + ARROW_LABEL_PADDING_EM * size;
     let natural = metrics::glyph_metrics_upright(ch).advance() * size;
-    let fits = if ch == '=' {
-        label <= 2.0 * natural + 1e-9
+    let (padding, least) = if ch == '=' {
+        (EQUAL_LABEL_PADDING_EM * size, label)
     } else {
-        width <= natural + 1e-9
+        let padding = ARROW_LABEL_PADDING_EM * size;
+        (padding, label + padding)
     };
-    (!fits).then_some(width)
+    (least > natural + 1e-9).then_some(label + padding)
 }
 
 /// Build the box for an extensible arrow of the given char and total width,
@@ -495,7 +498,11 @@ impl FenceSize {
         }
         let v = glyph_variants::delimiter_variant(ch, target);
         let target = v.map_or(target, |v| v.advance_em.max(target));
-        delimiter_at(ch, target, self.size, self.axis)
+        delimiter_at(ch, target, self.size, self.axis).or_else(|| {
+            // No assembly (`⟨`): the largest variant.
+            let largest = glyph_variants::select_vertical_variant(ch, target)?;
+            delimiter_at(ch, largest.advance_em, self.size, self.axis)
+        })
     }
 
     /// Width, height and depth of a delimiter the font has no variants of.

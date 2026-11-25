@@ -153,7 +153,7 @@ pub(super) fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: Ma
 /// The canonical stretchy over/under symbol for `sym`, accepting the
 /// vertical-presentation-form braces (`︷` U+FE37, `︸` U+FE38) that MathML
 /// sources use for `⏞`/`⏟` (the font has no glyph for the former).
-pub(super) fn canonical_stretchy_overunder(sym: &str) -> Option<&'static str> {
+pub(in crate::render) fn canonical_stretchy_overunder(sym: &str) -> Option<&'static str> {
     Some(match sym {
         "\u{23DE}" | "\u{FE37}" => "\u{23DE}",
         "\u{23DF}" | "\u{FE38}" => "\u{23DF}",

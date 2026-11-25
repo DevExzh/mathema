@@ -1,4 +1,5 @@
 govdocs-v3-buffer-slack: t= \frac{V_n}{15{Q}_p}
+govdocs-v3-script-before-slash: x_B= \Delta m_s/\Gamma= 30.03
 govdocs-v3-size-points: \footnotesize \uparrow
 govdocs-v3-size-typesize: F\scriptstyle 12\displaystyle = k\frac{q\scriptstyle 1\textstyle \cdot q\scriptstyle 2}{r\scriptstyle 2}
 govdocs-v5-bare-space-codes: \int\nolimits {residual\,.\;\mathbf{D}_i\,(x)\;dx}= 0

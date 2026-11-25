@@ -2562,6 +2562,8 @@ impl<'a> Decoder<'a> {
     /// nothing (how the MTEF writer spells `x{}_1`).
     fn takes_leading_script(&self, id: NodeId) -> bool {
         match *self.arena.node(id) {
+            // A `/` is an operator here, though ordinary in TeX.
+            CompactNode::Symbol(_, s) if self.arena.str_val(s) == "/" => false,
             CompactNode::Symbol(kind, _) => !matches!(
                 kind,
                 SymbolKind::BinaryOp
@@ -2590,6 +2592,8 @@ impl<'a> Decoder<'a> {
     /// Whether `id` can be the base of a script that follows it.
     fn carries_script(&self, id: NodeId) -> bool {
         match *self.arena.node(id) {
+            // A `/` is an operator here, though ordinary in TeX.
+            CompactNode::Symbol(_, s) if self.arena.str_val(s) == "/" => false,
             CompactNode::Symbol(kind, _) => !matches!(
                 kind,
                 SymbolKind::BinaryOp
@@ -2972,8 +2976,10 @@ impl<'a> Decoder<'a> {
     fn takes_prime(&self, id: NodeId) -> bool {
         match *self.arena.node(id) {
             CompactNode::Symbol(kind, s) => {
+                let text = self.arena.str_val(s);
                 matches!(kind, SymbolKind::Ordinary | SymbolKind::Close)
-                    && !self.arena.str_val(s).chars().all(chars::is_prime)
+                    && text != "/"
+                    && !text.chars().all(chars::is_prime)
             },
             // A big operator's node includes its body.
             CompactNode::Nary { .. } => false,

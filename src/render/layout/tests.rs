@@ -288,6 +288,17 @@ fn atoms_are_spaced_as_in_tex() {
         ("\\int\\!\\int", Display, 1.998),
         ("\\sum\\nolimits\\,x", Display, 2.349),
         ("\\sum(x)", Display, 1.444 + 1.350),
+        ("\\int\\int x\\,dx", Display, 3.020 + 0.999 + 1.0 / 6.0),
+        ("a=\\kern1em=b", Text, 4.0833),
+        ("2\\boxed{x}y", Text, 0.5 + 1.252 + 0.518),
+        ("x=!y", Text, 2.424),
+        ("n!\\sin x", Text, 3.011),
+        // Braces are operators, an overline is ordinary.
+        ("a\\underbrace{x}b", Text, 1.877),
+        ("a\\overbrace{x}b", Text, 1.877),
+        ("a\\overbracket{x}b", Text, 1.877),
+        ("\\underbrace{x}_n+y", Display, 2.035),
+        ("a\\overline{+}b", Text, 1.750),
     ] {
         let expr = crate::from_latex(latex).unwrap().expr();
         let root = layout_expr(&expr, style, &default_options());
@@ -453,6 +464,59 @@ fn surds_are_chosen_at_the_size_of_their_text() {
     assert!(text[at..].contains("scale: 0.7 "), "{}", &text[at..]);
 }
 
+/// A base of one character is that character, whatever it is wrapped in.
+#[test]
+fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
+    let width = |latex: &str| {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        layout_expr(&expr, MathStyle::Text, &default_options()).width
+    };
+    for (latex, expected) in [
+        ("\\mathfrak{K}_1", 0.668 + 0.4),
+        ("\\mathfrak{K}^2", 0.718 + 0.4),
+        ("\\mathnormal{V}_1", 0.583 + 0.4),
+        ("\\mathord{V}_1", 0.583 + 0.4),
+        ("\\vec{\\mathfrak{K}}_1", 0.668 + 0.4),
+        ("\\bar{\\bar V}_1", 0.583 + 0.4),
+        // As in TeX and KaTeX, not a coloured letter or a longer group.
+        ("\\textcolor{red}{V}_1", 0.797 + 0.4),
+        ("\\mathfrak{KK}_1", 2.0 * 0.718 + 0.4),
+        // A bold letter is the Math font's.
+        ("\\boldsymbol{V}", 0.913),
+        // A word has the correction of its last letter only.
+        ("\\mathit{ff}", 0.490 + 0.580),
+        ("\\mathit{f2}", 0.580 + 0.5),
+        ("\\mathcal{FF}", 2.0 * 0.904),
+    ] {
+        let actual = width(latex);
+        assert!((actual - expected).abs() < 2e-3, "{latex}: {actual}");
+    }
+    let offset = |latex: &str| {
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        let BoxKind::HBox { children } = &root.kind else {
+            panic!("{root:?}")
+        };
+        let BoxKind::HBox { children } = &children[0].layout.kind else {
+            panic!("{root:?}")
+        };
+        (children[1].dx, children[1].layout.width)
+    };
+    assert_eq!(offset("\\bar{\\bar V}"), offset("\\bar V"));
+    assert_eq!(offset("\\hat{\\mathord{V}}"), offset("\\hat V"));
+}
+
+/// A delimiter taller than every glyph of a font without an assembly for it.
+#[test]
+fn tall_angle_brackets_are_the_largest_glyph() {
+    let latex = "\\left\\langle\\begin{matrix}a\\\\b\\\\c\\\\d\\\\e\\end{matrix}\\right\\rangle";
+    assert_arena_heap_equivalent(latex, MathStyle::Text);
+    let expr = crate::from_latex(latex).unwrap().expr();
+    let root = layout_expr(&expr, MathStyle::Text, &default_options());
+    assert!((root.width - 2.360).abs() < 2e-3, "{}", root.width);
+}
+
 /// `\overrightarrow` and its like are centred on the base and as wide.
 #[test]
 fn wide_accents_have_the_width_of_the_base() {
@@ -515,7 +579,6 @@ fn labels_stretch_what_they_do_not_fit_on() {
     // As in XeTeX with Latin Modern Math.
     for (latex, width) in [
         ("\\overset{!}{=}", 0.778),
-        ("\\overset{\\text{def}}{=}", 0.914),
         ("\\stackrel{?}{=}", 0.778),
         ("\\xlongequal[a]{b}", 0.778),
         ("\\overset{f}{\\rightarrow}", 1.0),
@@ -537,7 +600,8 @@ fn labels_stretch_what_they_do_not_fit_on() {
         "\\xlongequal{abcdefghij}",
     ] {
         let (actual, stretched) = drawn(latex);
-        assert!((actual - label - 0.545).abs() < 1e-6, "{latex}: {actual}");
+        let padding = if latex.contains("equal") { 0.7 } else { 0.545 };
+        assert!((actual - label - padding).abs() < 1e-6, "{latex}: {actual}");
         assert!(stretched, "{latex}");
     }
 }

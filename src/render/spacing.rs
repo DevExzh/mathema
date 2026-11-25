@@ -32,6 +32,8 @@ fn symbol_atom(kind: SymbolKind, text: &str) -> AtomType {
         SymbolKind::Ordinary if matches!(text, "…" | "⋯" | "⋱" | "⋰") => AtomType::Inner,
         // amsmath's `\colon` has its own space around an ordinary colon.
         SymbolKind::Punctuation if text == ":" => AtomType::Ord,
+        // TeX's math codes of these are closing ones.
+        SymbolKind::Ordinary if matches!(text, "!" | "?") => AtomType::Close,
         SymbolKind::Ordinary | SymbolKind::Alphabetic | SymbolKind::Fence => AtomType::Ord,
         SymbolKind::LargeOp => AtomType::Op,
         SymbolKind::BinaryOp => AtomType::Bin,
@@ -42,9 +44,21 @@ fn symbol_atom(kind: SymbolKind, text: &str) -> AtomType {
     }
 }
 
-/// The marks of `\overbrace` and its like, which are no TeX accents.
-fn is_brace(accent: char) -> bool {
-    matches!(accent, '⏞' | '⏟' | '⎴' | '⎵' | '⏜' | '⏝')
+/// The atom of an accented node: `\underbrace`, `\overbracket` and the like
+/// are operators.
+fn accent_atom(accent: char) -> AtomType {
+    match accent {
+        '⏞' | '⏟' | '⎴' | '⎵' => AtomType::Op,
+        _ => AtomType::Ord,
+    }
+}
+
+/// The atom of a node with the mark `node` over or under it, `\underbrace` or
+/// `\overline`, unless it is a label.
+fn mark_atom(text: &str) -> Option<AtomType> {
+    super::layout::canonical_stretchy_overunder(text)
+        .and_then(|mark| mark.chars().next())
+        .map(accent_atom)
 }
 
 /// Spaces are no atoms: the ones on their sides are still adjacent.
@@ -152,11 +166,18 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         | MathNode::Superscript { base, .. }
         | MathNode::SubSup { base, .. }
         | MathNode::PreScripts { base, .. } => classify_node_depth(base, style, depth + 1),
-        MathNode::Overscript { base, .. }
-        | MathNode::Underscript { base, .. }
-        | MathNode::UnderOver { base, .. } => classify_node_depth(base, style, depth + 1),
-        MathNode::Accent { accent, .. } if !is_brace(*accent) => AtomType::Ord,
-        MathNode::Accent { base, .. } => classify_node_depth(base, style, depth + 1),
+        MathNode::Overscript {
+            base, over: mark, ..
+        }
+        | MathNode::Underscript {
+            base, under: mark, ..
+        } => match &**mark {
+            MathNode::Symbol(_, text) => mark_atom(text),
+            _ => None,
+        }
+        .unwrap_or_else(|| classify_node_depth(base, style, depth + 1)),
+        MathNode::UnderOver { base, .. } => classify_node_depth(base, style, depth + 1),
+        MathNode::Accent { accent, .. } => accent_atom(*accent),
         // TeX's bare `array`, `matrix`, `smallmatrix`, `aligned`, and
         // `gathered` environments produce an ordinary/vcenter noad. Their
         // table padding belongs to the node itself and does not trigger the
@@ -238,13 +259,18 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
         | CompactNode::PreScripts { base, .. } => {
             classify_node_c_depth(arena, base, style, depth + 1)
         },
-        CompactNode::Overscript { base, .. }
-        | CompactNode::Underscript { base, .. }
-        | CompactNode::UnderOver { base, .. } => {
-            classify_node_c_depth(arena, base, style, depth + 1)
-        },
-        CompactNode::Accent { accent, .. } if !is_brace(accent) => AtomType::Ord,
-        CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, style, depth + 1),
+        CompactNode::Overscript {
+            base, over: mark, ..
+        }
+        | CompactNode::Underscript {
+            base, under: mark, ..
+        } => match *arena.node(mark) {
+            CompactNode::Symbol(_, sid) => mark_atom(arena.str_val(sid)),
+            _ => None,
+        }
+        .unwrap_or_else(|| classify_node_c_depth(arena, base, style, depth + 1)),
+        CompactNode::UnderOver { base, .. } => classify_node_c_depth(arena, base, style, depth + 1),
+        CompactNode::Accent { accent, .. } => accent_atom(accent),
         // Keep heap and compact classification identical. Native tables are
         // ordinary noads until a fence or explicit MathAtom wrapper changes
         // their class.
@@ -745,9 +771,13 @@ mod tests {
     }
 
     #[test]
-    fn exclamation_is_ordinary() {
-        // `!` in math mode is ordinary (e.g. factorial n!), not a relation
-        let node = MathNode::Symbol(SymbolKind::Ordinary, "!".into());
+    fn exclamation_and_question_marks_close() {
+        // TeX's math codes: `x=!y` has no space after the relation.
+        for text in ["!", "?"] {
+            let node = MathNode::Symbol(SymbolKind::Ordinary, text.into());
+            assert_eq!(classify_node(&node), AtomType::Close);
+        }
+        let node = MathNode::Symbol(SymbolKind::Ordinary, "@".into());
         assert_eq!(classify_node(&node), AtomType::Ord);
     }
 

@@ -333,12 +333,25 @@ pub(super) fn layout_rule(
     }
 }
 
+/// The text face of an identifier. A bold italic letter is the Math font's
+/// (`\boldsymbol`), which has the metrics of a math letter.
+fn letter_font(style: TextStyle, text: &str) -> Option<FontId> {
+    let mut chars = text.chars();
+    if style == TextStyle::BoldItalic
+        && let (Some(ch), None) = (chars.next(), chars.next())
+        && crate::unicode::fonts::styled_char(ch, style).is_some()
+    {
+        return None;
+    }
+    fonts_registry::text_font_for_style(style)
+}
+
 pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     use crate::unicode::fonts::styled_char;
 
     match node {
         MathNode::Identifier(s) => {
-            if let Some(font) = fonts_registry::text_font_for_style(style) {
+            if let Some(font) = letter_font(style, s) {
                 if s.chars().count() == 1 {
                     let ch = s.chars().next().expect("non-empty checked");
                     LayoutBox::glyph_font(ch, ctx.size(), false, font)
@@ -385,6 +398,8 @@ pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &Layout
     }
 }
 
+/// A row in a style. `\mathit` sets a word: in TeX only its last letter has an
+/// italic correction.
 pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     if children.is_empty() {
         return LayoutBox::kern(0.0);
@@ -400,7 +415,7 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
     let mut max_depth: f64 = 0.0;
     let mut current_ctx = ctx.clone();
 
-    for node in children {
+    for (index, node) in children.iter().enumerate() {
         if let MathNode::StyleSwitch(value) = node {
             current_ctx = current_ctx.with_switch(*value);
             continue;
@@ -437,7 +452,12 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
         let layout = layout_styled_node(style, node, &current_ctx);
         max_height = max_height.max(layout.height);
         max_depth = max_depth.max(layout.depth);
-        let w = layout.width;
+        let mut w = layout.width;
+        if style == TextStyle::Italic
+            && matches!(children.get(index + 1), Some(MathNode::Identifier(_)))
+        {
+            w -= italic_correction(&layout);
+        }
         boxes.push(PositionedBox::new(cursor_x, 0.0, layout));
         cursor_x += w;
     }
@@ -772,7 +792,7 @@ pub(super) fn layout_styled_node_arena(
     match *ast.node(id) {
         CompactNode::Identifier(sid) => {
             let s = ast.str_val(sid);
-            if let Some(font) = fonts_registry::text_font_for_style(style) {
+            if let Some(font) = letter_font(style, s) {
                 if s.chars().count() == 1 {
                     let ch = s.chars().next().expect("non-empty checked");
                     alloc_glyph_font(arena, ch, ctx.size(), false, font)
@@ -856,7 +876,7 @@ pub(super) fn layout_styled_arena(
     let mut prev_atom: Option<AtomType> = None;
     let mut current_ctx = ctx.clone();
 
-    for &id in ids {
+    for (index, &id) in ids.iter().enumerate() {
         if let CompactNode::StyleSwitch(value) = *ast.node(id) {
             current_ctx = current_ctx.with_switch(value);
             continue;
@@ -896,7 +916,13 @@ pub(super) fn layout_styled_arena(
         let b = arena.get(layout_id);
         max_height = max_height.max(b.height);
         max_depth = max_depth.max(b.depth);
-        let w = b.width;
+        let mut w = b.width;
+        if style == TextStyle::Italic
+            && let Some(&next) = ids.get(index + 1)
+            && matches!(ast.node(next), CompactNode::Identifier(_))
+        {
+            w -= italic_correction_arena(layout_id, arena);
+        }
         laid_out.push((layout_id, cursor_x));
         cursor_x += w;
     }

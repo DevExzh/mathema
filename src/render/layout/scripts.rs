@@ -410,44 +410,76 @@ fn nucleus_box<'a>(base: &MathNode, base_box: &'a LayoutBox, ctx: &LayoutCtx) ->
     }
 }
 
-/// The box scripts attach to: TeXBook Rule 12 puts the scripts of an accented
-/// character on the character.
-fn script_nucleus<'a>(base: &MathNode, base_box: &'a LayoutBox) -> &'a LayoutBox {
-    if let MathNode::Accent {
-        base,
-        position: AccentPosition::Above,
-        ..
-    } = base
-        && matches!(&**base, MathNode::Identifier(_))
-        && let BoxKind::HBox { children } = &base_box.kind
-        && let Some(first) = children.first()
-        && matches!(first.layout.kind, BoxKind::Glyph { .. })
-    {
-        return &first.layout;
+/// The box of the one character a base is, which scripts and accents attach to:
+/// TeX takes a group of one for its content (`\mathfrak{K}_1`; not a coloured
+/// one), and TeXBook Rule 12 puts the scripts of an accented character on the
+/// character.
+pub(super) fn script_nucleus<'a>(base: &MathNode, base_box: &'a LayoutBox) -> &'a LayoutBox {
+    let (mut node, mut current) = (base, base_box);
+    loop {
+        (node, current) = match (node, &current.kind) {
+            (MathNode::Attributed { content, .. }, _)
+            | (
+                MathNode::MathAtom {
+                    atom_type: MathAtomType::Ord,
+                    content,
+                },
+                _,
+            ) => (&**content, current),
+            (
+                MathNode::Accent {
+                    base,
+                    position: AccentPosition::Above,
+                    ..
+                },
+                BoxKind::HBox { children },
+            ) if !children.is_empty() => (&**base, &children[0].layout),
+            (MathNode::Styled(_, nodes) | MathNode::Row(nodes), BoxKind::HBox { children })
+                if nodes.len() == 1 && children.len() == 1 =>
+            {
+                (&nodes[0], &children[0].layout)
+            },
+            (_, BoxKind::Glyph { .. }) => return current,
+            _ => return base_box,
+        };
     }
-    base_box
 }
 
 /// Compact-AST version of `script_nucleus`.
-fn script_nucleus_arena(
+pub(super) fn script_nucleus_arena(
     ast: &AstArena,
     base: NodeId,
     base_id: LayoutBoxId,
     arena: &LayoutArena,
 ) -> LayoutBoxId {
-    if let CompactNode::Accent {
-        base,
-        position: AccentPosition::Above,
-        ..
-    } = *ast.node(base)
-        && matches!(ast.node(base), CompactNode::Identifier(_))
-        && let ArenaBoxKind::HBox { children } = arena.get(base_id).kind
-        && let Some(first) = arena.children(children).first()
-        && matches!(arena.get(first.id).kind, ArenaBoxKind::Glyph { .. })
-    {
-        return first.id;
+    let (mut node, mut current) = (base, base_id);
+    loop {
+        (node, current) = match (*ast.node(node), &arena.get(current).kind) {
+            (
+                CompactNode::MathAtom {
+                    atom_type: MathAtomType::Ord,
+                    content,
+                },
+                _,
+            ) => (content, current),
+            (
+                CompactNode::Accent {
+                    base,
+                    position: AccentPosition::Above,
+                    ..
+                },
+                &ArenaBoxKind::HBox { children },
+            ) if !arena.children(children).is_empty() => (base, arena.children(children)[0].id),
+            (
+                CompactNode::Styled(_, span) | CompactNode::Row(span),
+                &ArenaBoxKind::HBox { children },
+            ) if ast.children(span).len() == 1 && arena.children(children).len() == 1 => {
+                (ast.children(span)[0], arena.children(children)[0].id)
+            },
+            (_, ArenaBoxKind::Glyph { .. }) => return current,
+            _ => return base_id,
+        };
     }
-    base_id
 }
 
 /// Compact-AST version of `nucleus_box`.

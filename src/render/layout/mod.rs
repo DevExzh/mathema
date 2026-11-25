@@ -28,6 +28,7 @@ mod tests;
 use accent::*;
 use array::*;
 use fraction::*;
+pub(super) use limits::canonical_stretchy_overunder;
 use limits::*;
 use radical::*;
 use scripts::*;
