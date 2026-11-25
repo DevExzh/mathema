@@ -179,7 +179,7 @@ pub(super) fn layout_big_op_limits_heap(
     let op_ch = large_op_char(base).unwrap_or('\u{2211}');
     let op_size = size * metrics::display_op_scale(op_ch);
     let m = metrics::glyph_metrics_display(op_ch);
-    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size, false);
+    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size, display_font(op_ch));
 
     let mut children = Vec::new();
     let mut total_h = op_box.height;
@@ -325,15 +325,16 @@ pub(super) fn layout_nary(
     });
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
-    let (op_size, m) = if ctx.branch_style().is_display() {
+    let (op_size, m, font) = if ctx.branch_style().is_display() {
         (
             size * metrics::display_op_scale(op),
             metrics::glyph_metrics_display(op),
+            display_font(op),
         )
     } else {
-        (size, metrics::glyph_metrics(op))
+        (size, metrics::glyph_metrics(op), FontId::Math)
     };
-    let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
+    let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, font);
 
     // TeX: center the large operator on the math axis.
     // delta = axis_height - (height - depth) / 2
@@ -826,7 +827,7 @@ pub(super) fn layout_big_op_limits_arena(
     let op_ch = large_op_char_c(ast, base).unwrap_or('\u{2211}');
     let op_size = size * metrics::display_op_scale(op_ch);
     let m = metrics::glyph_metrics_display(op_ch);
-    let op_id = alloc_glyph_with_metrics(arena, op_ch, m, op_size, false);
+    let op_id = alloc_glyph_with_metrics(arena, op_ch, m, op_size, display_font(op_ch));
 
     let op_w = arena.get(op_id).width;
     let op_h = arena.get(op_id).height;
@@ -1044,16 +1045,17 @@ pub(super) fn layout_nary_arena(
     });
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
-    let (op_size, m) = if ctx.branch_style().is_display() {
+    let (op_size, m, font) = if ctx.branch_style().is_display() {
         (
             size * metrics::display_op_scale(op),
             metrics::glyph_metrics_display(op),
+            display_font(op),
         )
     } else {
-        (size, metrics::glyph_metrics(op))
+        (size, metrics::glyph_metrics(op), FontId::Math)
     };
     let op_size = op_size * ctx.glyph_scale;
-    let op_id = alloc_glyph_with_metrics(arena, op, m, op_size, false);
+    let op_id = alloc_glyph_with_metrics(arena, op, m, op_size, font);
 
     // TeX: center the large operator on the math axis.
     let op_h_raw = arena.get(op_id).height;

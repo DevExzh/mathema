@@ -66,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LaTeX: a relation, binary operator or punctuation in braces among other symbols
   (`1{,}000`, `a{=}b`) stays an ordinary atom, without spaces; the output spells it
   `\mathord{=}`.
+- Rendering: a displayed large operator is the font's variant at the size of the text;
+  it was scaled up to 1.6 or 2 times, wider than its box, and an operator in text
+  larger than 1.2 used it too.
 - Rendering: the box of `\sum` and the other displayed operators is that of the drawn
   glyph, so their limits are as close as TeX sets them with the font.
 - Rendering: the delimiters of `\binom` and `\genfrac` have TeX's two sizes and do not

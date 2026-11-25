@@ -110,7 +110,9 @@ fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<(FontId, char)>) {
 /// For a text face we additionally record the Math-font fallback, so the
 /// emitters can fall back when the chosen face lacks the glyph.
 fn collect_glyph(ch: char, italic: bool, font: FontId, chars: &mut HashSet<(FontId, char)>) {
-    if font.is_math() {
+    if font == FontId::MathDisplay {
+        // `collect_variants` has it.
+    } else if font.is_math() {
         chars.insert((FontId::Math, ch));
         if italic && let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
             chars.insert((FontId::Math, italic_ch));
@@ -231,13 +233,10 @@ pub fn collect_variants(root: &LayoutBox) -> HashSet<u16> {
 }
 
 fn collect_variants_inner(node: &LayoutBox, ids: &mut HashSet<u16>) {
-    use super::glyph_variants::{
-        display_operator_variant, is_large_op_char, select_vertical_variant,
-    };
+    use super::glyph_variants::{display_operator_variant, select_vertical_variant};
     match &node.kind {
-        BoxKind::Glyph { ch, size, .. } => {
-            if *size > 1.2
-                && is_large_op_char(*ch)
+        BoxKind::Glyph { ch, font, .. } => {
+            if *font == FontId::MathDisplay
                 && let Some(v) = display_operator_variant(*ch)
             {
                 ids.insert(v.glyph_id);
@@ -287,14 +286,11 @@ pub fn collect_variants_arena(arena: &LayoutArena, root: LayoutBoxId) -> HashSet
 }
 
 fn collect_variants_arena_inner(arena: &LayoutArena, id: LayoutBoxId, ids: &mut HashSet<u16>) {
-    use super::glyph_variants::{
-        display_operator_variant, is_large_op_char, select_vertical_variant,
-    };
+    use super::glyph_variants::{display_operator_variant, select_vertical_variant};
     let node = arena.get(id);
     match &node.kind {
-        ArenaBoxKind::Glyph { ch, size, .. } => {
-            if *size > 1.2
-                && is_large_op_char(*ch)
+        ArenaBoxKind::Glyph { ch, font, .. } => {
+            if *font == FontId::MathDisplay
                 && let Some(v) = display_operator_variant(*ch)
             {
                 ids.insert(v.glyph_id);

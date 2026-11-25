@@ -209,9 +209,9 @@ impl LayoutBox {
     }
 
     #[inline]
-    fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64, italic: bool) -> Self {
+    fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64, font: FontId) -> Self {
         if glyph_fallback::needs_fallback(ch, FontId::Math)
-            && let Some(b) = Self::fallback_glyph(ch, size, italic)
+            && let Some(b) = Self::fallback_glyph(ch, size, false)
         {
             return b;
         }
@@ -222,8 +222,8 @@ impl LayoutBox {
             kind: BoxKind::Glyph {
                 ch,
                 size,
-                italic,
-                font: FontId::Math,
+                italic: false,
+                font,
             },
         }
     }
@@ -395,6 +395,16 @@ fn prime_kern(style: MathStyle) -> f64 {
         0 => 0.0,
         1 => 0.167,
         _ => 0.189,
+    }
+}
+
+/// The font of a large operator in a display, with its own glyph for most.
+#[inline]
+fn display_font(ch: char) -> FontId {
+    if super::glyph_variants::is_large_op_char(ch) {
+        FontId::MathDisplay
+    } else {
+        FontId::Math
     }
 }
 
@@ -745,7 +755,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 if *kind == SymbolKind::LargeOp && ctx.branch_style().is_display() {
                     let size = ctx.size() * metrics::display_op_scale(ch);
                     let m = metrics::glyph_metrics_display(ch);
-                    LayoutBox::glyph_with_metrics(ch, m, size, false)
+                    LayoutBox::glyph_with_metrics(ch, m, size, display_font(ch))
                 } else {
                     let (ch, _, font) = math_glyph(ch, false, ctx.style.size_class());
                     let glyph = LayoutBox::glyph_font(ch, ctx.size(), false, font);
@@ -1603,7 +1613,7 @@ fn alloc_glyph_with_metrics(
     ch: char,
     m: metrics::GlyphMetrics,
     size: f64,
-    italic: bool,
+    font: FontId,
 ) -> LayoutBoxId {
     if is_invisible_char(ch) {
         return arena.alloc(ArenaLayoutBox {
@@ -1614,7 +1624,7 @@ fn alloc_glyph_with_metrics(
         });
     }
     if glyph_fallback::needs_fallback(ch, FontId::Math)
-        && let Some(id) = alloc_fallback_glyph(arena, ch, size, italic)
+        && let Some(id) = alloc_fallback_glyph(arena, ch, size, false)
     {
         return id;
     }
@@ -1625,8 +1635,8 @@ fn alloc_glyph_with_metrics(
         kind: ArenaBoxKind::Glyph {
             ch,
             size,
-            italic,
-            font: FontId::Math,
+            italic: false,
+            font,
         },
     })
 }
@@ -2063,7 +2073,7 @@ fn layout_node_arena(
                 if kind == SymbolKind::LargeOp && ctx.branch_style().is_display() {
                     let size = ctx.size() * metrics::display_op_scale(ch);
                     let m = metrics::glyph_metrics_display(ch);
-                    alloc_glyph_with_metrics(arena, ch, m, size, false)
+                    alloc_glyph_with_metrics(arena, ch, m, size, display_font(ch))
                 } else {
                     let (ch, _, font) = math_glyph(ch, false, ctx.style.size_class());
                     let glyph_id = alloc_glyph_font(arena, ch, ctx.size(), false, font);

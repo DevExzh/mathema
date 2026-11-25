@@ -34,7 +34,7 @@ static FONTDUE_CELLS: [std::sync::OnceLock<Font>; 13] = [const { std::sync::Once
 fn fontdue_font(id: FontId) -> &'static Font {
     if matches!(
         id,
-        FontId::Math | FontId::MathScript | FontId::MathScriptScript
+        FontId::Math | FontId::MathScript | FontId::MathScriptScript | FontId::MathDisplay
     ) {
         return &MATH_FONT;
     }
@@ -406,14 +406,9 @@ fn emit_raster_box(
         } => {
             // For large operators at display size, use MATH table variant glyphs
             // for better quality (properly designed display glyphs vs scaled base).
-            let used_variant = if *size > 1.2 && is_large_op_char(*ch) {
+            let used_variant = if *font == FontId::MathDisplay {
                 if let Some(variant) = super::glyph_variants::display_operator_variant(*ch) {
-                    let target_px = em * size;
-                    let font_size_px = if variant.advance_em > 0.01 {
-                        target_px / variant.advance_em
-                    } else {
-                        target_px
-                    };
+                    let font_size_px = em * size / super::metrics::display_op_scale(*ch);
                     draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y, xform);
                     true
                 } else {
@@ -720,14 +715,9 @@ fn emit_raster_box_arena(
         } => {
             // For large operators at display size, use MATH table variant glyphs
             // for better quality (properly designed display glyphs vs scaled base).
-            let used_variant = if *size > 1.2 && is_large_op_char(*ch) {
+            let used_variant = if *font == FontId::MathDisplay {
                 if let Some(variant) = super::glyph_variants::display_operator_variant(*ch) {
-                    let target_px = em * size;
-                    let font_size_px = if variant.advance_em > 0.01 {
-                        target_px / variant.advance_em
-                    } else {
-                        target_px
-                    };
+                    let font_size_px = em * size / super::metrics::display_op_scale(*ch);
                     draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y, xform);
                     true
                 } else {
@@ -961,12 +951,6 @@ fn emit_raster_box_arena(
 // ---------------------------------------------------------------------------
 // Glyph rasterization
 // ---------------------------------------------------------------------------
-
-/// Check whether a character is a large (n-ary) operator that may have display variants.
-#[inline]
-fn is_large_op_char(ch: char) -> bool {
-    super::glyph_variants::is_large_op_char(ch)
-}
 
 /// Forward italic shear (tangent) applied to `∂` to match MathJax's slant.
 #[inline]

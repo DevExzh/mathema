@@ -708,6 +708,18 @@ fn delimiters_of_binomials_have_fixed_sizes() {
     }
 }
 
+/// A displayed large operator is the font's variant at the size of the text,
+/// in a text style the glyph scaled.
+#[test]
+fn display_operators_are_their_variants_at_their_size() {
+    let svg = |latex: &str| crate::from_latex(latex).unwrap().to_svg().unwrap();
+    let display = svg("\\displaystyle\\sum\\int\\prod");
+    assert_eq!(display.matches("<use href=\"#vg").count(), 3, "{display}");
+    assert_eq!(display.matches("scale(0.016000)").count(), 3, "{display}");
+    let large = svg("\\textstyle\\Large\\sum");
+    assert!(!large.contains("#vg"), "{large}");
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {

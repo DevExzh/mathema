@@ -363,17 +363,11 @@ fn emit_box_embedded(
         } => {
             // Display-size large operators (∑, ∫, …) use a designed MATH-table
             // variant glyph when available, matching the raster backend.
-            if *size > 1.2
-                && super::glyph_variants::is_large_op_char(*ch)
+            if *font == FontId::MathDisplay
                 && let Some(v) = super::glyph_variants::display_operator_variant(*ch)
                 && glyphs.variants.contains_key(&v.glyph_id)
             {
-                let target_px = em * size;
-                let fs = if v.advance_em > 0.01 {
-                    target_px / v.advance_em
-                } else {
-                    target_px
-                };
+                let fs = em * size / super::metrics::display_op_scale(*ch);
                 emit_variant_glyph(
                     svg,
                     v.glyph_id,
@@ -757,17 +751,11 @@ fn emit_box_arena_embedded(
             italic,
             font,
         } => {
-            if *size > 1.2
-                && super::glyph_variants::is_large_op_char(*ch)
+            if *font == FontId::MathDisplay
                 && let Some(v) = super::glyph_variants::display_operator_variant(*ch)
                 && glyphs.variants.contains_key(&v.glyph_id)
             {
-                let target_px = em * size;
-                let fs = if v.advance_em > 0.01 {
-                    target_px / v.advance_em
-                } else {
-                    target_px
-                };
+                let fs = em * size / super::metrics::display_op_scale(*ch);
                 emit_variant_glyph(
                     svg,
                     v.glyph_id,
