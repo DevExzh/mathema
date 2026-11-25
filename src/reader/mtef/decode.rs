@@ -197,10 +197,6 @@ pub(super) struct RareSizes {
     dropped_in_runs: bool,
     /// The losses reported, by [`SizeLoss`].
     losses: [bool; SizeLoss::COUNT],
-    /// Nodes at full size by a smaller slot's place. Some writers leave the
-    /// typesize records out: without any script size in the equation these
-    /// say nothing.
-    full_in_script: Vec<(NodeId, NodeAttrs)>,
 }
 
 /// A template whose lines are being read.
@@ -334,6 +330,10 @@ pub(super) struct Decoder<'a> {
     template: OpenTemplate,
     /// Whether a typesize record names a script size.
     script_sizes: bool,
+    /// Whether text at full size in a smaller slot has that size.
+    keeps_full: bool,
+    /// Whether there was such text while it had not.
+    met_full: std::cell::Cell<bool>,
     /// Where the sizes of MTEF 5 equation preferences are.
     sizes_at: Option<usize>,
     /// The sizes there, read when first asked for.
@@ -373,6 +373,8 @@ impl<'a> Decoder<'a> {
             rare_sizes: None,
             template: OpenTemplate::NONE,
             script_sizes: false,
+            keeps_full: false,
+            met_full: std::cell::Cell::new(false),
             sizes_at: None,
             preferences: std::cell::OnceCell::new(),
         }
@@ -1630,11 +1632,6 @@ impl<'a> Decoder<'a> {
         if rare.dropped_in_runs || !rare.dropped_symbols.is_empty() {
             self.lose_size(SizeLoss::SymbolSize);
         }
-        if !self.script_sizes {
-            for (id, attrs) in rare.full_in_script {
-                self.arena.remove_attrs(id, &attrs);
-            }
-        }
     }
 
     /// Whether `size` is a symbol size. Big operators have their signs at
@@ -1655,6 +1652,13 @@ impl<'a> Decoder<'a> {
             },
             SizeRecord::Logical { level, delta } => {
                 if level == self.slot_size && delta == 0 || Self::is_dropped_symbol(size) {
+                    return None;
+                }
+                // Some writers leave the typesize records out: without any
+                // script size in the equation, text at full size in a smaller
+                // slot is what it is by its place. That is known at the end.
+                if size == SizeState::level(0) && !self.keeps_full {
+                    self.met_full.set(true);
                     return None;
                 }
                 let level = match level {
@@ -1761,7 +1765,7 @@ impl<'a> Decoder<'a> {
             {
                 let script = NodeAttrs::with_size(self.script_of(size));
                 self.arena.remove_attrs(mark, &attrs);
-                self.add_own_attrs(mark, size, script);
+                self.arena.add_attrs(mark, &script);
             }
         }
     }
@@ -1776,7 +1780,8 @@ impl<'a> Decoder<'a> {
             self.rare_sizes.get_or_insert_default().dropped_in_runs = true;
         }
         if let Some(own) = self.own_size(size) {
-            self.add_own_attrs(marks, own, NodeAttrs::with_size(self.script_of(own)));
+            self.arena
+                .add_attrs(marks, &NodeAttrs::with_size(self.script_of(own)));
         }
     }
 
@@ -1799,18 +1804,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn add_size(&mut self, id: NodeId, size: FontSize) {
-        self.add_own_attrs(id, size, NodeAttrs::with_size(size));
-    }
-
-    fn add_own_attrs(&mut self, id: NodeId, size: FontSize, attrs: NodeAttrs) {
-        if matches!(size, FontSize::Logical { level: TypeSize::Full, delta_pt } if delta_pt.num == 0)
-        {
-            self.rare_sizes
-                .get_or_insert_default()
-                .full_in_script
-                .push((id, attrs.clone()));
-        }
-        self.arena.add_attrs(id, &attrs);
+        self.arena.add_attrs(id, &NodeAttrs::with_size(size));
     }
 
     /// The size of an embellished character and its marks, which have the
@@ -1832,11 +1826,13 @@ impl<'a> Decoder<'a> {
         loop {
             match *self.arena.node(current) {
                 CompactNode::Accent { base, .. } => {
-                    self.add_own_attrs(current, own, NodeAttrs::with_glyph_size(own));
+                    self.arena
+                        .add_attrs(current, &NodeAttrs::with_glyph_size(own));
                     current = base;
                 },
                 CompactNode::Superscript { base, sup } => {
-                    self.add_own_attrs(sup, own, NodeAttrs::with_size(self.script_of(own)));
+                    self.arena
+                        .add_attrs(sup, &NodeAttrs::with_size(self.script_of(own)));
                     current = base;
                 },
                 CompactNode::Underscript { base, under, .. } => {
@@ -1844,7 +1840,8 @@ impl<'a> Decoder<'a> {
                     current = base;
                 },
                 CompactNode::PreScripts { base, pre_sup, .. } => {
-                    self.add_own_attrs(pre_sup, own, NodeAttrs::with_size(self.script_of(own)));
+                    self.arena
+                        .add_attrs(pre_sup, &NodeAttrs::with_size(self.script_of(own)));
                     current = base;
                 },
                 CompactNode::Cancel { content, .. } => current = content,
@@ -2036,6 +2033,16 @@ impl<'a> Decoder<'a> {
                 other(&sizes[6], TypeSize::User2),
             ],
         })
+    }
+
+    /// Whether the equation has to be decoded again, keeping the full size of
+    /// text in smaller slots: it has script sizes, which such text has not.
+    pub(super) fn decodes_again(&self) -> bool {
+        self.script_sizes && self.met_full.get()
+    }
+
+    pub(super) fn keep_full_sizes(&mut self) {
+        self.keeps_full = true;
     }
 
     // ── Line assembly ──────────────────────────────────────────────────

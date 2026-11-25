@@ -164,7 +164,12 @@ impl MtefReader {
             return Ok((empty_result(DisplayStyle::Inline, Vec::new()), None));
         }
         let mut decoder = Decoder::new(bytes, config);
-        let outcome = decoder.run();
+        let mut outcome = decoder.run();
+        if outcome.is_ok() && decoder.decodes_again() {
+            decoder = Decoder::new(bytes, config);
+            decoder.keep_full_sizes();
+            outcome = decoder.run();
+        }
         let info = decoder.info.take();
         let display = match info.as_ref().and_then(|i| i.inline) {
             Some(true) => DisplayStyle::Inline,
