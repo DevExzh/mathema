@@ -1417,3 +1417,147 @@ fn combining_mark_in_inline_math() {
     assert_eq!(latex, "\\angl{$\\relax \u{301}$}");
     assert_eq!(reread(&latex).to_latex().unwrap(), latex);
 }
+
+/// A script beside a literal delimiter stays where it is: not on the atom.
+#[test]
+fn scripts_beside_literal_delimiters_are_stable() {
+    use mathema::Format::{LaTeX, MathML, Omml};
+    use mathema::reader::Reader;
+    use mathema::reader::latex::LatexReader;
+    let config = Config::default();
+    let scripts = [
+        "",
+        "'",
+        "_1",
+        "^2",
+        "_1^2",
+        "{}_1",
+        "{}'",
+        "''",
+        "{}_{a}b",
+        "x'",
+        "x_1",
+        "x{}_1",
+        r"{}_{}",
+        r"\sum",
+        r"\sum{}_1",
+        r"\lim",
+        r"\lim{}_x",
+        "{_1}",
+        r"{\large x}'",
+        r"\textcolor{@}{'}",
+        r"\textcolor{@}{_1x}",
+        r"\\ '",
+        r"{}_1\middle|'",
+        r"\middle~'",
+        r"'\middle~",
+        r"a\middle\^{}_1b",
+        r"\frac{'}{_1}",
+        "{'}",
+    ];
+    let write = |read: &MathExpr| LatexWriter::write(read, &config).unwrap();
+    let (mut checked, mut unstable) = (0, 0);
+    for before in scripts {
+        for after in scripts {
+            for (open, close) in [
+                ("(", r"\~"),
+                (r"\~", ")"),
+                (r"\^", r"\_"),
+                (r"\~", "."),
+                (".", r"\%"),
+                ("/", r"\~"),
+            ] {
+                for outer in ["", "'", "_2", "{}^3", "z"] {
+                    let source = format!(r"\left{open} {before} {after} \right{close} {outer}");
+                    let Ok(read) = mathema::from_latex(&source) else {
+                        continue;
+                    };
+                    checked += 1;
+                    // Normalized: compact, heap, and `convert`.
+                    let compact = |source: &str| {
+                        let mut read = LatexReader::parse_compact(source, &config).unwrap();
+                        mathema::ast::normalize::normalize_compact_expr(&mut read.expr).unwrap();
+                        LatexWriter::write_compact(&read.expr, &config).unwrap()
+                    };
+                    let heap = |source: &str| {
+                        let mut read = LatexReader::parse(source, &config).unwrap().expr;
+                        normalize_expr(&mut read);
+                        write(&read)
+                    };
+                    let convert = |source: &str| mathema::convert(source, LaTeX, LaTeX).unwrap();
+                    for (name, f) in [
+                        ("compact", &compact as &dyn Fn(&str) -> String),
+                        ("heap", &heap),
+                        ("convert", &convert),
+                    ] {
+                        let once = f(&source);
+                        assert!(balanced(&once), "{source}: {once}");
+                        if f(&once) != once {
+                            // Only what an ordinary fence does not keep either.
+                            let ordinary = f(&format!(r"\left( {before} {after} \right) {outer}"));
+                            assert_ne!(f(&ordinary), ordinary, "{name}: {source}: {once}");
+                            unstable += 1;
+                        }
+                    }
+                    // As read.
+                    let builder = read.to_latex().unwrap();
+                    reread(&builder);
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 10_000 && unstable < checked / 20,
+        "{checked} {unstable}"
+    );
+    // Exact spellings: only a script without a base needs the null delimiter.
+    for (source, latex) in [
+        (
+            r"\left/ ' \right\~",
+            r"\left/ {}^{\prime} \middle. \mathclose{\char`\~} \right.",
+        ),
+        (
+            r"\left/ x' \right\~",
+            r"\left/ x^{\prime}\mathclose{\char`\~} \right.",
+        ),
+        (
+            r"\left\~ 'x \right)",
+            r"\left. \mathopen{\char`\~}{{}^{\prime}x} \right)",
+        ),
+        (r"\left( {}_1 \right)", r"\left( {}_{1} \right)"),
+    ] {
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+    }
+    // The same fence from other formats.
+    let mathml =
+        "<math><mfenced open='/' close='~'><msup><mrow/><mo>&#x2032;</mo></msup></mfenced></math>";
+    let latex = mathema::convert(mathml, MathML, LaTeX).unwrap();
+    assert_eq!(mathema::convert(&latex, LaTeX, LaTeX).unwrap(), latex);
+    let omml = mathema::convert(mathml, MathML, Omml).unwrap();
+    let latex = mathema::convert(&omml, Omml, LaTeX).unwrap();
+    assert_eq!(mathema::convert(&latex, LaTeX, LaTeX).unwrap(), latex);
+}
+
+#[test]
+fn combining_mark_at_the_start_of_a_name() {
+    for (name, latex) in [
+        ("\u{301}", r"\operatorname{\char769 }"),
+        ("\u{301}b", r"\operatorname{\char769 b}"),
+        ("\u{301}^", r"\operatorname{\char769 \char`\^}"),
+        ("a\u{301}", "\\operatorname{a\u{301}}"),
+    ] {
+        let op = MathNode::Operator(OperatorAttr {
+            name: name.into(),
+            limit_style: LimitStyle::SubSup,
+        });
+        assert_eq!(write(vec![op.clone()]), latex);
+        let boxed = write(vec![MathNode::Actuarial {
+            content: bx(op),
+            text_mode: true,
+        }]);
+        assert_eq!(boxed, format!(r"\angl{{${latex}$}}"));
+        for latex in [latex, &boxed] {
+            assert_eq!(reread(latex).to_latex().unwrap(), latex);
+        }
+    }
+}

@@ -716,7 +716,7 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
             && is_effectively_empty_arg(arena, sup) =>
         {
             buf.push_str("{\\mathord{");
-            write_mathop_glyph(buf, op);
+            write_mathop_glyph(buf, op, mapped_symbol_kind(op));
             buf.push_str("}}");
         },
         CompactNode::MathAtom {
@@ -1059,6 +1059,33 @@ fn is_script_with_empty_base(arena: &AstArena, id: NodeId) -> bool {
         _ => return false,
     };
     is_empty_script_base(arena, base)
+}
+
+/// Whether the last node of `children` that is written is a script without a
+/// base, or a group (which reading back may flatten) that ends with one.
+fn ends_with_bare_script<'a>(arena: &'a AstArena, mut children: &'a [NodeId]) -> bool {
+    while let Some((&last, before)) = children.split_last() {
+        match *arena.node(last) {
+            CompactNode::Row(span) if !arena.children(span).is_empty() => {
+                children = arena.children(span);
+            },
+            // Leading scripts of nothing.
+            CompactNode::PreScripts { base, .. }
+                if has_visible_prescripts(arena, last) && is_effectively_empty_arg(arena, base) =>
+            {
+                return true;
+            },
+            _ if is_empty_row(arena, last) => children = before,
+            _ if is_script_with_empty_base(arena, last) => {
+                if script_has_any_arg(arena, last) {
+                    return true;
+                }
+                children = before;
+            },
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Update the control-word state after a writer operation appended to `buf`.
@@ -1419,6 +1446,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 guard_row_break_argument(buf, start);
             }
             if literal_close {
+                // A script without a base would become the atom's leading one.
+                if ends_with_bare_script(arena, content_ids) {
+                    buf.push_str(" \\middle. ");
+                }
                 write_literal_delimiter(buf, close_str, "\\mathclose{");
                 buf.push_str(" \\right.");
             } else {
@@ -1615,9 +1646,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             body,
             limits,
         } => {
-            let Some(cmd) = nary_op_to_latex(op) else {
-                write_unnamed_nary(buf, arena, op, [sub, sup], body, limits);
-                return;
+            let cmd = match crate::unicode::symbols::unicode_to_latex_entry(op) {
+                Some((cmd, SymbolKind::LargeOp)) => cmd,
+                entry => {
+                    let kind = entry.map(|(_, kind)| kind);
+                    write_unnamed_nary(buf, arena, (op, kind), [sub, sup], body, limits);
+                    return;
+                },
             };
             buf.push('\\');
             buf.push_str(cmd);
@@ -2235,6 +2270,7 @@ fn write_structured_operator(
     let previous = std::mem::replace(&mut buf.in_operator_name, true);
     write_atom_content(buf, arena, content);
     buf.in_operator_name = previous;
+    separate_leading_mark(buf, start);
     // A constructed structured name may contain only plain letters. Keep a
     // TeX atom boundary so another import can recover its form and placement.
     if !crate::latex::parse::operator_name_needs_math(&buf[start..]) {
@@ -2433,14 +2469,40 @@ fn write_operator_name(buf: &mut LatexBuffer, name: &str, limits: LimitStyle) {
     }
 }
 
+/// A combining mark the lexer joins to the character before it.
+fn is_joining_mark(ch: char) -> bool {
+    matches!(ch, '\u{0300}'..='\u{036F}')
+}
+
+/// Write a combining mark at the start of a function name, at `start`, by its
+/// code: as itself it would join the brace before it.
+fn separate_leading_mark(buf: &mut LatexBuffer, start: usize) {
+    let Some(mark) = buf[start..]
+        .chars()
+        .next()
+        .filter(|&ch| is_joining_mark(ch))
+    else {
+        return;
+    };
+    let mut code = String::new();
+    write_char_code(&mut code, mark, " ");
+    // Two bytes, so the ends recorded after it stay right.
+    let rest = code.split_off(mark.len_utf8());
+    buf.text
+        .replace_range(start..start + mark.len_utf8(), &code);
+    buf.insert_text(start + mark.len_utf8(), &rest);
+}
+
 fn write_operator_name_content(buf: &mut LatexBuffer, name: &str, plain: bool) {
     if plain {
         buf.push_str(name);
         return;
     }
     // A character token makes the reader take the name as a math list.
-    if name.chars().any(|ch| matches!(ch, '\\' | '^' | '~')) {
+    if name.starts_with(is_joining_mark) || name.contains(['\\', '^', '~']) {
+        let start = buf.len();
         write_operator_name_list(buf, name);
+        separate_leading_mark(buf, start);
         return;
     }
     for ch in name.chars() {
@@ -2501,7 +2563,7 @@ fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
         && let Some(ch) = single_char(s)
         && nary_op_to_latex(ch).is_none()
     {
-        write_mathop_glyph(buf, ch);
+        write_mathop_glyph(buf, ch, mapped_symbol_kind(ch));
         return;
     }
     if kind == SymbolKind::Ordinary && buf.in_operator_name {
@@ -3040,7 +3102,7 @@ fn writes_as_delimiter(delim: &str) -> bool {
 fn write_literal_delimiter(buf: &mut LatexBuffer, delim: &str, wrapper: &str) {
     buf.push_str(wrapper);
     match single_char(delim) {
-        Some(ch) => write_literal_glyph(buf, ch),
+        Some(ch) => write_literal_glyph(buf, ch, mapped_symbol_kind(ch)),
         None => delim.chars().for_each(|ch| {
             write_char(buf, ch, Place::Delimiter);
         }),
@@ -3111,13 +3173,13 @@ fn is_named_large_op(text: &str) -> bool {
 fn write_unnamed_nary(
     buf: &mut LatexBuffer,
     arena: &AstArena,
-    op: char,
+    op: (char, Option<SymbolKind>),
     scripts: [NodeId; 2],
     body: NodeId,
     limits: LimitStyle,
 ) {
     let start = buf.len();
-    write_mathop_glyph(buf, op);
+    write_mathop_glyph(buf, op.0, op.1);
     let visible = scripts.map(|script| !is_effectively_empty_arg(arena, script));
     if visible != [false; 2] {
         match limits {
@@ -3151,22 +3213,22 @@ fn write_unnamed_nary(
 /// `ch` as one large-operator atom, for a glyph no command reads back as a
 /// large operator.
 #[cold]
-fn write_mathop_glyph(buf: &mut LatexBuffer, ch: char) {
+fn write_mathop_glyph(buf: &mut LatexBuffer, ch: char, kind: Option<SymbolKind>) {
     buf.push_str("\\mathop{");
-    write_literal_glyph(buf, ch);
+    write_literal_glyph(buf, ch, kind);
     buf.push('}');
 }
 
 /// Write `ch` so that the reader (and TeX) sees that one glyph and nothing
-/// else, with the class the glyph has on its own. The spelling reads back as
-/// a node that is written the same way.
+/// else, with the class the glyph has on its own, `kind` in the symbol table.
+/// The spelling reads back as a node that is written the same way.
 #[cold]
-fn write_literal_glyph(buf: &mut LatexBuffer, ch: char) {
+fn write_literal_glyph(buf: &mut LatexBuffer, ch: char, kind: Option<SymbolKind>) {
     match ch {
         _ if ch.is_ascii() || needs_escape(ch, Place::Atom) => {
             write_char(buf, ch, Place::Atom);
         },
-        _ => match mapped_symbol_kind(ch) {
+        _ => match kind {
             None if ch.is_alphabetic() => buf.push(ch),
             Some(SymbolKind::Alphabetic) => write_identifier_text(buf, ch.encode_utf8(&mut [0; 4])),
             kind => write_symbol_text(
@@ -3429,7 +3491,7 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             let start = buf.len();
             write_box_math(buf, arena, math);
             // A combining mark would join the math shift.
-            if buf[start..].starts_with(|ch| matches!(ch, '\u{0300}'..='\u{036F}')) {
+            if buf[start..].starts_with(is_joining_mark) {
                 buf.insert_text(start, r"\relax ");
             }
             buf.push('$');
@@ -3527,7 +3589,7 @@ fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
         }
         // A combining mark would join the brace before it. In literal source
         // text (what `\verb` reads) it is a character like any other.
-        if matches!(ch, '\u{0300}'..='\u{036F}') && (literal_marks || buf.ends_with(['{', '}'])) {
+        if is_joining_mark(ch) && (literal_marks || buf.ends_with(['{', '}'])) {
             write_char_code(buf, ch, "{}");
         } else if !write_char(buf, ch, place) {
             buf.report.char(ch);
