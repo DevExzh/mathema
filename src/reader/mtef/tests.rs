@@ -913,6 +913,29 @@ fn leading_scripts_lead_letters_and_follow_otherwise() {
     assert_eq!(latex5(&[&x, &plus, &pre_sup5('2')]), "x+{}^{2}");
 }
 
+/// A slash takes no scripts or primes, like a binary operator, though its class
+/// is ordinary.
+#[test]
+fn a_slash_takes_scripts_and_primes_as_an_operator_does() {
+    let f = |ch| c5(0, 2, ch);
+    let (x, y, prime) = (c5(0, 3, 'x'), c5(0, 3, 'y'), f('\''));
+    let alike = |parts: &dyn Fn(&[u8]) -> Vec<Vec<u8>>| {
+        let written = |operator| {
+            let parts = parts(&c5(0, 6, operator));
+            latex5(&parts.iter().map(Vec::as_slice).collect::<Vec<_>>())
+        };
+        // Only the spacing of the spelling differs.
+        let slash = written('/').replace(['/', ' '], "");
+        assert_eq!(slash, written('+').replace(['+', ' '], ""));
+    };
+    alike(&|op| vec![x.clone(), op.to_vec(), prime.clone(), y.clone()]);
+    alike(&|op| vec![x.clone(), op.to_vec(), pre_sup5('2'), y.clone()]);
+    alike(&|op| vec![x.clone(), pre_sup5('2'), op.to_vec(), y.clone()]);
+    alike(&|op| vec![x.clone(), op.to_vec(), pre_sup5('2')]);
+    assert_eq!(latex5(&[&x, &c5(0, 6, '/'), &pre_sup5('2')]), "x/{}^{2}");
+    assert_eq!(latex5(&[&x, &pre_sup5('2'), &c5(0, 6, '/'), &y]), "x^{2}/y");
+}
+
 #[test]
 fn decimals_primes_and_quotes() {
     let n = |ch| c5(0, 8, ch);
