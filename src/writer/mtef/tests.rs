@@ -1635,7 +1635,79 @@ fn defined_styles_draw_only_what_is_bold_or_italic() {
         ),
         (r"\mathit{\Gamma}\Delta", vec![('Γ', 0), ('Δ', 0)], 1),
         (r"\mathit{\Gamma}x", vec![('Γ', 2), ('x', 2)], 0),
+        // Text of one style, and of two.
+        (r"\textbf{\textit{a}}", vec![('a', 3)], 0),
+        (
+            r"\textbf{a}x\textbf{b}",
+            vec![('a', 1), ('x', 2), ('b', 1)],
+            0,
+        ),
+        (
+            r"\textbf{a}x\textit{b}",
+            vec![('a', 0), ('x', 2), ('b', 0)],
+            1,
+        ),
+        (
+            r"\text{a}x\textbf{b}",
+            vec![('a', 0), ('x', 2), ('b', 0)],
+            1,
+        ),
     ] {
         assert_eq!(drawn(latex), (chars, warnings), "{latex}");
+    }
+}
+
+/// Text under an embellishment and the name of an undefined command have
+/// their own style, not that of the text before.
+#[test]
+fn every_text_has_its_own_style() {
+    use crate::{MtefVersion, MtefWriteOptions};
+    let styled = "styled text was written as plain text";
+    for (latex, plain) in [
+        (r"\textbf{a}x\bar{\text{b}}", r"\text{a}x\bar{\text{b}}"),
+        (r"\text{a}x\bar{\textbf{b}}", r"\text{a}x\bar{\text{b}}"),
+        (r"\textbf{a}x\foo", r"\text{a}x\foo"),
+    ] {
+        let write = |latex: &str| {
+            crate::from_latex(latex)
+                .unwrap()
+                .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(MtefVersion::V5))
+                .unwrap()
+        };
+        let (bytes, diagnostics) = write(latex);
+        assert_eq!(bytes, write(plain).0, "{latex}");
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains(styled)),
+            "{latex}: {diagnostics:?}"
+        );
+    }
+    let (bytes, _) = crate::from_latex(r"\bar{\textbf{b}}")
+        .unwrap()
+        .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(MtefVersion::V5))
+        .unwrap();
+    // The style definitions start with the font and bits of fnTEXT.
+    assert!(
+        bytes.windows(4).any(|w| w == [0x0F, 0x0C, 1, 1]),
+        "{bytes:02x?}"
+    );
+}
+
+/// Punctuation has a font of its own only where the Function style is bold or
+/// italic.
+#[test]
+fn punctuation_keeps_the_function_style() {
+    use crate::{MtefVersion, MtefWriteOptions};
+    // CHAR in the Function style (2, biased by 128).
+    let function_style = |latex: &str, version: MtefVersion| {
+        let bytes = crate::from_latex(latex)
+            .unwrap()
+            .to_mtef_bytes(&MtefWriteOptions::new(version))
+            .unwrap();
+        bytes.windows(2).any(|w| w == [130, b'('])
+    };
+    for (latex, in_v5) in [(r"\sin(x", true), (r"\mathbf{\sin}(x", false), ("(x", true)] {
+        assert_eq!(function_style(latex, MtefVersion::V5), in_v5, "{latex}");
+        // MTEF 3 has no definitions of styles: names are written plain.
+        assert!(function_style(latex, MtefVersion::V3), "{latex}");
     }
 }
