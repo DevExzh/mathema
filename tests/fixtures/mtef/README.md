@@ -53,6 +53,8 @@ Equation Editor habit that Strict mode now accepts.
 | `govdocs-v5-fraktur.bin` (OLE) | `zipfiles/302.zip` | `302/302170.ppt` | PowerPoint OLE object at offset 2309673 | 5 | Euclid Fraktur letter as MTCode U+F001 with font position `B` |
 | `govdocs-v5-script.bin` (OLE) | `zipfiles/456.zip` | `456/456574.doc` | `ObjectPool/_1140353549/Equation Native` | 5 | Euclid Math One letter as MTCode U+F10D with font position `N` |
 | `govdocs-v5-symbol-arrow-extension.bin` (OLE) | `zipfiles/871.zip` | `871/871082.doc` | `ObjectPool/_1200312916/Equation Native` | 5 | Symbol-font arrow extension written as Adobe's U+F8E6 |
+| `govdocs-v2-font-styles.bin` (OLE) | `zipfiles/208.zip` | `208/208232.ppt` | PowerPoint OLE object at offset 205031 | 2 | FONT style bytes 1 (Times) and 2 (Arial); the preview picture draws `S` and `a` in bold Times and `A priori` in italic Arial |
+| `govdocs-v3-font-styles.bin` (OLE) | `zipfiles/303.zip` | `303/303614.ppt` | PowerPoint OLE object at offset 238387 | 3 | FONT style bytes 1 (Times New Roman Greek) and 2 (@Arial Unicode MS); the preview picture draws `Ψ` in bold and `K` in italic |
 | `govdocs-v3-size-points.bin` (OLE) | `zipfiles/637.zip` | `637/637999.ppt` | PowerPoint OLE object at offset 138953 | 3 | SIZE with an explicit size, 288/32 = 9 pt; the preview picture draws it at 288/32 pt |
 | `govdocs-v5-size-points.bin` (OLE) | `zipfiles/723.zip` | `723/723266.pps` | PowerPoint OLE object at offset 253903 | 5 | SIZE with an explicit size, 384/32 = 12 pt; the preview picture draws it at 384/32 pt |
 | `govdocs-v5-size-delta.bin` (OLE) | `zipfiles/474.zip` | `474/474123.doc` | `ObjectPool/_1060372244/Equation Native` | 5 | SIZE with a delta, full size - 2 pt |

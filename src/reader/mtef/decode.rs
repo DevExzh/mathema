@@ -1594,10 +1594,16 @@ impl<'a> Decoder<'a> {
         let typeface = self.u8()?;
         let style = self.u8()?;
         let name = self.cstr()?;
-        // MTEF 3 font style: 1 italic, 2 bold.
+        // 1 is bold and 2 italic. The descriptions of MTEF 3 and 4 say the
+        // opposite; the pictures stored with MTEF 2 and 3 equations do not
+        // (docs/mtef-legacy.md). No picture of an MTEF 4 equation has either.
+        let is_v4 = self
+            .info
+            .as_ref()
+            .is_some_and(|info| info.version == MtefVersion::V4);
         let style = FontStyle {
-            italic: style & 0x01 != 0,
-            bold: style & 0x02 != 0,
+            bold: style & if is_v4 { 0x02 } else { 0x01 } != 0,
+            italic: style & if is_v4 { 0x01 } else { 0x02 } != 0,
         };
         self.v3_fonts[usize::from(typeface)] = Some((Encoding::from_font_name(name), style));
         Ok(())

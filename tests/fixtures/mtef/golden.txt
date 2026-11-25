@@ -1,4 +1,6 @@
+govdocs-v2-font-styles: \mathbf{S}_{\mathbf{a}}= \text{ '}A\ priori\text{' covariance}
 govdocs-v3-buffer-slack: t= \frac{V_n}{15{Q}_p}
+govdocs-v3-font-styles: I(Z)= \int\nolimits {dtG(t){\left| K\mathbf{\Psi}(t;Z) \right|}^{2}}
 govdocs-v3-script-before-slash: x_B= \Delta m_s/\Gamma= 30.03
 govdocs-v3-size-points: \footnotesize \uparrow
 govdocs-v3-size-typesize: F\scriptstyle 12\displaystyle = k\frac{q\scriptstyle 1\textstyle \cdot q\scriptstyle 2}{r\scriptstyle 2}
@@ -18,7 +20,7 @@ upstream-v5-integrals: \begin{array}{l} \int\nolimits {a+ \int\limits_c^a {b+}}\
 upstream-v5-matrices: \begin{array}{lll} \begin{array}{l} d \\ g \\ b \\ a \\ b \\ c \end{array} & \begin{array}{l} d \\ b \\ d \\ a \\ b \\ c \end{array} & \begin{array}{l} c \\ b \\ d \\ d \\ b \\ e \end{array} \\ \begin{array}{l} a \\ b \end{array} & \begin{array}{l} c \\ d \end{array} & \begin{array}{l} e \\ f \end{array} \\ x & y & z \end{array}+ \begin{array}{lll} a+ b & d & 3e \\ v- 2 & r+ l & db+ 3 \\ x & x & s \end{array}+ \begin{array}{ccc} a+ b & c+ d & w \\ c+ 2 & e & e+ 3 \\ e & w & x \end{array}
 upstream-v5-sumop-limits: \begin{array}{l} \quad \quad \,\min_{w,b,\xi}\quad \;\frac{1}{2}w^Tw+ C\sum\limits_{i= 1}^l{}\xi_i \\ \text{subject}\;\text{to }\;\quad y_i(w^T\phi\left( x_i \right)+ b)\ \;\geq\;1- \xi_i \\ \quad \quad \quad \quad \quad \xi_i\geq 0,\quad \forall i \end{array}
 v2-mac-prime-integral: 1+ z= \frac{1}{a};\quad \quad d(z)\propto \int\limits_{0}^z {\frac{d{z}^{\prime}}{H(z^{\prime})}}
-v2-mac-roman-underbraces: \underbrace{\tau_A}_{Affvén\ transit\ time}\ <\ \ \ \underbrace{\tau_S}_{Sound\ transit\ time}\ \ \ \ < <\ \ \ \ \underbrace{\tau_{evol}}_{MHD\ evolution\ time}\ \ < <\ \ \ \ \underbrace{\tau_R}_{\mathbf{Re}sistive\ diffusion\ time}
+v2-mac-roman-underbraces: \underbrace{\tau_A}_{Affvén\ transit\ time}\ <\ \ \ \underbrace{\tau_S}_{Sound\ transit\ time}\ \ \ \ < <\ \ \ \ \underbrace{\tau_{evol}}_{MHD\ evolution\ time}\ \ < <\ \ \ \ \underbrace{\tau_R}_{Resistive\ diffusion\ time}
 v2-win-matrix-slack: \frac{1}{8}\left[ \begin{array}{lll} 5 & - 3 & - 8 \\ - 3 & 5 & 0 \\ - 8 & 0 & 20 \end{array} \right]
 v2-win-mt-extra-slack: L_g= 0.2\ell\left( \ell n\frac{155\ell}{d} \right)
 v3-bars: \left| z_{1}+z_{2} \right|= 2

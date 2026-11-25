@@ -167,6 +167,32 @@ Lenient mode reads them as MTEF 3 does, with a warning.
 No picture confirms, though files have them: MT Extra 0x70 (paired by MTEF 5
 only), 0x49 on Windows, fnEXPAND 0xE9 and 0xF9, and the space widths.
 
+## The style of FONT records (MTEF 2 and 3)
+
+The style byte of a FONT record is bit 0 **bold**, bit 1 **italic**, as in MTEF 5.
+The descriptions of MTEF 3 and 4 say the opposite ("1 for italic and/or 2 for
+bold"). **[corpus] [preview]**
+
+The pictures name the font of every run of text, with its weight and slant. Of
+the fonts of govdocs1 equations that have one style in the equation and one in
+the picture, and that no MathType style uses (none of Times New Roman, Times,
+Symbol and MT Extra):
+
+| | byte 0 | byte 1 | byte 2 | byte 3 |
+| --- | --- | --- | --- | --- |
+| MTEF 2 (Equation Editor 2.x to 12.x) | 12 plain | 1 bold | 1 italic | - |
+| MTEF 3 (Equation Editor 3.x) | 315 plain | 212 bold | 48 italic | 30 bold italic |
+| MTEF 5 (bits as described) | 88 plain | 14 bold | 14 italic | 11 bold italic |
+
+None is drawn otherwise. By character, for the letters and digits an equation
+draws in such fonts only (any family, bytes 1 and 2), the pictures agree with
+bold = 1 and italic = 2 in 26 MTEF 2 equations and 310 MTEF 3 equations, with
+the description in 0 and 1; 3 and 18 show neither. The MTEF 2 equations are from
+about 11 documents, Macintosh and Windows, those of MTEF 3 from about 100.
+
+No MTEF 4 equation with such a byte has a picture (3 equations have explicit
+fonts at all): there the reader keeps to the description of MTEF 4.
+
 ## Slack after the equation
 
 **[corpus]** 496 streams of Windows Equation Editor 2 (headers 1, 1, 2, 0 and

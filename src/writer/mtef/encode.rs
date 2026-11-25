@@ -1559,11 +1559,11 @@ impl<'a> Encoder<'a> {
             self.out.push(TEXT_FONT_DEF);
             self.out.push(style_bits as u8);
         } else {
-            // FONT: typeface number, style (1 italic, 2 bold), font name.
-            let style = ((style_bits & 1) << 1) | ((style_bits >> 1) & 1);
+            // FONT: typeface number, style (as in MTEF 5 and against the
+            // description of MTEF 3: docs/mtef-legacy.md), font name.
             self.out.push(FONT);
             self.out.push(index as u8);
-            self.out.push(style as u8);
+            self.out.push(style_bits as u8);
             self.out.extend_from_slice(TEXT_FONT_NAME);
             self.out.push(0);
         }

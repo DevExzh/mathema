@@ -2423,6 +2423,30 @@ fn a_possessive_keeps_its_apostrophe() {
     assert!(!mtef.contains("9801ef"), "{mtef}");
 }
 
+/// The style byte of FONT is 1 bold and 2 italic in MTEF 2 and 3; in MTEF 4,
+/// without evidence against it, as its description says.
+#[test]
+fn font_records_give_bold_and_italic() {
+    let equation = |version: u8, style: u8| {
+        let mut data = vec![version, 1, 1, 3, 0, 10, 1, 8, 1, style];
+        data.extend_from_slice(b"Arial\0");
+        data.extend_from_slice(&[2, 127, b'x']);
+        if version == 3 {
+            data.push(0);
+        }
+        data.extend_from_slice(&[0, 0]);
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap()
+    };
+    for version in [2, 3] {
+        assert_eq!(equation(version, 0), r"\mathrm{x}");
+        assert_eq!(equation(version, 1), r"\mathbf{x}");
+        assert_eq!(equation(version, 2), "x");
+        assert_eq!(equation(version, 3), r"\boldsymbol{x}");
+    }
+    assert_eq!(equation(4, 1), "x");
+    assert_eq!(equation(4, 2), r"\mathbf{x}");
+}
+
 /// COLOR_DEF blue, black; COLOR `n` selects one.
 fn colours() -> Vec<u8> {
     vec![0x10, 0, 0, 0, 0, 0, 0xE8, 0x03, 0x10, 0, 0, 0, 0, 0, 0, 0]

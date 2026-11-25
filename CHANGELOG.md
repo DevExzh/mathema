@@ -103,6 +103,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept and drawn relative to an assumed 12 pt.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
+- MTEF 2 and 3 reader: bold and italic of explicit fonts were read the wrong way
+  round. The description of MTEF 3 has the two bits swapped; the pictures stored
+  with equations show it (`docs/mtef-legacy.md`). MTEF 4 and 5 are unchanged, and
+  so is MTEF 3 this crate wrote, which has only upright and bold italic fonts.
 - MTEF reader and writer: rewriting settles after one pass in more equations.
   A limit template without limits, and coloured parts of a template, join
   their line; a prime belongs to the nucleus in its colour whatever the colours

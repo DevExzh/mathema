@@ -71,6 +71,32 @@ fn fixtures_match_their_goldens() {
     }
 }
 
+/// The bold and italic of explicit fonts in MTEF 2 and 3, as the pictures of
+/// these equations draw them.
+#[test]
+fn explicit_fonts_are_bold_and_italic_as_drawn() {
+    let mathml = |name: &str| {
+        let bytes = std::fs::read(fixture_dir().join(name)).unwrap();
+        from_mtef_bytes(&bytes).unwrap().to_mathml().unwrap()
+    };
+    let bold = |letter: char| format!(r#"<mstyle mathvariant="bold"><mi>{letter}</mi></mstyle>"#);
+    // Picture: bold Times "S", "a"; italic Arial "A priori".
+    let drawn = mathml("govdocs-v2-font-styles.bin");
+    assert!(
+        drawn.contains(&bold('S')) && drawn.contains(&bold('a')),
+        "{drawn}"
+    );
+    assert_eq!(drawn.matches("mathvariant").count(), 2, "{drawn}");
+    for letter in "Apriori".chars() {
+        assert!(drawn.contains(&format!("<mi>{letter}</mi>")), "{drawn}");
+    }
+    // Picture: bold "Ψ", italic "K".
+    let drawn = mathml("govdocs-v3-font-styles.bin");
+    assert!(drawn.contains(&bold('Ψ')), "{drawn}");
+    assert!(drawn.contains("<mi>K</mi>"), "{drawn}");
+    assert_eq!(drawn.matches("mathvariant").count(), 1, "{drawn}");
+}
+
 #[test]
 fn fixtures_report_their_version_and_header() {
     for (name, bytes) in fixtures() {
