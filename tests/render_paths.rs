@@ -121,4 +121,28 @@ fn colons_and_slashes_have_one_class_in_every_reader() {
         let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
         assert_eq!(again, latex);
     }
+    // An ordinary colon stays one wherever it is.
+    for input in [
+        r"x_{{:}}",
+        r"x^{{:}}_{{:}}",
+        r"{:}_{{:}}^{\prime}",
+        r"\frac{{:}}{{:}}",
+        r"\hat{{:}}",
+        r"\sqrt{{:}}",
+        r"\sum_{{:}}^{{:}}{:}",
+        r"\overset{{:}}{{:}}",
+        r"\mathrel{{:}}",
+        r"\textcolor{red}{{:}}",
+        r"\left{:}",
+        r"\operatorname{a{:}b}",
+        r"\char`:_\char`:^\char`:",
+        "\\char'72='_\n\\char'72='_'-'4",
+    ] {
+        let Ok(read) = mathema::from_latex(input) else {
+            continue;
+        };
+        let written = read.to_latex().unwrap();
+        let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
+        assert_eq!(again, written, "{input}");
+    }
 }

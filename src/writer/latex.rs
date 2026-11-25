@@ -1020,7 +1020,7 @@ fn write_script_arg(
             let arg = written_script_content(arena, arg);
             if write_scalar_operator_arg(buf, arena, arg) {
                 // A large-operator control word is one token.
-            } else if is_numeric_argument(arena, arg) {
+            } else if is_numeric_argument(arena, arg) || is_ordinary_colon(arena, arg) {
                 buf.push('{');
                 write_node(buf, arena, arg);
                 buf.push('}');
@@ -1057,6 +1057,12 @@ fn write_script_arg(
     }
     let bytes = written.as_bytes();
     bytes.len() > 1 && bytes[0] == b'\\' && bytes[1..].iter().all(u8::is_ascii_alphabetic)
+}
+
+/// An ordinary colon is written `{:}`, which as an argument is a plain one.
+fn is_ordinary_colon(arena: &AstArena, id: NodeId) -> bool {
+    matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::Ordinary, sid)
+        if arena.str_val(sid) == ":")
 }
 
 /// Whether TeX reads `text`, written right after a `_`/`^` marker, as exactly
