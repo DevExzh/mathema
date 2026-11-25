@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `\underbrace` and its like are operators, and a binary operator at the end of a
   list or before a relation or a closing is ordinary.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over
-  a label that fits (`\overset{!}{=}`, `\xrightarrow{f}`), not 2.25em wide.
+  a label that fits (`\overset{!}{=}`, `\xrightarrow{f}`), not 2.25em wide; an
+  equals sign under one up to twice as wide (`\overset{\text{def}}{=}`).
   Angle brackets past the largest glyph are that glyph.
 - Rendering: `\boxed`, `\fbox`, `\colorbox` and `\fcolorbox` have the padding of
   TeX (3pt, and 0.4pt of frame, drawn inside the box), not 1pt, and a

@@ -488,6 +488,8 @@ fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
         ("\\mathfrak{K}^2", 0.718 + 0.4),
         ("\\mathnormal{V}_1", 0.583 + 0.4),
         ("\\mathord{V}_1", 0.583 + 0.4),
+        ("\\mathord{\\vec V}_1", 0.583 + 0.4),
+        ("\\mathord{\\mathfrak K}_1", 0.668 + 0.4),
         ("\\vec{\\mathfrak{K}}_1", 0.668 + 0.4),
         ("\\bar{\\bar V}_1", 0.583 + 0.4),
         // As in TeX and KaTeX, not a coloured letter or a longer group.
@@ -516,6 +518,85 @@ fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
     };
     assert_eq!(offset("\\bar{\\bar V}"), offset("\\bar V"));
     assert_eq!(offset("\\hat{\\mathord{V}}"), offset("\\hat V"));
+}
+
+/// An equals sign is drawn wider for a label wider than two of it.
+#[test]
+fn an_equals_sign_stretches_past_two_of_it() {
+    let width = |label: f64| extensible_arrow_width('=', label, 1.0);
+    assert_eq!(width(0.778), None);
+    assert_eq!(width(1.556), None);
+    assert!((width(1.557).unwrap() - 2.257).abs() < 1e-9);
+    assert!((extensible_arrow_width('=', 0.8, 0.5).unwrap() - 1.15).abs() < 1e-9);
+    assert_eq!(extensible_arrow_width('→', 0.455, 1.0), None);
+    assert!((extensible_arrow_width('→', 0.456, 1.0).unwrap() - 1.001).abs() < 1e-9);
+}
+
+/// Trees only other readers and the API build: a class atom, numbers and
+/// declarations in a face.
+#[test]
+fn atoms_and_faces_of_built_trees() {
+    let id = |text: &str| MathNode::Identifier(text.into());
+    let plus = || MathNode::Symbol(SymbolKind::BinaryOp, "+".into());
+    let close = || MathNode::Symbol(SymbolKind::Close, ")".into());
+    let width = |nodes: Vec<MathNode>| {
+        let options = default_options();
+        let expr = MathExpr::inline(nodes);
+        let compact = crate::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+        let mut arena = LayoutArena::new();
+        let heap = crate::render::render_to_svg(&expr, &options).unwrap();
+        let other =
+            crate::render::render_to_svg_compact_arena(&compact, &options, &mut arena).unwrap();
+        assert_eq!(heap, other);
+        layout_expr(&expr, MathStyle::Text, &options).width
+    };
+    let close_to = |actual: f64, expected: f64| {
+        assert!((actual - expected).abs() < 2e-3, "{actual}, not {expected}");
+    };
+    // Scripts of an ordinary atom of one letter; another class is a box.
+    let scripted = |atom_type| {
+        width(vec![MathNode::Subscript {
+            base: Box::new(MathNode::MathAtom {
+                atom_type,
+                content: Box::new(id("V")),
+            }),
+            sub: Box::new(MathNode::Number("1".into())),
+        }])
+    };
+    close_to(scripted(MathAtomType::Ord), 0.583 + 0.4);
+    // Declarations do not hide what follows an operator.
+    let switch = || MathNode::StyleSwitch(1);
+    close_to(width(vec![id("a"), plus(), switch(), close()]), 1.696);
+    close_to(
+        width(vec![id("a"), plus(), MathNode::SizeSwitch(5), close()]),
+        1.307 + 0.389 * 1.2,
+    );
+    close_to(
+        width(vec![id("a"), plus(), switch(), id("b")]),
+        0.529 + 0.778 + 0.443 + 8.0 / 18.0,
+    );
+    // Operators in a face, before a closing, at its end and before a letter.
+    let styled = |nodes| width(vec![MathNode::Styled(TextStyle::Normal, nodes)]);
+    let bare = styled(vec![id("a"), id("b")]);
+    close_to(
+        styled(vec![id("a"), plus(), close()]),
+        styled(vec![id("a")]) + 0.778 + 0.389,
+    );
+    close_to(styled(vec![id("a"), plus()]), styled(vec![id("a")]) + 0.778);
+    close_to(
+        styled(vec![id("a"), plus(), id("b")]),
+        bare + 0.778 + 8.0 / 18.0,
+    );
+    // A number inside a composite in a face with Math letters is drawn.
+    let number = width(vec![MathNode::Styled(
+        TextStyle::DoubleStruck,
+        vec![MathNode::Fraction {
+            kind: FractionKind::Display,
+            num: Box::new(MathNode::Number("12".into())),
+            den: Box::new(id("R")),
+        }],
+    )]);
+    assert!(number > 1.0, "{number}");
 }
 
 /// A delimiter taller than every glyph of a font without an assembly for it.
@@ -591,6 +672,10 @@ fn labels_stretch_what_they_do_not_fit_on() {
     for (latex, width) in [
         ("\\overset{!}{=}", 0.778),
         ("\\stackrel{?}{=}", 0.778),
+        ("\\overset{(a)}{=}", 0.915),
+        ("\\overset{\\text{def}}{=}", 0.914),
+        // As wide as two signs.
+        ("\\overset{\\kern1.555em}{=}", 1.555),
         ("\\xlongequal[a]{b}", 0.778),
         ("\\overset{f}{\\rightarrow}", 1.0),
         ("\\xrightarrow{f}", 1.0),

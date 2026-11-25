@@ -55,7 +55,7 @@ fn is_escape(text: &str) -> bool {
 }
 
 /// The names of the control words in `text`, as the widest lexer reads them.
-#[cfg(any(test, debug_assertions))]
+#[cfg(debug_assertions)]
 fn control_words(text: &str) -> impl Iterator<Item = &str> {
     let mut rest = text;
     std::iter::from_fn(move || {

@@ -63,18 +63,18 @@ const EQUAL_LABEL_PADDING_EM: f64 = 0.7;
 
 /// The width an arrow is drawn at for a label, unless the label fits on the
 /// glyph. The tree does not tell `\xrightarrow{f}` from `\overset{f}{\to}`, nor
-/// `\xlongequal` from `\overset{!}{=}`, which do not differ for a short label: an
-/// equals sign, usually an `\overset`, is drawn wider for a label wider than
-/// itself only.
+/// `\xlongequal` from `\overset{\text{def}}{=}`: an equals sign, usually an
+/// `\overset`, is drawn wider only for a label more than twice as wide.
 pub(super) fn extensible_arrow_width(ch: char, label: f64, size: f64) -> Option<f64> {
     let natural = metrics::glyph_metrics_upright(ch).advance() * size;
-    let (padding, least) = if ch == '=' {
-        (EQUAL_LABEL_PADDING_EM * size, label)
+    let (padding, fits) = if ch == '=' {
+        let padding = EQUAL_LABEL_PADDING_EM * size;
+        (padding, label <= 2.0 * natural + 1e-9)
     } else {
         let padding = ARROW_LABEL_PADDING_EM * size;
-        (padding, label + padding)
+        (padding, label + padding <= natural + 1e-9)
     };
-    (least > natural + 1e-9).then_some(label + padding)
+    (!fits).then_some(label + padding)
 }
 
 /// Build the box for an extensible arrow of the given char and total width,
@@ -480,12 +480,12 @@ fn settle_operators<B>(parts: &mut [FencePart<'_, B>]) {
     for part in parts.iter_mut().rev() {
         match part {
             FencePart::Element {
-                atoms: Some((atom, right)),
+                atoms: Some((atom, _)),
                 ..
             } => {
-                if *atom == AtomType::Bin && *right == AtomType::Bin {
+                // What follows is spaced alike against either.
+                if *atom == AtomType::Bin {
                     *atom = spacing::bin_before(next);
-                    *right = *atom;
                 }
                 next = Some(*atom);
             },
