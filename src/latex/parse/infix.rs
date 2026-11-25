@@ -72,9 +72,9 @@ pub(super) struct InfixFraction {
     command: InfixCommand,
     /// Where the command is in the source, when known.
     span: Option<Span>,
-    /// The address of the input after the command, which identifies it
-    /// across speculative re-parses of the same text.
-    at: usize,
+    /// The place after the command, which identifies it across speculative
+    /// re-parses of the same text.
+    at: Place,
     /// Whether the fraction draws a rule (`\over`, a nonzero `\above`).
     has_rule: bool,
     /// The fence delimiters; empty strings for none.
@@ -97,7 +97,7 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Tag,
             )));
         };
-        let at = input.as_ptr() as usize;
+        let at = self.place(input);
         let span = self.source_span_of_command(name);
         let (input, open, close) = match command {
             InfixCommand::OverWithDelims
@@ -260,10 +260,10 @@ impl LatexCompactParser {
     /// A warning about the source at `at`, given once however often a
     /// speculative parse reads that source again.
     fn infix_warn(&mut self, at: &str, message: String, span: Option<Span>) {
-        self.infix_warn_at(at.as_ptr() as usize, message, span);
+        self.infix_warn_at(self.place(at), message, span);
     }
 
-    fn infix_warn_at(&mut self, at: usize, message: String, span: Option<Span>) {
+    fn infix_warn_at(&mut self, at: Place, message: String, span: Option<Span>) {
         if self.infix_reported.insert((at, message.clone())) {
             self.diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Warning,

@@ -2,6 +2,7 @@ mod braket;
 mod dimension;
 mod hbox;
 mod infix;
+mod place;
 mod text_accent;
 
 use nom::IResult;
@@ -22,6 +23,8 @@ use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
     is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
 };
+
+use place::{Buffers, Place};
 
 use super::error::LatexParseError;
 use super::preprocess::{ExpansionFailure, preprocess_cow};
@@ -1845,6 +1848,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
         };
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
     parser.source = (input.as_ptr() as usize, input.len());
+    parser.open_text(&processed);
     parser.lenient = config.strictness == Strictness::Lenient;
     if let Some(error) = warning {
         parser.warn(format!(
@@ -2051,7 +2055,7 @@ pub(crate) struct LatexCompactParser {
     infix_markers: Vec<infix::InfixFraction>,
     /// The infix-fraction warnings given, by source address and message, so
     /// that a speculative re-parse of the same source does not repeat one.
-    infix_reported: HashSet<(usize, String)>,
+    infix_reported: HashSet<(Place, String)>,
     /// Set by `parse_element` to the script it parsed when that script had no
     /// base of its own (`^`, `_` or `'` after white space), which TeX attaches to the
     /// preceding atom.
@@ -2068,10 +2072,10 @@ pub(crate) struct LatexCompactParser {
     /// clears it). A `\color` switch read there stops at such a `\middle`.
     fence_list: bool,
     /// A `\color` switch read in a fence's own list that stopped at a
-    /// `\middle`: its color and the address of that `\middle`, so the fence
+    /// `\middle`: its color and the place of that `\middle`, so the fence
     /// resumes the color after the delimiter, as the switch is in force to
     /// the end of the fence.
-    color_at_middle: Option<(StrId, usize)>,
+    color_at_middle: Option<(StrId, Place)>,
     /// Commands around the current one, whose arguments need no group.
     command_depth: u32,
     /// The ordinary atom made last for an operator alone in braces, and that
@@ -2098,11 +2102,13 @@ pub(crate) struct LatexCompactParser {
     /// such as a multi-digit number after a script marker (`x^22`).
     lenient: bool,
     /// Script digits already reported as the start of a longer number
-    /// (`x^22`), keyed by their address in the text being parsed so a
+    /// (`x^22`), keyed by their place in the text being parsed so a
     /// re-read after backtracking is not reported twice, and the number of
     /// occurrences left unreported once the report limit was reached.
     /// Boxed: most parses meet none.
-    split_numbers: Option<Box<(HashSet<usize>, usize)>>,
+    split_numbers: Option<Box<(HashSet<Place>, usize)>>,
+    /// The texts being parsed, for the places of what is in them.
+    buffers: Buffers,
 }
 
 impl LatexCompactParser {
@@ -2141,6 +2147,7 @@ impl LatexCompactParser {
             source: (0, 0),
             lenient: false,
             split_numbers: None,
+            buffers: Buffers::default(),
         }
     }
 
@@ -3160,8 +3167,9 @@ impl LatexCompactParser {
         }
         /// Occurrences reported before one summary takes their place.
         const REPORTED: usize = 100;
+        let place = self.place(digits);
         let (seen, unreported) = &mut **self.split_numbers.get_or_insert_with(Box::default);
-        if !seen.insert(digits.as_ptr() as usize) {
+        if !seen.insert(place) {
             // The same text re-read after backtracking.
             return;
         }
@@ -4749,7 +4757,10 @@ impl LatexCompactParser {
             self.abort = Some(expansion_error(failure));
             nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
         })?;
-        let failure = match self.parse_math_list(&processed) {
+        self.open_buffer(input, &processed);
+        let parsed = self.parse_math_list(&processed);
+        self.close_buffer();
+        let failure = match parsed {
             Ok(("", ids)) => return Ok((rest, self.flatten_single(&ids))),
             Ok((unread, _)) => nom_err_to_latex_error(
                 &nom::Err::Error(nom::error::Error::new(
@@ -5184,7 +5195,7 @@ impl LatexCompactParser {
     /// at the `\middle` starting `rest`, if any; clears the record.
     fn take_color_at_middle(&mut self, rest: &str) -> Option<StrId> {
         match self.color_at_middle.take() {
-            Some((color, at)) if at == rest.as_ptr() as usize => Some(color),
+            Some((color, at)) if at == self.place(rest) => Some(color),
             _ => None,
         }
     }
@@ -6089,7 +6100,7 @@ impl LatexCompactParser {
                 // A switch read inside this one (`\color{red} a
                 // \color{blue} b \middle|`) stopped here first: it is the
                 // one in force.
-                let at = rest.as_ptr() as usize;
+                let at = self.place(rest);
                 if self.color_at_middle.is_none_or(|(_, inner)| inner != at) {
                     self.color_at_middle = Some((color_sid, at));
                 }
@@ -7508,7 +7519,10 @@ impl LatexCompactParser {
         body.push('\\');
         body.push_str(name);
         body.push_str(&input[..end]);
-        let node = match self.build_bussproofs(&body) {
+        self.open_buffer(input, &body);
+        let built = self.build_bussproofs(&body);
+        self.close_buffer();
+        let node = match built {
             Ok(node) => node,
             Err(error) => {
                 self.abort = Some(error);
