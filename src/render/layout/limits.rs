@@ -533,6 +533,20 @@ pub(super) fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> L
     }
 }
 
+/// The gap below a label above something and the space above it (Rule 13a).
+fn label_above(p: &TexParams, size: f64, depth: f64) -> (f64, f64) {
+    let [above, _, above_baseline, _, outside] = p.big_op_spacing;
+    let gap = (above * size).max(above_baseline * size - depth);
+    (gap, outside * size)
+}
+
+/// The gap above a label below something and the space below it (Rule 13a).
+fn label_below(p: &TexParams, size: f64, height: f64) -> (f64, f64) {
+    let [_, below, _, below_baseline, outside] = p.big_op_spacing;
+    let gap = (below * size).max(below_baseline * size - height);
+    (gap, outside * size)
+}
+
 pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
@@ -547,7 +561,7 @@ pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCt
                 make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
             let arrow_d = arrow_box.depth;
 
-            let gap = p.big_op_spacing[2] * size;
+            let (gap, pad) = label_above(p, size, over_box.depth);
             let max_w = arrow_box.width.max(over_box.width);
             let base_dx = (max_w - arrow_box.width) / 2.0;
             let over_dx = (max_w - over_box.width) / 2.0;
@@ -561,7 +575,7 @@ pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCt
 
             return LayoutBox {
                 width: max_w,
-                height: over_dy + over_h,
+                height: over_dy + over_h + pad,
                 depth: arrow_d,
                 kind: BoxKind::VBox { children },
             };
@@ -573,26 +587,24 @@ pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCt
     let base_w = base_box.width;
 
     // Check if the over decoration is a stretchy symbol that should scale to base width
-    let (over_box, is_line_accent) = if let Some(sym) = get_stretchy_overunder_sym(over) {
-        (
-            make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size),
-            sym == "\u{203E}",
-        )
+    let sym = get_stretchy_overunder_sym(over);
+    let over_box = if let Some(sym) = sym {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
     } else {
-        let over_box = label.unwrap_or_else(|| {
+        label.unwrap_or_else(|| {
             let over_ctx = ctx.with_style(ctx.style.sup());
             layout_node(over, &over_ctx)
-        });
-        (over_box, false)
+        })
     };
 
     // KaTeX Rule 9: overline uses 3 × defaultRuleThickness gap
-    let gap = if is_line_accent {
-        3.0 * p.rule_thickness * size
-    } else {
-        p.big_op_spacing[2] * size
+    let (gap, pad) = match sym {
+        // KaTeX Rule 9: overline uses 3 × defaultRuleThickness gap
+        Some("\u{203E}") => (3.0 * p.rule_thickness * size, 0.0),
+        Some(_) => (p.big_op_spacing[2] * size, 0.0),
+        None => label_above(p, size, over_box.depth),
     };
-    stack_single_script(base_box, over_box, AccentPosition::Above, gap)
+    stack_single_script(base_box, over_box, AccentPosition::Above, gap, pad)
 }
 
 pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
@@ -609,7 +621,7 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
                 make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
             let arrow_a = arrow_box.height;
 
-            let gap = p.big_op_spacing[4] * size;
+            let (gap, pad) = label_below(p, size, under_box.height);
             let max_w = arrow_box.width.max(under_box.width);
             let base_dx = (max_w - arrow_box.width) / 2.0;
             let under_dx = (max_w - under_box.width) / 2.0;
@@ -624,7 +636,7 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
             return LayoutBox {
                 width: max_w,
                 height: arrow_a,
-                depth: under_dy + under_d,
+                depth: under_dy + under_d + pad,
                 kind: BoxKind::VBox { children },
             };
         }
@@ -635,7 +647,8 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
     let base_w = base_box.width;
 
     // Check if the under decoration is a stretchy symbol that should scale to base width
-    let under_box = if let Some(sym) = get_stretchy_overunder_sym(under) {
+    let sym = get_stretchy_overunder_sym(under);
+    let under_box = if let Some(sym) = sym {
         make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
     } else {
         label.unwrap_or_else(|| {
@@ -644,8 +657,11 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
         })
     };
 
-    let gap = p.big_op_spacing[4] * size;
-    stack_single_script(base_box, under_box, AccentPosition::Below, gap)
+    let (gap, pad) = match sym {
+        Some(_) => (p.big_op_spacing[4] * size, 0.0),
+        None => label_below(p, size, under_box.height),
+    };
+    stack_single_script(base_box, under_box, AccentPosition::Below, gap, pad)
 }
 
 pub(super) fn stack_single_script(
@@ -653,6 +669,7 @@ pub(super) fn stack_single_script(
     script: LayoutBox,
     position: AccentPosition,
     gap: f64,
+    pad: f64,
 ) -> LayoutBox {
     let width = base.width.max(script.width);
     let y = match position {
@@ -660,8 +677,8 @@ pub(super) fn stack_single_script(
         AccentPosition::Below => -(base.depth + gap + script.height),
     };
     let (height, depth) = match position {
-        AccentPosition::Above => (y + script.height, base.depth),
-        AccentPosition::Below => (base.height, script.depth - y),
+        AccentPosition::Above => (y + script.height + pad, base.depth),
+        AccentPosition::Below => (base.height, script.depth - y + pad),
     };
     let children = vec![
         PositionedBox::new((width - base.width) / 2.0, 0.0, base),
@@ -697,8 +714,8 @@ pub(super) fn layout_underover(
             let arrow_box =
                 make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
 
-            let gap_above = p.big_op_spacing[2] * size;
-            let gap_below = p.big_op_spacing[4] * size;
+            let (gap_above, pad_above) = label_above(p, size, over_box.depth);
+            let (gap_below, pad_below) = label_below(p, size, under_box.height);
             let max_w = arrow_box.width.max(over_box.width).max(under_box.width);
             let base_dx = (max_w - arrow_box.width) / 2.0;
             let over_dx = (max_w - over_box.width) / 2.0;
@@ -716,8 +733,8 @@ pub(super) fn layout_underover(
 
             return LayoutBox {
                 width: max_w,
-                height: over_dy + over_h,
-                depth: under_dy + under_d,
+                height: over_dy + over_h + pad_above,
+                depth: under_dy + under_d + pad_below,
                 kind: BoxKind::VBox { children },
             };
         }
@@ -728,41 +745,35 @@ pub(super) fn layout_underover(
     let base_box = layout_node(base, ctx);
     let base_w = base_box.width;
 
-    let (over_box, is_over_line) = if let Some(sym) = get_stretchy_overunder_sym(over) {
-        (
-            make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size),
-            sym == "\u{203E}",
-        )
+    let over_sym = get_stretchy_overunder_sym(over);
+    let over_box = if let Some(sym) = over_sym {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
     } else {
-        let over_box = label_over.unwrap_or_else(|| {
+        label_over.unwrap_or_else(|| {
             let over_ctx = ctx.with_style(ctx.style.sup());
             layout_node(over, &over_ctx)
-        });
-        (over_box, false)
+        })
     };
 
-    let (under_box, is_under_line) = if let Some(sym) = get_stretchy_overunder_sym(under) {
-        (
-            make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size),
-            sym == "\u{203E}",
-        )
+    let under_sym = get_stretchy_overunder_sym(under);
+    let under_box = if let Some(sym) = under_sym {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
     } else {
-        let under_box = label_under.unwrap_or_else(|| {
+        label_under.unwrap_or_else(|| {
             let under_ctx = ctx.with_style(ctx.style.sub());
             layout_node(under, &under_ctx)
-        });
-        (under_box, false)
+        })
     };
 
-    let gap_above = if is_over_line {
-        3.0 * p.rule_thickness * size
-    } else {
-        p.big_op_spacing[2] * size
+    let (gap_above, pad_above) = match over_sym {
+        Some("\u{203E}") => (3.0 * p.rule_thickness * size, 0.0),
+        Some(_) => (p.big_op_spacing[2] * size, 0.0),
+        None => label_above(p, size, over_box.depth),
     };
-    let gap_below = if is_under_line {
-        3.0 * p.rule_thickness * size
-    } else {
-        p.big_op_spacing[4] * size
+    let (gap_below, pad_below) = match under_sym {
+        Some("\u{203E}") => (3.0 * p.rule_thickness * size, 0.0),
+        Some(_) => (p.big_op_spacing[4] * size, 0.0),
+        None => label_below(p, size, under_box.height),
     };
     let max_w = base_box.width.max(over_box.width).max(under_box.width);
 
@@ -784,8 +795,8 @@ pub(super) fn layout_underover(
 
     LayoutBox {
         width: max_w,
-        height: over_dy + over_h,
-        depth: under_dy + under_d,
+        height: over_dy + over_h + pad_above,
+        depth: under_dy + under_d + pad_below,
         kind: BoxKind::VBox { children },
     }
 }
@@ -1271,7 +1282,7 @@ pub(super) fn layout_overscript_arena(
                 kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
             });
 
-            let gap = p.big_op_spacing[2] * size;
+            let (gap, pad) = label_above(p, size, over_d);
             let max_w = arrow_w.max(over_w);
             let base_dx = (max_w - arrow_w) / 2.0;
             let over_dx = (max_w - over_w) / 2.0;
@@ -1292,7 +1303,7 @@ pub(super) fn layout_overscript_arena(
 
             return arena.alloc(ArenaLayoutBox {
                 width: max_w,
-                height: over_dy + over_h,
+                height: over_dy + over_h + pad,
                 depth: arrow_d,
                 kind: ArenaBoxKind::VBox { children },
             });
@@ -1305,32 +1316,30 @@ pub(super) fn layout_overscript_arena(
     let base_w = arena.get(base_id).width;
 
     // Check if the over node is a stretchy decoration symbol
-    let (over_id, is_line_accent) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
+    let sym = get_stretchy_overunder_sym_c(ast, over);
+    let over_id = if let Some(sym) = sym {
         let deco_w = base_w.max(0.5 * size);
         let deco_h = stretchy_overunder_deco_h(sym, size);
-        (
-            arena.alloc(ArenaLayoutBox {
-                width: deco_w,
-                height: deco_h,
-                depth: 0.0,
-                kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
-            }),
-            sym == "\u{203E}",
-        )
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
     } else {
-        let over_box = label.unwrap_or_else(|| {
+        label.unwrap_or_else(|| {
             let over_ctx = ctx.with_style(ctx.style.sup());
             layout_node_arena(ast, over, arena, &over_ctx)
-        });
-        (over_box, false)
+        })
     };
 
-    let gap = if is_line_accent {
-        3.0 * p.rule_thickness * size
-    } else {
-        p.big_op_spacing[2] * size
+    let (gap, pad) = match sym {
+        // KaTeX Rule 9: overline uses 3 × defaultRuleThickness gap
+        Some("\u{203E}") => (3.0 * p.rule_thickness * size, 0.0),
+        Some(_) => (p.big_op_spacing[2] * size, 0.0),
+        None => label_above(p, size, arena.get(over_id).depth),
     };
-    stack_single_script_arena(base_id, over_id, AccentPosition::Above, gap, arena)
+    stack_single_script_arena(base_id, over_id, AccentPosition::Above, gap, pad, arena)
 }
 
 pub(super) fn layout_underscript_arena(
@@ -1362,7 +1371,7 @@ pub(super) fn layout_underscript_arena(
                 kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
             });
 
-            let gap = p.big_op_spacing[4] * size;
+            let (gap, pad) = label_below(p, size, under_h);
             let max_w = arrow_w.max(under_w);
             let base_dx = (max_w - arrow_w) / 2.0;
             let under_dx = (max_w - under_w) / 2.0;
@@ -1384,7 +1393,7 @@ pub(super) fn layout_underscript_arena(
             return arena.alloc(ArenaLayoutBox {
                 width: max_w,
                 height: arrow_a,
-                depth: under_dy + under_d,
+                depth: under_dy + under_d + pad,
                 kind: ArenaBoxKind::VBox { children },
             });
         }
@@ -1395,7 +1404,8 @@ pub(super) fn layout_underscript_arena(
 
     let base_w = arena.get(base_id).width;
 
-    let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
+    let sym = get_stretchy_overunder_sym_c(ast, under);
+    let under_id = if let Some(sym) = sym {
         let deco_w = base_w.max(0.5 * size);
         let deco_h = stretchy_overunder_deco_h(sym, size);
         arena.alloc(ArenaLayoutBox {
@@ -1411,8 +1421,11 @@ pub(super) fn layout_underscript_arena(
         })
     };
 
-    let gap = p.big_op_spacing[4] * size;
-    stack_single_script_arena(base_id, under_id, AccentPosition::Below, gap, arena)
+    let (gap, pad) = match sym {
+        Some(_) => (p.big_op_spacing[4] * size, 0.0),
+        None => label_below(p, size, arena.get(under_id).height),
+    };
+    stack_single_script_arena(base_id, under_id, AccentPosition::Below, gap, pad, arena)
 }
 
 pub(super) fn stack_single_script_arena(
@@ -1420,6 +1433,7 @@ pub(super) fn stack_single_script_arena(
     script: LayoutBoxId,
     position: AccentPosition,
     gap: f64,
+    pad: f64,
     arena: &mut LayoutArena,
 ) -> LayoutBoxId {
     let b = arena.get(base);
@@ -1430,8 +1444,8 @@ pub(super) fn stack_single_script_arena(
         AccentPosition::Below => -(b.depth + gap + s.height),
     };
     let (height, depth) = match position {
-        AccentPosition::Above => (y + s.height, b.depth),
-        AccentPosition::Below => (b.height, s.depth - y),
+        AccentPosition::Above => (y + s.height + pad, b.depth),
+        AccentPosition::Below => (b.height, s.depth - y + pad),
     };
     let base_x = (width - b.width) / 2.0;
     let script_x = (width - s.width) / 2.0;
@@ -1491,8 +1505,8 @@ pub(super) fn layout_underover_arena(
                 kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
             });
 
-            let gap_above = p.big_op_spacing[2] * size;
-            let gap_below = p.big_op_spacing[4] * size;
+            let (gap_above, pad_above) = label_above(p, size, over_d);
+            let (gap_below, pad_below) = label_below(p, size, under_h);
             let max_w = arrow_w.max(over_w).max(under_w);
             let base_dx = (max_w - arrow_w) / 2.0;
             let over_dx = (max_w - over_w) / 2.0;
@@ -1520,8 +1534,8 @@ pub(super) fn layout_underover_arena(
 
             return arena.alloc(ArenaLayoutBox {
                 width: max_w,
-                height: over_dy + over_h,
-                depth: under_dy + under_d,
+                height: over_dy + over_h + pad_above,
+                depth: under_dy + under_d + pad_below,
                 kind: ArenaBoxKind::VBox { children },
             });
         }
@@ -1535,44 +1549,38 @@ pub(super) fn layout_underover_arena(
     let base_h = arena.get(base_id).height;
     let base_d = arena.get(base_id).depth;
 
-    let (over_id, is_over_line) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
+    let over_sym = get_stretchy_overunder_sym_c(ast, over);
+    let over_id = if let Some(sym) = over_sym {
         let deco_w = base_w.max(0.5 * size);
         let deco_h = stretchy_overunder_deco_h(sym, size);
-        (
-            arena.alloc(ArenaLayoutBox {
-                width: deco_w,
-                height: deco_h,
-                depth: 0.0,
-                kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
-            }),
-            sym == "\u{203E}",
-        )
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
     } else {
-        let over_box = label_over.unwrap_or_else(|| {
+        label_over.unwrap_or_else(|| {
             let over_ctx = ctx.with_style(ctx.style.sup());
             layout_node_arena(ast, over, arena, &over_ctx)
-        });
-        (over_box, false)
+        })
     };
 
-    let (under_id, is_under_line) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
+    let under_sym = get_stretchy_overunder_sym_c(ast, under);
+    let under_id = if let Some(sym) = under_sym {
         let deco_w = base_w.max(0.5 * size);
         let deco_h = stretchy_overunder_deco_h(sym, size);
-        (
-            arena.alloc(ArenaLayoutBox {
-                width: deco_w,
-                height: deco_h,
-                depth: 0.0,
-                kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
-            }),
-            sym == "\u{203E}",
-        )
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
     } else {
-        let under_box = label_under.unwrap_or_else(|| {
+        label_under.unwrap_or_else(|| {
             let under_ctx = ctx.with_style(ctx.style.sub());
             layout_node_arena(ast, under, arena, &under_ctx)
-        });
-        (under_box, false)
+        })
     };
 
     let over_w = arena.get(over_id).width;
@@ -1582,15 +1590,15 @@ pub(super) fn layout_underover_arena(
     let under_h = arena.get(under_id).height;
     let under_d = arena.get(under_id).depth;
 
-    let gap_above = if is_over_line {
-        3.0 * p.rule_thickness * size
-    } else {
-        p.big_op_spacing[2] * size
+    let (gap_above, pad_above) = match over_sym {
+        Some("\u{203E}") => (3.0 * p.rule_thickness * size, 0.0),
+        Some(_) => (p.big_op_spacing[2] * size, 0.0),
+        None => label_above(p, size, over_d),
     };
-    let gap_below = if is_under_line {
-        3.0 * p.rule_thickness * size
-    } else {
-        p.big_op_spacing[4] * size
+    let (gap_below, pad_below) = match under_sym {
+        Some("\u{203E}") => (3.0 * p.rule_thickness * size, 0.0),
+        Some(_) => (p.big_op_spacing[4] * size, 0.0),
+        None => label_below(p, size, under_h),
     };
     let max_w = base_w.max(over_w).max(under_w);
 
@@ -1621,8 +1629,8 @@ pub(super) fn layout_underover_arena(
 
     arena.alloc(ArenaLayoutBox {
         width: max_w,
-        height: over_dy + over_h,
-        depth: under_dy + under_d,
+        height: over_dy + over_h + pad_above,
+        depth: under_dy + under_d + pad_below,
         kind: ArenaBoxKind::VBox { children },
     })
 }

@@ -635,6 +635,7 @@ pub(super) fn layout_accent(
             bracket,
             position,
             ctx.params.big_op_spacing[spacing] * size,
+            0.0,
         );
     }
 
@@ -979,6 +980,7 @@ pub(super) fn layout_accent_arena(
             bracket,
             position,
             ctx.params.big_op_spacing[spacing] * size,
+            0.0,
             arena,
         );
     }

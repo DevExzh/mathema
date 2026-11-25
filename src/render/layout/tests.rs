@@ -580,6 +580,39 @@ fn invisible_operators_have_no_space() {
     }
 }
 
+/// Labels above and below are placed by Rule 13a, braces and lines are not.
+#[test]
+fn labels_are_as_far_away_as_limits() {
+    for (latex, height, depth) in [
+        ("\\overset{a}{=}", 0.976, 0.0),
+        ("\\underset{a}{=}", 0.367, 0.707),
+        ("\\overset{p}{X}", 1.339, 0.0),
+        ("\\underset{T}{y}", 0.431, 0.933),
+        ("\\overset{a}{\\underset{b}{X}}", 1.292, 0.759),
+        ("\\xrightarrow{f}", 1.358, 0.011),
+        ("\\xrightarrow[g]{f}", 1.358, 0.854),
+        ("\\xrightarrow{abcdefgh}", 1.307, 0.0),
+        ("\\xrightarrow[abcdefgh]{f}", 1.307, 0.902),
+        ("\\underset{abcdefgh}{\\to}", 0.46, 0.902),
+        ("\\underset{\\lim}{X}", 0.683, 0.752),
+        ("x^{\\underset{a}{b}}", 1.139, 0.0),
+        ("\\underbrace{ab}_{n}", 0.694, 1.355),
+        ("\\overbrace{ab}^{n}", 2.051, 0.0),
+        ("\\underbrace{ab}", 0.694, 0.648),
+        ("\\overline{ab}", 0.894, 0.0),
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        assert!(
+            (root.height - height).abs() < 2e-3,
+            "{latex}: {}",
+            root.height
+        );
+        assert!((root.depth - depth).abs() < 2e-3, "{latex}: {}", root.depth);
+    }
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {
