@@ -421,7 +421,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             over,
             movable_limits,
         } => {
-            write_script_base(out, base, style);
+            write_bound_base(out, base, style);
             write_bound(
                 out,
                 AccentPosition::Above,
@@ -435,7 +435,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             under,
             movable_limits,
         } => {
-            write_script_base(out, base, style);
+            write_bound_base(out, base, style);
             write_bound(
                 out,
                 AccentPosition::Below,
@@ -450,7 +450,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             over,
             movable_limits,
         } => {
-            write_script_base(out, base, style);
+            write_bound_base(out, base, style);
             write_bound(
                 out,
                 AccentPosition::Below,
@@ -901,7 +901,7 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
             over,
             movable_limits,
         } => {
-            if is_overunder_line_node(over) {
+            if is_overunder_line_node(over) || ends_in_bound(base) {
                 write_structured_decorated_base(out, base, style);
             } else {
                 write_structured_content(out, base, style);
@@ -921,7 +921,7 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
             under,
             movable_limits,
         } => {
-            if is_overunder_line_node(under) {
+            if is_overunder_line_node(under) || ends_in_bound(base) {
                 write_structured_decorated_base(out, base, style);
             } else {
                 write_structured_content(out, base, style);
@@ -942,7 +942,11 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
             over,
             movable_limits,
         } => {
-            write_structured_content(out, base, style);
+            if ends_in_bound(base) {
+                write_structured_decorated_base(out, base, style);
+            } else {
+                write_structured_content(out, base, style);
+            }
             write_bound(
                 out,
                 AccentPosition::Below,
@@ -1139,6 +1143,59 @@ fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: Ma
     write_node_c(out, arena, id, style);
     if grouped {
         out.push('〗');
+    }
+}
+
+/// The base of a bound. An accent is itself written with a bound's mark
+/// (`x┴⎴`), which a second one would join (`x┴(⎴┴n)`).
+fn write_bound_base(out: &mut String, node: &MathNode, style: MathStyle) {
+    if ends_in_bound(node) {
+        out.push('〖');
+        write_node(out, node, style);
+        out.push('〗');
+    } else {
+        write_script_base(out, node, style);
+    }
+}
+
+/// Whether `node` is written as an accent with a bound's mark.
+fn ends_in_bound(node: &MathNode) -> bool {
+    match node {
+        MathNode::Accent { accent, .. } => !is_unicode_combining_accent(*accent),
+        MathNode::Row(children) | MathNode::Styled(_, children) => {
+            matches!(children.as_slice(), [only] if ends_in_bound(only))
+        },
+        MathNode::Color { content, .. } => ends_in_bound(content),
+        MathNode::MathAtom { content, atom_type } => {
+            *atom_type != crate::ast::MathAtomType::Inner && ends_in_bound(content)
+        },
+        _ => false,
+    }
+}
+
+/// Compact counterpart of [`write_bound_base`].
+fn write_bound_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    if ends_in_bound_c(arena, id) {
+        out.push('〖');
+        write_node_c(out, arena, id, style);
+        out.push('〗');
+    } else {
+        write_script_base_c(out, arena, id, style);
+    }
+}
+
+/// Compact counterpart of [`ends_in_bound`].
+fn ends_in_bound_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Accent { accent, .. } => !is_unicode_combining_accent(accent),
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            matches!(*arena.children(span), [only] if ends_in_bound_c(arena, only))
+        },
+        CompactNode::Color { content, .. } => ends_in_bound_c(arena, content),
+        CompactNode::MathAtom { content, atom_type } => {
+            atom_type != crate::ast::MathAtomType::Inner && ends_in_bound_c(arena, content)
+        },
+        _ => false,
     }
 }
 
@@ -2913,7 +2970,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             over,
             movable_limits,
         } => {
-            write_script_base_c(out, arena, base, style);
+            write_bound_base_c(out, arena, base, style);
             write_bound(
                 out,
                 AccentPosition::Above,
@@ -2927,7 +2984,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             under,
             movable_limits,
         } => {
-            write_script_base_c(out, arena, base, style);
+            write_bound_base_c(out, arena, base, style);
             write_bound(
                 out,
                 AccentPosition::Below,
@@ -2942,7 +2999,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             over,
             movable_limits,
         } => {
-            write_script_base_c(out, arena, base, style);
+            write_bound_base_c(out, arena, base, style);
             write_bound(
                 out,
                 AccentPosition::Below,
@@ -3334,7 +3391,7 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
             over,
             movable_limits,
         } => {
-            if is_overunder_line(arena, over) {
+            if is_overunder_line(arena, over) || ends_in_bound_c(arena, base) {
                 write_structured_decorated_base_c(out, arena, base, style);
             } else {
                 write_structured_content_c(out, arena, base, style);
@@ -3352,7 +3409,7 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
             under,
             movable_limits,
         } => {
-            if is_overunder_line(arena, under) {
+            if is_overunder_line(arena, under) || ends_in_bound_c(arena, base) {
                 write_structured_decorated_base_c(out, arena, base, style);
             } else {
                 write_structured_content_c(out, arena, base, style);
@@ -3371,7 +3428,11 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
             over,
             movable_limits,
         } => {
-            write_structured_content_c(out, arena, base, style);
+            if ends_in_bound_c(arena, base) {
+                write_structured_decorated_base_c(out, arena, base, style);
+            } else {
+                write_structured_content_c(out, arena, base, style);
+            }
             write_bound(
                 out,
                 AccentPosition::Below,

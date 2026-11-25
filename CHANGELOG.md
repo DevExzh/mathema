@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The scripts of `\underbrace`, `\overbrace`, `\underbracket` and
   `\overbracket` are their labels in every format (`munder`, `m:limLow`, LaTeX
   `\underbrace{x}_n`, MTEF brace templates); they were subscripts of a group,
-  `{\underbrace{x}}_n`, which TeX and KaTeX set beside the brace. Those of a
+  `{\underbrace{x}}_n`, which TeX and KaTeX set beside the brace. A label on
+  the other side is written `\overset{n}{\underbrace{x}}`. The scripts of a
   braced `{\underbrace{x}}` are now set beside it.
 - A brace, overline or underline over `\mathop{…}` keeps its command, and a
   lone `⏞`/`⏟` over or under something is written `\overbrace`/`\underbrace`.
@@ -20,9 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `\textcolor{red}{\sum}`, `\colorbox` and `\fcolorbox` with just an operator
   in braces are read like the operator token (`\textcolor{red}\sum`).
 - LaTeX output spells more combining accents as commands (`\overline`,
-  `\underline`, `\overleftarrow`, `\overrightharpoon`, …) and the rest by code
-  (`\overset{\char779 }{a}`). The UnicodeMath reader sets the marks that belong
-  below (U+0323, U+0331, …) below.
+  `\underline`, `\overleftarrow`, `\overrightharpoon`, …), and the rest of
+  U+0300–U+036F by code (`\overset{\char779 }{a}`), which KaTeX accepts. The
+  UnicodeMath reader sets the marks that belong below (U+0323, U+0327, U+0331,
+  …) below, and the OMML reader reads them back.
+- UnicodeMath: the label of `\overbracket{x}^n` is written `〖x┴⎴〗┴n`, and the
+  reader accepts quoted text as a script or bound (`x_"max"`).
+- An operator token in a fence is written with its body, as in a row.
 - `\sideset{_1}{}\sum x` and other operators with leading scripts are written
   with an empty operand, `{{}_{1}\sum}{}x`, where the next node would be read as
   theirs.

@@ -2686,7 +2686,7 @@ impl LatexCompactParser {
         }
 
         // `\underbrace` is a `\mathop` with `\limits`: its scripts are labels.
-        if !grouped && crate::ast::is_brace_operator(&self.arena, base) {
+        if !grouped && crate::ast::brace_side(&self.arena, base).is_some() {
             let (rest, ((sub, sup), modifier)) =
                 self.parse_script_fields_with_limits(input, false)?;
             let style = match modifier {

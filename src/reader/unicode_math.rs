@@ -1360,6 +1360,12 @@ impl CompactParser {
         if let Some(found) = self.parse_pair(input, false)? {
             return Ok(found);
         }
+        // Quoted text (`x_"max"`), as the writer spells it.
+        if input.starts_with('"')
+            && let Ok(quoted) = self.parse_text_quoted(input)
+        {
+            return Ok(quoted);
+        }
         // Tables are single UnicodeMath atoms. They can therefore be used as
         // a script argument without an additional grouping pair, just like a
         // box or radical emitted by this writer.

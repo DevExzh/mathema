@@ -1695,7 +1695,6 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    /// HFenceBoxClass / HBrBoxClass: main slot, label slot, brace character.
     /// The content of a horizontal brace and the brace, which takes a label.
     fn brace_parts(&self, id: NodeId) -> Option<(NodeId, bool, bool, char)> {
         let (inner, mark_top, brace) = match *self.arena.node(id) {
@@ -1716,6 +1715,7 @@ impl<'a> Encoder<'a> {
         (top == mark_top && (self.v5 || !bracket)).then_some((inner, top, bracket, glyph))
     }
 
+    /// HFenceBoxClass / HBrBoxClass: main slot, label slot, brace character.
     fn horizontal_brace(
         &mut self,
         size: Size,

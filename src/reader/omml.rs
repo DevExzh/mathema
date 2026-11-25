@@ -1900,7 +1900,11 @@ impl<'i> Parser<'i> {
         }
         let base = self.or_empty(base);
         let sym = self.symbol(SymbolKind::Ordinary, &chr);
-        if matches!(chr.as_str(), "→" | "←") {
+        // The writer's form of a combining mark below (`m:acc` is above).
+        let mark = !top
+            && chr.chars().count() == 1
+            && chr.starts_with(crate::unicode::symbols::is_mark_below);
+        if mark || matches!(chr.as_str(), "→" | "←") {
             return Ok(self.arena.push_node(CompactNode::Accent {
                 base,
                 accent: chr.chars().next().unwrap_or('→'),

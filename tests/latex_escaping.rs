@@ -1839,7 +1839,12 @@ fn braces_over_operators_take_labels() {
         (r"\underbrace{\mathop{e}}", r"\underbrace{\mathop{e}}"),
         (r"\underbrace{\mathop{e}}_n", r"\underbrace{\mathop{e}}_n"),
         (r"\overbrace{\max}^2", r"\overbrace{\max}^{2}"),
-        (r"\underbrace{\sum}_n^m", r"\underbrace{\sum}_n^m"),
+        (
+            r"\underbrace{\sum}_n^m",
+            r"\overset{m}{\underbrace{\sum}_n}",
+        ),
+        (r"\underbrace{x}^n", r"\overset{n}{\underbrace{x}}"),
+        (r"\overbracket{x}_n", r"\underset{n}{\overbracket{x}}"),
         (r"\overbracket{\mathop{e}}^n", r"\overbracket{\mathop{e}}^n"),
         (r"\overline{\mathop{e}}", r"\overline{\mathop{e}}"),
         (r"\underline{\mathop{e}}", r"\underline{\mathop{e}}"),
@@ -1875,6 +1880,73 @@ fn braces_over_operators_take_labels() {
             .unwrap()
             .contains("<m:limLow><m:e><m:groupChr>")
     );
+}
+
+/// The label of a bracket is not one of the bracket character's own.
+#[test]
+fn unicode_math_braces_keep_their_labels() {
+    use mathema::Format::{LaTeX, UnicodeMath};
+    for (latex, unicode, read) in [
+        (
+            r"\overbracket{x}^n",
+            "〖x┴⎴〗┴n",
+            r"\overset{n}{\mathinner{\overbracket{x}}}",
+        ),
+        (
+            r"\underbracket{x+y}_n",
+            "〖〖x+y〗┬⎵〗┬n",
+            r"\underset{n}{\mathinner{\underbracket{\mathinner{x+ y}}}}",
+        ),
+        (
+            r"\overbracket{x}_n^m",
+            "〖x┴⎴〗┬n┴m",
+            r"\underset{n}{\overset{m}{\mathinner{\overbracket{x}}}}",
+        ),
+        (
+            r"a+\underbrace{x}_{\text{foo}}=b",
+            "a+〖x┬⏟〗┬\"foo\"=b",
+            r"a+ \underset{\text{foo}}{\mathinner{\underbrace{x}}}= b",
+        ),
+        (r"x_{\text{foo}}=b", "x_\"foo\"=b", r"x_{\text{foo}}= b"),
+    ] {
+        assert_eq!(
+            mathema::convert(latex, LaTeX, UnicodeMath).unwrap(),
+            unicode
+        );
+        assert_eq!(mathema::convert(unicode, UnicodeMath, LaTeX).unwrap(), read);
+    }
+    // A mark below survives OMML.
+    for unicode in ["a\u{331}", "a\u{323}", "c\u{327}"] {
+        let omml = mathema::from_unicode_math(unicode)
+            .unwrap()
+            .to_omml()
+            .unwrap();
+        let back = mathema::from_omml(&omml).unwrap();
+        assert_eq!(back.to_unicode_math().unwrap(), unicode);
+    }
+}
+
+/// A bare operator in a fence is written with its body, as in a row.
+#[test]
+fn bare_operators_in_fences_are_stable() {
+    use mathema::Format::LaTeX;
+    for (source, latex) in [
+        (
+            r"\left(\sideset{}{}\sum2\right)",
+            r"\left( \sum {2} \right)",
+        ),
+        (
+            r"\left(\sideset{}{}\sum+\middle|\sideset{}{}\int\right)",
+            r"\left( \sum + \middle| \int \right)",
+        ),
+        (
+            r"\pod{\textcolor{}\int)}",
+            r"\left( \operatorname*{mod}\;\int ) \right)",
+        ),
+    ] {
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
 }
 
 #[test]

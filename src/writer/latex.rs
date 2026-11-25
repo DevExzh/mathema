@@ -501,9 +501,20 @@ fn write_escaped_undefined_command(
         write_node_slice(buf, arena, children, false);
         // `\int\}` would read the brace (or the scripted brace standing for
         // the trailing script) as the operator's body.
-        let empty_nary_body = children
-            .last()
-            .is_some_and(|&last| ends_with_empty_body_nary(arena, last));
+        let ends_with_idotsint = is_idotsint_triple_at_end(arena, children);
+        // The last node is a bare operator's body, spaced and braced as part
+        // of it.
+        let last_is_body = children.split_last().is_some_and(|(&last, before)| {
+            before
+                .last()
+                .is_some_and(|&operator| is_bare_large_op(arena, operator))
+                && reads_as_nary_body(arena, last)
+                && !is_idotsint_triple_at_end(arena, before)
+        });
+        let empty_nary_body = !last_is_body
+            && children
+                .last()
+                .is_some_and(|&last| ends_with_empty_body_nary(arena, last));
         if empty_nary_body {
             buf.push_str("{}");
         }
@@ -514,22 +525,11 @@ fn write_escaped_undefined_command(
             write_brace_prescripts(buf, arena, script);
             continue;
         }
-        let ends_with_idotsint = is_idotsint_triple_at_end(arena, children);
         if !empty_nary_body
             && let Some(&last) = children.last()
-            && if ends_with_idotsint {
-                false
-            } else if is_bare_large_op(arena, last) {
-                true
-            } else {
-                // The body of a bare operator is spaced as part of it.
-                let body = children.len().checked_sub(2).is_some_and(|before| {
-                    is_bare_large_op(arena, children[before])
-                        && reads_as_nary_body(arena, last)
-                        && !is_idotsint_triple_at_end(arena, &children[..=before])
-                });
-                !body && needs_space(arena, Some(last), group)
-            }
+            && !ends_with_idotsint
+            && (is_bare_large_op(arena, last)
+                || !last_is_body && needs_space(arena, Some(last), group))
         {
             buf.push(' ');
         }
@@ -798,6 +798,47 @@ fn write_stacked_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeI
     }
 }
 
+/// Begin `\overset{…}{` or `\underset{…}{`, or the command whose decoration
+/// `content` is on that side (the reader takes the glyph for it).
+fn begin_stack(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId, side: AccentPosition) {
+    let glyph = match *arena.node(written_script_content(arena, content)) {
+        CompactNode::Symbol(_, sid) => single_char(arena.str_val(sid)),
+        _ => None,
+    };
+    let command = match (side, glyph) {
+        (AccentPosition::Above, Some('\u{203E}')) => "\\overline{",
+        (AccentPosition::Above, Some('\u{23B4}')) => "\\overlinesegment{",
+        (AccentPosition::Above, Some('\u{23DC}')) => "\\overgroup{",
+        (AccentPosition::Above, Some('\u{23DE}')) => "\\overbrace{",
+        (AccentPosition::Below, Some('\u{203E}')) => "\\underline{",
+        (AccentPosition::Below, Some('\u{23B5}')) => "\\underlinesegment{",
+        (AccentPosition::Below, Some('\u{23DD}')) => "\\undergroup{",
+        (AccentPosition::Below, Some('\u{23DF}')) => "\\underbrace{",
+        _ => {
+            buf.push_str(match side {
+                AccentPosition::Above => "\\overset{",
+                AccentPosition::Below => "\\underset{",
+            });
+            write_stacked_content(buf, arena, content);
+            "}{"
+        },
+    };
+    buf.push_str(command);
+}
+
+/// The base under or over `content`, which an accent glyph makes an accent's.
+fn write_stack_base(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId, base: NodeId) {
+    let accent = matches!(*arena.node(written_script_content(arena, content)),
+    CompactNode::Symbol(_, sid) if single_char(arena.str_val(sid)).is_some_and(|ch| {
+        crate::unicode::symbols::is_accent_glyph(ch) && !is_combining_mark(ch)
+    }));
+    if accent && matches!(*arena.node(base), CompactNode::Operator { .. }) {
+        write_accent_base_content(buf, arena, base);
+    } else {
+        write_wrapped_content(buf, arena, base);
+    }
+}
+
 fn write_compound_limits(
     buf: &mut LatexBuffer,
     arena: &AstArena,
@@ -835,10 +876,37 @@ fn write_compound_limits(
             }
         }
     };
-    // The labels of a horizontal brace are its limits.
-    if crate::ast::is_brace_operator(arena, base) && (placed(lower) || placed(upper)) {
-        write_node(buf, arena, base);
-        write_limits(buf);
+    // The label of a horizontal brace is its limit. A script on the other
+    // side is set beside the brace by KaTeX, so that one is stacked.
+    if let Some(side) = crate::ast::brace_side(arena, base) {
+        let (own, other, marker, other_side) = match side {
+            AccentPosition::Above => (upper, lower, '^', AccentPosition::Below),
+            AccentPosition::Below => (lower, upper, '_', AccentPosition::Above),
+        };
+        if !placed(own) {
+            return false;
+        }
+        if placed(other) {
+            begin_stack(buf, arena, other, other_side);
+        }
+        // As in `Overscript`: such a label is a decoration.
+        let decoration = is_line_symbol(arena, own)
+            || match side {
+                AccentPosition::Above => is_overbrace(arena, own),
+                AccentPosition::Below => is_underbrace(arena, own),
+            };
+        if decoration {
+            begin_stack(buf, arena, own, side);
+            write_node(buf, arena, base);
+            buf.push('}');
+        } else {
+            write_node(buf, arena, base);
+            buf.push(marker);
+            write_script_arg(buf, arena, own, ScriptArgGroup::Minimal);
+        }
+        if placed(other) {
+            buf.push('}');
+        }
         return true;
     }
     let CompactNode::MathAtom {
@@ -1483,7 +1551,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // Output offsets just after each fenced row break; see
             // `write_sequence`.
             let mut row_breaks: smallvec::SmallVec<[usize; 2]> = smallvec::SmallVec::new();
-            for (index, &child_id) in content_ids.iter().enumerate() {
+            let mut next = 0;
+            while let Some(&child_id) = content_ids.get(next) {
+                let index = next;
+                next += 1;
                 if index > 0 && matches!(*arena.node(content_ids[index - 1]), CompactNode::Newline)
                 {
                     row_breaks.push(buf.len());
@@ -1517,7 +1588,23 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         {
                             buf.push(' ');
                         }
-                        write_node(buf, arena, child_id);
+                        if content_ids[index..]
+                            .get(..3)
+                            .is_some_and(|ids| is_idotsint_triple(arena, ids))
+                        {
+                            write_idotsint(buf);
+                            next = index + 3;
+                        } else if is_bare_large_op(arena, child_id) {
+                            // As in a row: it is read with its body.
+                            let run = &content_ids[index..];
+                            let end = run
+                                .iter()
+                                .position(|&id| matches!(*arena.node(id), CompactNode::Middle(_)))
+                                .unwrap_or(run.len());
+                            next = index + write_large_op_chain(buf, arena, &run[..end]);
+                        } else {
+                            write_node(buf, arena, child_id);
+                        }
                         // A large operator with an empty body must keep an
                         // explicit empty group before the next fenced item.
                         // The normal row writer adds this boundary, while the
@@ -1631,15 +1718,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 write_wrapped_content(buf, arena, base);
                 buf.push('}');
             } else if !write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
-                let command = if is_overlinesegment(arena, over) {
-                    "\\overlinesegment{"
-                } else {
-                    buf.push_str("\\overset{");
-                    write_stacked_content(buf, arena, over);
-                    "}{"
-                };
-                buf.push_str(command);
-                write_wrapped_content(buf, arena, base);
+                begin_stack(buf, arena, over, AccentPosition::Above);
+                write_stack_base(buf, arena, over, base);
                 buf.push('}');
             }
         },
@@ -1666,15 +1746,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 buf.push('}');
             } else if !write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits)
             {
-                let command = if is_underlinesegment(arena, under) {
-                    "\\underlinesegment{"
-                } else {
-                    buf.push_str("\\underset{");
-                    write_stacked_content(buf, arena, under);
-                    "}{"
-                };
-                buf.push_str(command);
-                write_wrapped_content(buf, arena, base);
+                begin_stack(buf, arena, under, AccentPosition::Below);
+                write_stack_base(buf, arena, under, base);
                 buf.push('}');
             }
         },
@@ -1688,11 +1761,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if write_compound_limits(buf, arena, base, under, over, movable_limits) {
                 return;
             }
-            buf.push_str("\\underset{");
-            write_stacked_content(buf, arena, under);
-            buf.push_str("}{\\overset{");
-            write_stacked_content(buf, arena, over);
-            buf.push_str("}{");
+            begin_stack(buf, arena, under, AccentPosition::Below);
+            begin_stack(buf, arena, over, AccentPosition::Above);
             write_wrapped_content(buf, arena, base);
             buf.push_str("}}");
         },
@@ -4085,14 +4155,6 @@ fn node_produces_only_digits(arena: &AstArena, id: NodeId) -> bool {
 
 fn is_line_symbol(arena: &AstArena, id: NodeId) -> bool {
     matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{203E}")
-}
-
-fn is_overlinesegment(arena: &AstArena, id: NodeId) -> bool {
-    matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{23B4}")
-}
-
-fn is_underlinesegment(arena: &AstArena, id: NodeId) -> bool {
-    matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{23B5}")
 }
 
 fn is_overbrace(arena: &AstArena, id: NodeId) -> bool {
