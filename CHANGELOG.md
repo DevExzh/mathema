@@ -74,6 +74,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept and drawn relative to an assumed 12 pt.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
+- MTEF reader and writer: rewriting settles after one pass in more equations.
+  A limit template without limits, and coloured parts of a template, join
+  their line; a prime belongs to the nucleus in its colour whatever the colours
+  of the scripts between (`x_a'` with a black `a`); an embellished prime is the
+  glyph and as many primes; leading scripts of nothing are scripts on nothing.
+  Trees as read, before normalization, have fewer zero spaces and groups.
+- MTEF reader: leading scripts and scripts on scripts in other colours keep
+  them; primes drawn by many templates are joined in linear time.
+- MTEF writer: `'s` before a letter is written with a zero space that keeps the
+  apostrophe.
+- Pure OMML: colors are dropped before normalizing, by `convert` and
+  `ConvertResult` alike, so text and numbers that only a color kept apart are
+  one run, as they read back.
 - MTEF writer: stretchy bar accents over several letters no longer warn as
   narrow accents, and MTEF 5 writes a strike under an accent in its own
   direction.
