@@ -33,7 +33,7 @@ mod encode;
 mod tests;
 
 use crate::ast::compact::CompactExpr;
-use crate::ast::{DisplayStyle, MathExpr};
+use crate::ast::{DisplayStyle, MathExpr, Rational};
 use crate::error::{Config, Diagnostic, Result};
 use crate::reader::mtef::{MtefInfo, MtefProduct, MtefVersion};
 use crate::writer::Writer as MathWriter;
@@ -273,6 +273,43 @@ const V5_PREFERENCES: &[u8] = &[
     0x0c, 1, 0, 1, 0, 1, 2, 2, 2, 2, 0, 2, 0, 1, 1, 1, 0, 3, 0, 1, 0, 4, 0,
 ];
 
+/// The sizes in [`V5_PREFERENCES`], with their count.
+const V5_SIZES: std::ops::Range<usize> = 2..20;
+
+/// The default sizes with another full size (MTEFv5.md "Dimension arrays").
+fn size_preferences(full: Rational) -> Vec<u8> {
+    let mut points = String::new();
+    full.write_scaled_decimal(&mut points, 1);
+    // A dimension has no more digits than it needs.
+    points.truncate(12);
+    let mut nibbles = Vec::new();
+    for (unit, value) in [
+        (2, points.as_str()),
+        (4, "58"),
+        (4, "42"),
+        (4, "150"),
+        (4, "100"),
+        (4, "75"),
+        (4, "150"),
+        (2, "1"),
+    ] {
+        nibbles.push(unit);
+        nibbles.extend(value.bytes().map(|digit| match digit {
+            b'.' => 10,
+            b'-' => 11,
+            digit => digit - b'0',
+        }));
+        nibbles.push(15);
+    }
+    let mut out = vec![8];
+    out.extend(
+        nibbles
+            .chunks(2)
+            .map(|pair| pair[0] << 4 | pair.get(1).copied().unwrap_or(0)),
+    );
+    out
+}
+
 impl MtefWriter {
     /// Write `expr` as binary MTEF.
     ///
@@ -344,7 +381,13 @@ impl MtefWriter {
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>, Option<CompactExpr>)> {
         let v5 = options.v5();
-        let mut encoder = Encoder::new(&expr.arena, config, v5, expr.display);
+        let mut encoder = Encoder::new(
+            &expr.arena,
+            config,
+            v5,
+            expr.display,
+            crate::ast::attrs::base_size_pt(expr.meta.as_deref()),
+        );
         encoder.equation(expr.roots)?;
         let body = std::mem::take(&mut encoder.out);
         let diagnostics = std::mem::take(&mut encoder.diagnostics);
@@ -378,7 +421,19 @@ impl MtefWriter {
                     mtef[start + FAR_EAST_ENCODING_AT] += 2;
                 }
             }
-            mtef.extend_from_slice(V5_PREFERENCES);
+            let base = expr
+                .meta
+                .as_deref()
+                .and_then(|meta| meta.base_size_pt)
+                .filter(|_| expr.arena.has_attrs());
+            match base {
+                Some(base) => {
+                    mtef.extend_from_slice(&V5_PREFERENCES[..V5_SIZES.start]);
+                    mtef.extend(size_preferences(base));
+                    mtef.extend_from_slice(&V5_PREFERENCES[V5_SIZES.end..]);
+                },
+                None => mtef.extend_from_slice(V5_PREFERENCES),
+            }
             mtef.extend_from_slice(far_east_style(far_east, alphabets));
         }
         mtef.extend_from_slice(&body);

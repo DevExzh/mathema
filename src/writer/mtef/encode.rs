@@ -23,8 +23,8 @@ use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::normalize::{can_take_prescripts, takes_limits};
 use crate::ast::style::MathStyle;
 use crate::ast::{
-    AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, SpanBoundary,
-    StrokeKind, TextStyle,
+    AccentPosition, ColumnAlign, DisplayStyle, FontSize, FractionKind, LimitStyle, Rational,
+    SpanBoundary, StrokeKind, TextStyle, TypeSize,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 use crate::reader::mtef::chars::negated;
@@ -39,6 +39,7 @@ const MATRIX: u8 = 5;
 const EMBELL: u8 = 6;
 /// FONT in MTEF 3, FONT_STYLE_DEF in MTEF 5.
 const FONT: u8 = 8;
+const SIZE: u8 = 9;
 const COLOR: u8 = 15;
 const COLOR_DEF: u8 = 16;
 /// Distinct colours written before further ones are dropped.
@@ -79,13 +80,48 @@ pub(super) enum Size {
     Sub2 = 2,
     Sym = 3,
     SubSym = 4,
+    User1 = 5,
+    User2 = 6,
+}
+
+/// A size in effect, as the reader keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SizeRecord {
+    Level(Size),
+    /// A typesize and what is added to it, in 32nds of a point.
+    Delta(Size, i16),
+    /// 32nds of a point.
+    Points(i16),
+}
+
+/// What the AST calls a typesize.
+fn type_size(size: Size) -> TypeSize {
+    match size {
+        Size::Full => TypeSize::Full,
+        Size::Sub => TypeSize::Sub,
+        Size::Sub2 => TypeSize::Sub2,
+        Size::Sym => TypeSize::Sym,
+        Size::SubSym => TypeSize::SubSym,
+        Size::User1 => TypeSize::User1,
+        Size::User2 => TypeSize::User2,
+    }
+}
+
+/// The font size of the node being written.
+#[derive(Debug, Clone, Copy)]
+struct OwnSize {
+    size: FontSize,
+    /// The typesize of the node's own text, which has the font size; other
+    /// typesizes inside it keep their proportion.
+    place: Size,
 }
 
 impl Size {
     /// The size of scripts and limits attached to content of this size.
     fn script(self) -> Size {
         match self {
-            Size::Full | Size::Sym => Size::Sub,
+            Size::Full | Size::User1 | Size::User2 => Size::Sub,
+            Size::Sym => Size::SubSym,
             _ => Size::Sub2,
         }
     }
@@ -93,7 +129,7 @@ impl Size {
     /// The size of a big operator's sign in content of this size.
     fn symbol(self) -> Size {
         match self {
-            Size::Full | Size::Sym => Size::Sym,
+            Size::Full | Size::Sym | Size::User1 | Size::User2 => Size::Sym,
             _ => Size::SubSym,
         }
     }
@@ -127,8 +163,20 @@ pub(super) struct Encoder<'a> {
     v5: bool,
     display: DisplayStyle,
     pub(super) out: Vec<u8>,
-    /// The typesize in effect at the end of `out` (`None` before the first).
-    size: Option<Size>,
+    /// The size in effect at the end of `out` (`None` before the first).
+    size: Option<SizeRecord>,
+    /// The font size of the node being written, if it is not a typesize.
+    own_size: Option<OwnSize>,
+    /// Whether the character being written is a separator.
+    separator: bool,
+    /// Whether typesizes are not the sizes they stand for.
+    absolute: bool,
+    /// Whether any node has attributes.
+    sized: bool,
+    /// The size of the last glyph.
+    glyph_size: Option<SizeRecord>,
+    /// The size of ordinary text in points.
+    base_pt: f64,
     strict: bool,
     max_depth: usize,
     max_nodes: Option<usize>,
@@ -187,6 +235,7 @@ impl<'a> Encoder<'a> {
         config: &Config,
         v5: bool,
         display: DisplayStyle,
+        base_pt: f64,
     ) -> Self {
         Self {
             arena,
@@ -194,6 +243,12 @@ impl<'a> Encoder<'a> {
             display,
             out: Vec::with_capacity(256),
             size: None,
+            own_size: None,
+            sized: arena.has_attrs(),
+            absolute: false,
+            separator: false,
+            glyph_size: None,
+            base_pt,
             strict: config.strictness == Strictness::Strict,
             max_depth: config.effective_max_depth(),
             max_nodes: config.max_nodes,
@@ -279,10 +334,148 @@ impl<'a> Encoder<'a> {
     }
 
     /// Emit a typesize record when `size` is not already in effect.
+    #[inline]
     fn need(&mut self, size: Size) {
-        if self.size != Some(size) {
+        if self.sized {
+            return self.write_size(size);
+        }
+        if !matches!(self.size, Some(SizeRecord::Level(current)) if current == size) {
             self.out.push(TYPESIZE_BASE + size as u8);
-            self.size = Some(size);
+            self.size = Some(SizeRecord::Level(size));
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn write_size(&mut self, size: Size) {
+        let record = self.record(size);
+        if self.size == Some(record) {
+            return;
+        }
+        match record {
+            SizeRecord::Level(size) if (size as u8) <= Size::SubSym as u8 => {
+                self.out.push(TYPESIZE_BASE + size as u8);
+            },
+            SizeRecord::Level(size) => self.out.extend([SIZE, size as u8, 128]),
+            SizeRecord::Delta(size, delta) => match u8::try_from(i32::from(delta) + 128) {
+                Ok(delta) if delta != 0 => self.out.extend([SIZE, size as u8, delta]),
+                _ => {
+                    self.out.extend([SIZE, 100, size as u8]);
+                    self.out.extend_from_slice(&delta.to_le_bytes());
+                },
+            },
+            SizeRecord::Points(points) => {
+                // The size itself, as the applications write it: see the reader.
+                self.out.extend([SIZE, 101]);
+                self.out.extend_from_slice(&points.to_le_bytes());
+            },
+        }
+        self.size = Some(record);
+    }
+
+    /// Write a node's sign in the size it has of its own.
+    #[inline(always)]
+    fn with_sign_size(
+        &mut self,
+        id: NodeId,
+        size: Size,
+        write: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        if !self.sized {
+            return write(self);
+        }
+        let outer = self.own_size;
+        if let Some(own) = self.arena.attrs(id).and_then(|attrs| attrs.glyph_size) {
+            self.own_size = Some(OwnSize {
+                size: own,
+                place: size,
+            });
+        }
+        let result = write(self);
+        self.own_size = outer;
+        result
+    }
+
+    fn points(&self, points: f64) -> FontSize {
+        FontSize::Points(
+            Rational::from_scaled_decimal(&format!("{points:.4}"), Rational::one())
+                .unwrap_or_else(Rational::one),
+        )
+    }
+
+    /// The record for `size` where it is used now.
+    fn record(&self, size: Size) -> SizeRecord {
+        match self.own_size {
+            None => SizeRecord::Level(size),
+            Some(own) => self.own_record(own, size),
+        }
+    }
+
+    /// The size of what has typesize `size` in a node with a font size.
+    #[cold]
+    fn own_record(&self, own: OwnSize, size: Size) -> SizeRecord {
+        let per_mille = |size: Size| f64::from(type_size(size).per_mille());
+        let units = |points: f64| (points * 32.0).round().clamp(1.0, f64::from(i16::MAX)) as i16;
+        let proportion = per_mille(size) / per_mille(own.place);
+        match own.size {
+            FontSize::Points(points) => SizeRecord::Points(units(points.as_f64() * proportion)),
+            FontSize::Logical { delta_pt, .. } if size == own.place => {
+                let delta = (delta_pt.as_f64() * 32.0)
+                    .round()
+                    .clamp(-f64::from(i16::MAX), f64::from(i16::MAX));
+                SizeRecord::Delta(size, delta as i16)
+            },
+            size => SizeRecord::Points(units(size.scale(self.base_pt) * self.base_pt * proportion)),
+        }
+    }
+
+    /// The size and typesize to write a node in, where `size` is the typesize
+    /// of its place.
+    #[cold]
+    #[inline(never)]
+    fn own_size_of(&self, id: NodeId, size: Size) -> (Option<OwnSize>, Size) {
+        let Some(font_size) = self.arena.attrs(id).and_then(|attrs| attrs.size) else {
+            return (self.own_size, size);
+        };
+        match font_size {
+            FontSize::Logical { level, delta_pt } => {
+                let level = match level {
+                    TypeSize::Full => Size::Full,
+                    TypeSize::Sub => Size::Sub,
+                    TypeSize::Sub2 => Size::Sub2,
+                    TypeSize::Sym => Size::Sym,
+                    TypeSize::SubSym => Size::SubSym,
+                    TypeSize::User1 => Size::User1,
+                    TypeSize::User2 => Size::User2,
+                };
+                // Equation Editor has no user sizes.
+                let known =
+                    !self.absolute && (self.v5 || !matches!(level, Size::User1 | Size::User2));
+                match delta_pt.num {
+                    0 if known => (None, level),
+                    _ if known => (
+                        Some(OwnSize {
+                            size: font_size,
+                            place: level,
+                        }),
+                        level,
+                    ),
+                    _ => (
+                        Some(OwnSize {
+                            size: self.points(font_size.scale(self.base_pt) * self.base_pt),
+                            place: size,
+                        }),
+                        size,
+                    ),
+                }
+            },
+            font_size => (
+                Some(OwnSize {
+                    size: font_size,
+                    place: size,
+                }),
+                size,
+            ),
         }
     }
 
@@ -424,7 +617,11 @@ impl<'a> Encoder<'a> {
     /// One CHAR record with its embellishment list.
     fn glyph(&mut self, size: Size, glyph: Glyph, func_start: bool, embells: &[u8]) -> Result<()> {
         let code = self.code(glyph.ch)?;
-        self.need(size);
+        // A separator has no size to see.
+        if !(self.sized && self.size.is_some() && self.separator) {
+            self.need(size);
+            self.glyph_size = self.size;
+        }
         if self.v5 {
             let mut options = 0;
             if !embells.is_empty() {
@@ -491,9 +688,15 @@ impl<'a> Encoder<'a> {
         // or text that is a script base is separated by `scripts`.
         let inside_styled = matches!(run, Some(Run::Styled(_)))
             && self.styled_start.is_some_and(|start| self.items > start);
-        if matches!(run, Some(Run::Function | Run::Styled(_)))
-            && run == self.run_before()
-            && !inside_styled
+        let joins = match run {
+            Some(Run::Function | Run::Styled(_)) => run == self.run_before() && !inside_styled,
+            // Two sizes are two nodes.
+            Some(Run::Number(_) | Run::Text) => {
+                self.sized && self.glyph_size != Some(self.record(size)) && run == self.run_before()
+            },
+            Some(Run::Point) | None => false,
+        };
+        if joins
             || matches!(run, Some(Run::Number(_)))
                 && glyph.ch.is_ascii_digit()
                 && self.run_before() == Some(Run::Point)
@@ -512,7 +715,10 @@ impl<'a> Encoder<'a> {
     fn space_code(&mut self, size: Size, low: u16) -> Result<()> {
         let base: u32 = if self.v5 { 0xEF00 } else { 0xEB00 };
         let ch = char::from_u32(base + u32::from(low)).unwrap_or('\u{FFFD}');
-        self.glyph(size, Glyph::new(FN_SPACE, ch), false, &[])?;
+        self.separator = low == chars::SPACE_ZERO;
+        let result = self.glyph(size, Glyph::new(FN_SPACE, ch), false, &[]);
+        self.separator = false;
+        result?;
         if low == chars::SPACE_ZERO {
             self.zero_space = Some((self.items, self.open.len()));
         }
@@ -524,6 +730,18 @@ impl<'a> Encoder<'a> {
     /// The equation body: an initial size, the equation's LINE (or PILE) and
     /// the final END.
     pub(super) fn equation(&mut self, roots: NodeSpan) -> Result<()> {
+        // MTEF 3 has no size preferences: what is not at their 12 points is
+        // given its size in points.
+        if !self.v5
+            && (self.base_pt - f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT)).abs() > 1e-9
+        {
+            self.sized = true;
+            self.absolute = true;
+            self.own_size = Some(OwnSize {
+                size: self.points(self.base_pt),
+                place: Size::Full,
+            });
+        }
         let ids: SmallVec<[NodeId; 8]> = self.arena.children(roots).into();
         match ids.as_slice() {
             [only] if self.is_pile(self.drawn_root(*only)) => {
@@ -641,15 +859,32 @@ impl<'a> Encoder<'a> {
 
     // ── Nodes ──────────────────────────────────────────────────────────
 
-    fn node(&mut self, id: NodeId, size: Size) -> Result<()> {
+    fn node(&mut self, id: NodeId, mut size: Size) -> Result<()> {
         self.enter()?;
-        self.node_inner(id, size)?;
+        if self.sized {
+            let outer = self.own_size;
+            (self.own_size, size) = self.own_size_of(id, size);
+            self.sized_node(id, size)?;
+            self.own_size = outer;
+        } else {
+            self.node_inner(id, size)?;
+        }
         self.depth -= 1;
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
+    fn sized_node(&mut self, id: NodeId, size: Size) -> Result<()> {
+        self.node_inner(id, size)
+    }
+
+    #[inline(always)]
     fn node_inner(&mut self, id: NodeId, size: Size) -> Result<()> {
         if let Some((leaf, style, kinds)) = self.embellishments(id) {
+            if self.sized && !self.mark_fits(id, leaf) {
+                self.lose("MTEF marks over one character have its size; their own was dropped");
+            }
             return self.embellished(size, leaf, style, &kinds);
         }
         match *self.arena.node(id) {
@@ -780,20 +1015,7 @@ impl<'a> Encoder<'a> {
             CompactNode::Fraction { kind, num, den } => self.fraction(size, kind, num, den),
             CompactNode::Sqrt(radicand) => self.root(size, radicand, None),
             CompactNode::Root { index, radicand } => self.root(size, radicand, Some(index)),
-            CompactNode::Nary {
-                op,
-                sub,
-                sup,
-                body,
-                limits,
-            } => self.nary(
-                size,
-                op,
-                sub.is_some().then_some(sub),
-                sup.is_some().then_some(sup),
-                body,
-                limits,
-            ),
+            CompactNode::Nary { .. } => self.nary(id, size),
             CompactNode::Accent {
                 base,
                 accent,
@@ -812,7 +1034,7 @@ impl<'a> Encoder<'a> {
                 accent,
                 position,
                 wide,
-            } => self.accent(size, base, accent, position, wide),
+            } => self.accent(id, size, base, accent, position, wide),
             CompactNode::Array { .. } => {
                 // Piles are written for a whole equation and for matrix cells,
                 // as the applications do; elsewhere an array is a matrix.
@@ -1260,6 +1482,7 @@ impl<'a> Encoder<'a> {
     /// A node that is one character under embellishments (accents, primes,
     /// strikes): the character's node, the innermost math alphabet inside an
     /// accent, and the embellishment types, innermost first.
+    #[inline(always)]
     fn embellishments(&self, id: NodeId) -> Option<(NodeId, Option<TextStyle>, SmallVec<[u8; 4]>)> {
         let mut kinds: SmallVec<[u8; 4]> = SmallVec::new();
         let mut accented = false;
@@ -1281,6 +1504,9 @@ impl<'a> Encoder<'a> {
                     current = base;
                 },
                 CompactNode::Superscript { base, sup } => {
+                    if self.sized && !self.marks_fit(base, sup) {
+                        break;
+                    }
                     let Some(kind) = self.primes(sup) else { break };
                     kinds.push(kind);
                     current = base;
@@ -1345,7 +1571,41 @@ impl<'a> Encoder<'a> {
         Some((current, style, kinds))
     }
 
+    /// Whether the mark of an accent has the size of its character.
+    #[cold]
+    fn mark_fits(&self, id: NodeId, leaf: NodeId) -> bool {
+        !matches!(*self.arena.node(id), CompactNode::Accent { .. })
+            || self.arena.attrs(id).and_then(|attrs| attrs.glyph_size)
+                == self.arena.attrs(leaf).and_then(|attrs| attrs.size)
+    }
+
+    /// Whether marks in `sup` have the size of scripts of the character under
+    /// `base`, as those of an embellishment do.
+    #[cold]
+    fn marks_fit(&self, base: NodeId, sup: NodeId) -> bool {
+        let mut base = base;
+        let size = loop {
+            if let Some(size) = self.arena.attrs(base).and_then(|attrs| attrs.size) {
+                break Some(size.script(self.base_pt));
+            }
+            base = match *self.arena.node(base) {
+                CompactNode::Accent { base, .. } | CompactNode::Superscript { base, .. } => base,
+                CompactNode::Cancel { content, .. } => content,
+                CompactNode::Styled(_, span) if self.arena.children(span).len() == 1 => {
+                    self.arena.children(span)[0]
+                },
+                _ => break None,
+            };
+        };
+        let fits = |id: NodeId| self.arena.attrs(id).and_then(|attrs| attrs.size) == size;
+        match *self.arena.node(sup) {
+            CompactNode::Row(span) => self.arena.children(span).iter().all(|&id| fits(id)),
+            _ => fits(sup),
+        }
+    }
+
     /// The prime embellishment a superscript of one, two or three primes is.
+    #[inline(always)]
     fn primes(&self, sup: NodeId) -> Option<u8> {
         let is_prime = |id: NodeId| self.is_str(id, "\u{2032}");
         let count = match *self.arena.node(sup) {
@@ -1395,7 +1655,15 @@ impl<'a> Encoder<'a> {
         };
         let (glyph, _) = self.leaf_glyph(kind, ch)?;
         let func_start = self.v5 && kind == Leaf::Operator;
-        self.glyph(size, glyph, func_start, kinds)
+        if !self.sized {
+            return self.glyph(size, glyph, func_start, kinds);
+        }
+        let outer = self.own_size;
+        let (own, size) = self.own_size_of(leaf, size);
+        self.own_size = own;
+        let result = self.glyph(size, glyph, func_start, kinds);
+        self.own_size = outer;
+        result
     }
 
     // ── Scripts ────────────────────────────────────────────────────────
@@ -1820,6 +2088,7 @@ impl<'a> Encoder<'a> {
 
     fn accent(
         &mut self,
+        id: NodeId,
         size: Size,
         base: NodeId,
         accent: char,
@@ -1851,7 +2120,9 @@ impl<'a> Encoder<'a> {
                 narrow_loss.into_iter().for_each(|m| self.lose(m));
                 self.template(size, selector, variation);
                 self.slot(size, Some(base))?;
-                self.glyph(size, Glyph::new(FN_EXPAND, glyph), false, &[])?;
+                self.with_sign_size(id, size, |this| {
+                    this.glyph(size, Glyph::new(FN_EXPAND, glyph), false, &[])
+                })?;
                 self.end();
                 return Ok(());
             }
@@ -1871,10 +2142,17 @@ impl<'a> Encoder<'a> {
         self.lose(
             "MTEF has no template for this accent over its base; the accent was written as a limit",
         );
-        self.limit_glyph(size, base, accent, position == AccentPosition::Above)
+        self.limit_glyph(id, size, base, accent, position == AccentPosition::Above)
     }
 
-    fn limit_glyph(&mut self, size: Size, base: NodeId, ch: char, above: bool) -> Result<()> {
+    fn limit_glyph(
+        &mut self,
+        id: NodeId,
+        size: Size,
+        base: NodeId,
+        ch: char,
+        above: bool,
+    ) -> Result<()> {
         let script = size.script();
         let variation = if self.v5 {
             if above { TV_UPPER } else { TV_LOWER }
@@ -1889,9 +2167,11 @@ impl<'a> Encoder<'a> {
         if above {
             self.null_line(script);
         }
-        self.need(script);
-        self.tag(LINE, 0);
-        self.glyph(script, glyph, false, &[])?;
+        self.with_sign_size(id, size, |this| {
+            this.need(script);
+            this.tag(LINE, 0);
+            this.glyph(script, glyph, false, &[])
+        })?;
         self.end();
         if !above {
             self.null_line(script);
@@ -1970,7 +2250,28 @@ impl<'a> Encoder<'a> {
         );
         self.slot(size, Some(radicand))?;
         let index_style = self.math_style.sup().sup();
-        self.with_math_style(index_style, |this| this.slot(size.script(), index))?;
+        let script = size.script();
+        let outer = self.own_size;
+        if outer.is_some() {
+            // The AST's index is at the second script size.
+            let text = match self.record(size) {
+                SizeRecord::Points(points) => f64::from(points) / 32.0,
+                SizeRecord::Delta(_, delta) => {
+                    self.base_pt * f64::from(type_size(size).per_mille()) / 1000.0
+                        + f64::from(delta) / 32.0
+                },
+                SizeRecord::Level(size) => {
+                    self.base_pt * f64::from(type_size(size).per_mille()) / 1000.0
+                },
+            };
+            let scale = 500.0 / f64::from(type_size(size).per_mille().min(1000));
+            self.own_size = Some(OwnSize {
+                size: self.points(text * scale),
+                place: script,
+            });
+        }
+        self.with_math_style(index_style, |this| this.slot(script, index))?;
+        self.own_size = outer;
         self.end();
         Ok(())
     }
@@ -1978,15 +2279,19 @@ impl<'a> Encoder<'a> {
     /// BigOpBoxClass: main slot, lower limit, upper limit, then the operator
     /// characters (or, for `tmINTOP` / `tmSUMOP` in MTEF 5, a line holding
     /// the operator).
-    fn nary(
-        &mut self,
-        size: Size,
-        op: char,
-        sub: Option<NodeId>,
-        sup: Option<NodeId>,
-        body: NodeId,
-        limits: LimitStyle,
-    ) -> Result<()> {
+    fn nary(&mut self, id: NodeId, size: Size) -> Result<()> {
+        let CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } = *self.arena.node(id)
+        else {
+            return Ok(());
+        };
+        let sub = sub.is_some().then_some(sub);
+        let sup = sup.is_some().then_some(sup);
         let above_below = match limits {
             LimitStyle::AboveBelow => true,
             LimitStyle::SubSup => false,
@@ -2010,15 +2315,17 @@ impl<'a> Encoder<'a> {
             self.slot(script, sub)?;
             self.slot(script, sup)?;
             match known {
-                Some((_, _, glyphs)) => {
-                    for &glyph in glyphs {
-                        self.glyph(symbol, glyph, false, &[])?;
-                    }
-                },
+                Some((_, _, glyphs)) => self.with_sign_size(id, size, |this| {
+                    glyphs
+                        .iter()
+                        .try_for_each(|&glyph| this.glyph(symbol, glyph, false, &[]))
+                })?,
                 None => {
-                    self.need(symbol);
-                    self.tag(LINE, 0);
-                    self.glyph(symbol, chars::symbol_glyph(op), false, &[])?;
+                    self.with_sign_size(id, size, |this| {
+                        this.need(symbol);
+                        this.tag(LINE, 0);
+                        this.glyph(symbol, chars::symbol_glyph(op), false, &[])
+                    })?;
                     self.end();
                 },
             }
@@ -2044,7 +2351,9 @@ impl<'a> Encoder<'a> {
             this.slot(script, sub)?;
             this.slot(script, sup)
         })?;
-        self.glyph(symbol, chars::symbol_glyph(op), false, &[])?;
+        self.with_sign_size(id, size, |this| {
+            this.glyph(symbol, chars::symbol_glyph(op), false, &[])
+        })?;
         self.end();
         Ok(())
     }
