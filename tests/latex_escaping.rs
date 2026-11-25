@@ -350,8 +350,24 @@ fn only_delimiters_follow_left_and_right() {
     for (open, close, latex) in [
         ("(", ")", r"\left( x \right)"),
         ("{", "", r"\left\{ x \right."),
-        ("%", "~", r"\left\% x \right\~"),
+        ("|", "/", r"\left| x \right/"),
+        (
+            "%",
+            "~",
+            r"\left. \mathopen{\%}x\mathclose{\char`\~} \right.",
+        ),
+        (
+            "_",
+            "^",
+            r"\left. \mathopen{\char`\_}x\mathclose{\char`\^} \right.",
+        ),
+        ("é", "©é", r"\left. \mathopen{é}x\mathclose{©é} \right."),
         ("a", ")", r"\left. \mathopen{a}x \right)"),
+        (
+            "\u{301}",
+            "\u{20D7}",
+            "\\left. \\mathopen{\\char769 }x\\mathclose{\u{20D7}} \\right.",
+        ),
         ("(", "a", r"\left( x\mathclose{a} \right."),
         (
             "8",
@@ -377,7 +393,10 @@ fn only_delimiters_follow_left_and_right() {
             FencedItem::Element(id("y")),
         ],
     };
-    assert_eq!(write(vec![middle]), r"\left( \sum{}\mathrel{a\}}y \right)");
+    assert_eq!(
+        write(vec![middle]),
+        r"\left( \sum{} \middle. \mathord{a\}}y \right)"
+    );
     // A sizing command is dropped from what is no delimiter.
     for (delim, latex) in [
         ("(", r"\big("),
@@ -1318,6 +1337,11 @@ fn names_with_character_tokens_are_stable() {
         "\\operatorname*{\0lim}_x y",
         "\\operatorname{s\0in}x",
         r"\operatorname\not",
+        r"\ip{{'\middle~}}d",
+        r"\ip{{\middle~d}'}d",
+        r"\left('\middle~'x\right)",
+        r"\left(a\middle~_1 x\middle\^ '\right)",
+        r"\frac{'\middle~}{\middle~'}",
         "\\operatorname{\u{301}}x",
     ] {
         let once = mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
@@ -1335,4 +1359,61 @@ fn names_with_character_tokens_are_stable() {
             assert_eq!(again.unwrap(), name);
         }
     }
+}
+
+/// What is written after a control word does not depend on how a non-ASCII
+/// letter there came to be.
+#[test]
+fn non_ascii_letters_after_control_words_are_stable() {
+    use mathema::Format::{LaTeX, MathML};
+    for (input, from, latex) in [
+        (r"\alpha\char`é", LaTeX, r"\alphaé"),
+        (r"\lVert\char17701", LaTeX, "\\lVert\u{4525}"),
+        ("<math><mi>α</mi><mo>é</mo></math>", MathML, r"\alphaé"),
+        (
+            "<math><mi>α</mi><mi>ʰ</mi></math>",
+            MathML,
+            r"\alpha\char`ʰ",
+        ),
+    ] {
+        let written = mathema::convert(input, from, LaTeX).unwrap();
+        assert_eq!(written, latex, "{input}");
+        assert_eq!(mathema::convert(&written, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
+/// Text and names are written in linear time.
+#[test]
+fn long_text_and_names_are_linear() {
+    let n = 100_000;
+    let start = std::time::Instant::now();
+    for node in [
+        MathNode::Text(TextStyle::Monospace, "x\u{327}".repeat(n) + "\\"),
+        MathNode::Text(TextStyle::Monospace, "x\u{327}".repeat(n)),
+        MathNode::Text(TextStyle::Normal, "x\u{327}-\0".repeat(n)),
+        MathNode::Operator(OperatorAttr {
+            name: "a ".repeat(n) + "^",
+            limit_style: LimitStyle::SubSup,
+        }),
+        MathNode::Operator(OperatorAttr {
+            name: "a\0é1".repeat(n) + "^",
+            limit_style: LimitStyle::SubSup,
+        }),
+        MathNode::Number("5'".repeat(n)),
+        id(&"α\u{e9}".repeat(n)),
+        fenced(&"'".repeat(n), &"\\".repeat(n)),
+    ] {
+        assert!(write(vec![node]).len() > n);
+    }
+    // About 0.1 s in a debug build; quadratic, each is many seconds.
+    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+}
+
+/// A combining mark that is all of a formula in text does not join the `$`.
+#[test]
+fn combining_mark_in_inline_math() {
+    let mathml = "<math><menclose notation='actuarial'><mi>&#x301;</mi></menclose></math>";
+    let latex = mathema::from_mathml(mathml).unwrap().to_latex().unwrap();
+    assert_eq!(latex, "\\angl{$\\relax \u{301}$}");
+    assert_eq!(reread(&latex).to_latex().unwrap(), latex);
 }

@@ -81,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `\textcolor` or a box that only had that background becomes its content.
   Braced names (`\colorbox{{red}}{x}`) count as none. The other formats keep
   such colors: normalization no longer drops `#f00`, `#rrggbbaa`, `hsl(…%)`, ….
+  `LatexWriter::write*` given an expression directly writes such a node as the
+  atom `\mathord{…}`.
 - **Breaking (behavior):** `\verb` is written as `\texttt` with character codes,
   since it is unsafe in an argument.
 - **Breaking (behavior):** characters that are LaTeX syntax are escaped
@@ -88,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Control characters in text and function names are dropped, and
   `ConvertResult::to_latex_with_diagnostics` reports them. A raw backtick in
   LaTeX math is the opening quote `‘`, as in TeX and KaTeX, and a raw `"` is
-  read.
+  read and written as itself (under babel's german, where `"` is active, use
+  `\shorthandoff{"}`).
 - **Breaking (behavior):** `\hbar`, `\hslash`, `\ell`, `\Re`, `\Im`, the
   Hebrew letters, `\imath`, `\jmath` and `\eth` are identifiers (MathML
   `<mi>`, as KaTeX and MathJax write them) instead of ordinary symbols.

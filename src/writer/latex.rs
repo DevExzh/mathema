@@ -18,6 +18,14 @@ use escape::{
     write_char_token,
 };
 
+/// Writes LaTeX.
+///
+/// A color LaTeX cannot hold (`#f00`, `hsl(…)`, text that is no color) is not
+/// written. [`convert`](crate::convert()) and
+/// [`ConvertResult::to_latex`](crate::ConvertResult::to_latex) make the node the
+/// group of its content, as if it had no color. The methods here do not know
+/// whether the expression is normalized: a node with neighbours becomes the
+/// ordinary atom `\mathord{…}`, which reads back the same either way.
 pub struct LatexWriter;
 
 impl LatexWriter {
@@ -322,7 +330,8 @@ fn write_sequence(
         // would take the script. (Normalization still makes such a script
         // the limit of a function name or big operator before it, unlike
         // TeX: `\lim{}_x` is written `\lim_x`.)
-        let middle = matches!(*arena.node(id), CompactNode::Middle(_));
+        let middle = matches!(*arena.node(id), CompactNode::Middle(sid)
+            if writes_as_delimiter(arena.str_val(sid)));
         if i + 1 < children.len()
             && is_script_with_empty_base(arena, children[i + 1])
             && (middle
@@ -1017,8 +1026,7 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // name, e.g. `\operatorname{rank}A`. Native control words retain
         // their usual separator.
         CompactNode::Operator { name, limits } => {
-            latex_operator_command(&kept_name(arena.str_val(name))).is_some()
-                || limits == LimitStyle::AboveBelow
+            is_operator_command_name(arena.str_val(name)) || limits == LimitStyle::AboveBelow
         },
         CompactNode::Symbol(SymbolKind::BinaryOp, _)
         | CompactNode::Symbol(SymbolKind::Relation, _) => true,
@@ -1079,6 +1087,9 @@ fn appended_ends_with_letter_command(buf: &str, start: usize, previous: bool) ->
 }
 
 /// Check if a node's first written character would be a plain ASCII letter.
+/// (XeTeX and LuaTeX also take a non-ASCII letter into the control word before
+/// it, as in `\alphaé`; KaTeX, MathJax, pdfTeX and the reader do not. A known
+/// limitation: which letters are written as themselves depends on the context.)
 /// Recursively handles compound nodes whose base is written via `write_braced`.
 fn node_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
@@ -1368,7 +1379,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             write_delim(buf, delim);
                             buf.push(' ');
                         } else {
-                            write_literal_delimiter(buf, delim, "\\mathrel{");
+                            // The null delimiter still divides the fence.
+                            buf.push_str(" \\middle. ");
+                            write_literal_delimiter(buf, delim, "\\mathord{");
                         }
                         ends_with_command = false;
                     },
@@ -2066,7 +2079,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 buf.push_str("\\middle");
                 write_delim(buf, delim);
             } else {
-                write_literal_delimiter(buf, delim, "\\mathrel{");
+                buf.push_str("\\middle.");
+                write_literal_delimiter(buf, delim, "\\mathord{");
             }
         },
         CompactNode::ColAlign(_) => {},
@@ -2334,10 +2348,23 @@ fn latex_operator_command(name: &str) -> Option<&str> {
     }
 }
 
+/// Whether `text` may hold a control character (U+0000–1F, 7F, 80–9F).
+#[inline]
+fn has_control(text: &str) -> bool {
+    text.bytes().any(|b| b < b' ' || b == 0x7F || b == 0xC2) && text.contains(char::is_control)
+}
+
+/// Whether a function name is written as its command.
+#[inline]
+fn is_operator_command_name(name: &str) -> bool {
+    latex_operator_command(name).is_some()
+        || (has_control(name) && latex_operator_command(&kept_name(name)).is_some())
+}
+
 /// The characters of a function name that are written: control characters are
 /// not, or as a space.
 fn kept_name(name: &str) -> Cow<'_, str> {
-    if !name.contains(char::is_control) {
+    if !has_control(name) {
         return Cow::Borrowed(name);
     }
     let mut kept = String::with_capacity(name.len());
@@ -2356,7 +2383,10 @@ fn kept_name(name: &str) -> Cow<'_, str> {
 /// limits (`argmax`).
 fn write_operator_name(buf: &mut LatexBuffer, name: &str, limits: LimitStyle) {
     // Without its control characters the name may be a command's.
-    if name.contains(char::is_control) {
+    let plain = name
+        .bytes()
+        .all(|b| b.is_ascii() && !ascii_needs_escape(b, Place::Name));
+    if !plain && has_control(name) {
         let kept = kept_name(name);
         name.chars()
             .filter(|&ch| escape::spelling(ch, Place::Name) == Spelling::Dropped)
@@ -2386,25 +2416,25 @@ fn write_operator_name(buf: &mut LatexBuffer, name: &str, limits: LimitStyle) {
                 // KaTeX/amsopn. Use the starred form when the AST requests
                 // fixed above/below placement, then make that choice explicit.
                 buf.push_str("\\operatorname*{");
-                write_operator_name_content(buf, name);
+                write_operator_name_content(buf, name, plain);
                 buf.push_str("}\\limits");
             },
             LimitStyle::SubSup => {
                 buf.push_str("\\operatorname{");
-                write_operator_name_content(buf, name);
+                write_operator_name_content(buf, name, plain);
                 buf.push('}');
             },
             LimitStyle::Default => {
                 buf.push_str("\\operatorname*{");
-                write_operator_name_content(buf, name);
+                write_operator_name_content(buf, name, plain);
                 buf.push('}');
             },
         }
     }
 }
 
-fn write_operator_name_content(buf: &mut LatexBuffer, name: &str) {
-    if name.is_ascii() && !name.bytes().any(|b| ascii_needs_escape(b, Place::Name)) {
+fn write_operator_name_content(buf: &mut LatexBuffer, name: &str, plain: bool) {
+    if plain {
         buf.push_str(name);
         return;
     }
@@ -2425,7 +2455,12 @@ fn write_operator_name_content(buf: &mut LatexBuffer, name: &str) {
 fn write_operator_name_list(buf: &mut LatexBuffer, name: &str) {
     let outer = std::mem::replace(&mut buf.in_operator_name, true);
     let start = buf.len();
-    let mut rest = name;
+    // White space is nothing in a math list; without it runs of letters meet.
+    let name: String = name
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    let mut rest = name.as_str();
     while let Some(ch) = rest.chars().next() {
         let letters = rest
             .find(|ch: char| {
@@ -2444,9 +2479,7 @@ fn write_operator_name_list(buf: &mut LatexBuffer, name: &str) {
             write_space(buf, width);
         } else if ch.is_ascii_digit() {
             buf.push(ch);
-        } else if ch.is_control() && !ch.is_ascii_whitespace() {
-            buf.report.char(ch);
-        } else if !ch.is_ascii_whitespace() && ch != '\x0B' {
+        } else {
             write_symbol_text(buf, SymbolKind::Ordinary, run);
         }
     }
@@ -2983,15 +3016,21 @@ fn write_delim(buf: &mut LatexBuffer, delim: &str) {
     write_delim_with_class(buf, delim, None);
 }
 
-/// Whether `\left`, `\middle` and `\right` take `delim` as their delimiter:
-/// nothing, or one glyph that is not a letter or digit (a letter would join
-/// the command's name). MathML's `<mfenced>` and the other formats allow any
-/// text.
+/// Whether `\left`, `\middle` and `\right` can be given `delim`: nothing, or one
+/// glyph that TeX reads as one token after them. A letter would join the
+/// command's name (a non-ASCII one too, in XeTeX and LuaTeX), and the control
+/// symbols of `# $ % & _ ^ ~` are no delimiters (`\^` is an accent and takes
+/// what follows). MathML's `<mfenced>` and the other formats allow any text.
 fn writes_as_delimiter(delim: &str) -> bool {
     match delim.as_bytes() {
         [] => true,
-        [byte] => byte.is_ascii_punctuation(),
-        _ => single_char(delim).is_some_and(|ch| !ch.is_whitespace() && !ch.is_control()),
+        [byte] => {
+            byte.is_ascii_punctuation()
+                && !matches!(byte, b'#' | b'$' | b'%' | b'&' | b'_' | b'^' | b'~')
+        },
+        _ => single_char(delim).is_some_and(|ch| {
+            !ch.is_whitespace() && !ch.is_control() && !ch.is_alphabetic() && !is_combining_mark(ch)
+        }),
     }
 }
 
@@ -3387,7 +3426,12 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 .count();
             let (math, tail) = rest.split_at(n);
             buf.push('$');
+            let start = buf.len();
             write_box_math(buf, arena, math);
+            // A combining mark would join the math shift.
+            if buf[start..].starts_with(|ch| matches!(ch, '\u{0300}'..='\u{036F}')) {
+                buf.insert_text(start, r"\relax ");
+            }
             buf.push('$');
             rest = tail;
         }
@@ -3458,6 +3502,7 @@ fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
     } else {
         Place::Text
     };
+    let literal_marks = monospace && text.contains(['\\', '{', '}']);
     let mut rest = text;
     let mut previous = None;
     loop {
@@ -3482,9 +3527,7 @@ fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
         }
         // A combining mark would join the brace before it. In literal source
         // text (what `\verb` reads) it is a character like any other.
-        if matches!(ch, '\u{0300}'..='\u{036F}')
-            && (buf.ends_with(['{', '}']) || monospace && text.contains(['\\', '{', '}']))
-        {
+        if matches!(ch, '\u{0300}'..='\u{036F}') && (literal_marks || buf.ends_with(['{', '}'])) {
             write_char_code(buf, ch, "{}");
         } else if !write_char(buf, ch, place) {
             buf.report.char(ch);
@@ -4200,13 +4243,17 @@ mod tests {
             let input = format!(r"\left. \frac{{a}}{{b}}\right\{glyph}");
             let formula = crate::from_latex(&input).unwrap();
             let first = formula.to_latex().unwrap();
+            // No engine takes these as delimiters: `\right\^` is an accent.
             assert!(
-                first.contains(&format!(r"\right\{glyph}")),
+                first.contains(r"\mathclose{") && first.ends_with(r"} \right."),
                 "{input}: {first}"
             );
             let reparsed = crate::from_latex(&first).unwrap();
             assert_eq!(reparsed.to_latex().unwrap(), first);
-            assert_eq!(reparsed.to_mathml().unwrap(), formula.to_mathml().unwrap());
+            assert!(reparsed.to_mathml().unwrap().contains(match glyph {
+                "&" => "&amp;",
+                glyph => glyph,
+            }));
         }
     }
 
