@@ -10,6 +10,15 @@ use mathema::{convert, Format};
 // One-liner conversion
 let mathml = convert("x^2 + y^2 = z^2", Format::LaTeX, Format::MathML).unwrap();
 
+// One-liner conversion with reader and writer diagnostics
+let (umath, diagnostics) = mathema::convert_with_diagnostics(
+    r"\color{red}{x}",
+    Format::LaTeX,
+    Format::UnicodeMath,
+).unwrap();
+assert!(!umath.is_empty());
+assert!(!diagnostics.is_empty());
+
 // Builder API — parse once, write to multiple formats
 let result = mathema::from_latex(r"\frac{1}{2}").unwrap();
 let mathml = result.to_mathml().unwrap();
@@ -50,6 +59,11 @@ cargo build --release --features raster   # or just --features render for SVG on
 mathema convert -f latex -t mathml "x^2"
 echo "x^2" | mathema convert -f latex -t omml
 
+# Keep conversion output on stdout; conversion warnings are shown on stderr
+mathema convert -f latex -t unicodemath "\\color{red}{x}"
+# Add informational diagnostics too (and recover where possible)
+mathema convert --lenient --diagnostics -f latex -t unicodemath "\\color{red}{x}"
+
 # Render to SVG, PNG, or JPEG
 mathema render "x^2"                              # SVG to stdout
 mathema render --format png -o out.png "x^2"      # PNG (requires raster)
@@ -58,6 +72,7 @@ mathema render --font-size 24 --color black "x^2" # custom options
 
 # Validate input
 mathema validate -f latex "x^2"
+mathema validate --lenient -f latex "\\unknowncommand{x}"
 
 # Batch processing (pass multiple files)
 mathema convert -t mathml -o out/ *.tex

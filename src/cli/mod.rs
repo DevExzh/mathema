@@ -52,6 +52,10 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub lenient: bool,
 
+    /// Also print informational diagnostics to stderr (warnings are always shown)
+    #[arg(long)]
+    pub diagnostics: bool,
+
     /// Input: file paths or an inline expression (reads stdin if omitted)
     pub input: Vec<String>,
 }
@@ -65,6 +69,10 @@ pub struct ValidateArgs {
     /// Use lenient parsing
     #[arg(long)]
     pub lenient: bool,
+
+    /// Also print informational diagnostics to stderr (warnings are always shown)
+    #[arg(long)]
+    pub diagnostics: bool,
 
     /// Input: file paths or an inline expression (reads stdin if omitted)
     pub input: Vec<String>,
@@ -166,7 +174,14 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
     let is_batch = inputs.len() > 1;
 
     if is_batch {
-        return run_convert_batch(inputs, args.from, args.to, args.output, &config);
+        return run_convert_batch(
+            inputs,
+            args.from,
+            args.to,
+            args.output,
+            &config,
+            args.diagnostics,
+        );
     }
 
     // Single input
@@ -181,8 +196,14 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
     };
 
     let from = resolve_format(args.from, path, &content)?;
-    let result = mathema::convert_with(input_for_format(&content, from), from, args.to, &config)
-        .map_err(|e| CliError::from_mathema(e, &content, &source_name))?;
+    let (result, diagnostics) = mathema::convert_with_config_and_diagnostics(
+        input_for_format(&content, from),
+        from,
+        args.to,
+        &config,
+    )
+    .map_err(|e| CliError::from_mathema(e, &content, &source_name))?;
+    print_diagnostics(&source_name, &diagnostics, args.diagnostics);
 
     match &args.output {
         Some(out_path) => {
@@ -203,6 +224,7 @@ fn run_convert_batch(
     to: Format,
     output: Option<PathBuf>,
     config: &mathema::Config,
+    include_info: bool,
 ) -> Result<(), CliError> {
     // If output is given, it must be a directory
     if let Some(ref out_dir) = output
@@ -249,8 +271,14 @@ fn run_convert_batch(
             },
         };
 
-        match mathema::convert_with(input_for_format(&content, fmt), fmt, to, config) {
-            Ok(result) => {
+        match mathema::convert_with_config_and_diagnostics(
+            input_for_format(&content, fmt),
+            fmt,
+            to,
+            config,
+        ) {
+            Ok((result, diagnostics)) => {
+                print_diagnostics(&source_name, &diagnostics, include_info);
                 let out_path = match &output {
                     Some(dir) => {
                         let stem = path
@@ -355,20 +383,27 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
             },
         };
 
-        // Parse to validate — convert to same format to exercise the parser
-        match mathema::convert_with(input_for_format(&content, from), from, from, &config) {
-            Ok(_) => {
+        // Parse the actual input to validate it. Do not rewrite it to the same
+        // format: validation should report reader diagnostics, not losses
+        // caused solely by that round trip.
+        match parse_input(
+            input_for_format(&content, from),
+            from,
+            &config,
+            &source_name,
+        ) {
+            Ok(parsed) => {
+                print_diagnostics(&source_name, parsed.diagnostics(), args.diagnostics);
                 if !is_batch {
                     println!("{source_name}: valid ({from:?})");
                 }
                 success_count += 1;
             },
             Err(e) => {
-                let cli_err = CliError::from_mathema(e, &content, &source_name);
                 if !is_batch {
-                    return Err(cli_err);
+                    return Err(e);
                 }
-                failures.push((source_name, cli_err));
+                failures.push((source_name, e));
             },
         }
         if let Some(ref bar) = pb {
@@ -397,6 +432,29 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+/// Print non-fatal diagnostics on stderr so conversion output on stdout stays
+/// suitable for piping to another program or redirecting to an output file.
+fn print_diagnostics(source_name: &str, diagnostics: &[mathema::Diagnostic], include_info: bool) {
+    for diagnostic in diagnostics {
+        if !include_info && diagnostic.kind == mathema::DiagnosticKind::Info {
+            continue;
+        }
+        let severity = match diagnostic.kind {
+            mathema::DiagnosticKind::Warning => "warning",
+            mathema::DiagnosticKind::Info => "info",
+            _ => "diagnostic",
+        };
+        if let Some(span) = diagnostic.span {
+            eprintln!(
+                "{source_name}: {severity}: {} (bytes {}..{})",
+                diagnostic.message, span.start, span.end
+            );
+        } else {
+            eprintln!("{source_name}: {severity}: {}", diagnostic.message);
+        }
+    }
 }
 
 #[cfg(feature = "render")]
@@ -487,8 +545,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Parse input into a `ConvertResult` for multi-output rendering.
-#[cfg(feature = "render")]
+/// Parse input into a `ConvertResult` for validation or multi-output rendering.
 fn parse_input(
     input: &str,
     from: Format,

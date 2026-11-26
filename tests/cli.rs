@@ -37,6 +37,45 @@ fn convert_stdin_latex_preserves_control_space() {
 }
 
 #[test]
+fn convert_reports_warnings_by_default_on_stderr() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "unicodemath",
+            r"\color{red}{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x"))
+        .stdout(predicate::str::contains("warning").not())
+        .stderr(predicate::str::contains("warning"))
+        .stderr(predicate::str::contains("color"));
+}
+
+#[test]
+fn convert_diagnostics_stay_on_stderr() {
+    mathema()
+        .args([
+            "convert",
+            "--diagnostics",
+            "--from",
+            "latex",
+            "--to",
+            "unicodemath",
+            r"\color{red}{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x"))
+        .stdout(predicate::str::contains("warning").not())
+        .stderr(predicate::str::contains("warning"))
+        .stderr(predicate::str::contains("color"));
+}
+
+#[test]
 fn convert_batch_latex_preserves_control_space() {
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("out");
@@ -96,6 +135,39 @@ fn validate_stdin_latex_preserves_control_space() {
         .assert()
         .success()
         .stdout(predicate::str::contains("valid"));
+}
+
+#[test]
+fn validate_lenient_reports_diagnostics_on_stderr() {
+    mathema()
+        .args([
+            "validate",
+            "--lenient",
+            "--diagnostics",
+            "--from",
+            "latex",
+            r"\unknowncommand{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"))
+        .stderr(predicate::str::contains("undefined"));
+}
+
+#[test]
+fn validate_reports_reader_diagnostics_without_same_format_writer_losses() {
+    mathema()
+        .args([
+            "validate",
+            "--diagnostics",
+            "--from",
+            "unicodemath",
+            "■(a&b@c&d)",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"))
+        .stderr(predicate::str::contains("centers table columns").not());
 }
 
 #[test]

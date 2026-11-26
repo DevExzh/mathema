@@ -7,7 +7,7 @@ use crate::ast::normalize::{
     normalize_compact_expr, normalize_compact_expr_keeping_identifiers,
     normalize_compact_expr_opening_arguments,
 };
-use crate::error::{CompactParseResult, Config, Format, Result};
+use crate::error::{CompactParseResult, Config, Diagnostic, Format, Result};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
 use crate::reader::mathml::MathmlReader;
@@ -42,6 +42,88 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
     )?;
     normalize_for(&mut compact.expr, from, to)?;
     write_compact(&compact.expr, to, config)
+}
+
+/// One-liner conversion that also returns diagnostics from both phases of the
+/// conversion: reader diagnostics collected while parsing `input`, followed by
+/// diagnostics for information the target format cannot represent.
+///
+/// The returned text is the same text as [`convert`] produces for the same
+/// input and formats. Diagnostics are additive: a successful conversion can
+/// still report warnings or informational notes.
+///
+/// For a non-default [`Config`], use
+/// [`convert_with_config_and_diagnostics`].
+pub fn convert_with_diagnostics(
+    input: &str,
+    from: Format,
+    to: Format,
+) -> Result<(String, Vec<Diagnostic>)> {
+    convert_with_config_and_diagnostics(input, from, to, &Config::default())
+}
+
+/// Conversion with custom configuration that also returns diagnostics from
+/// both parsing and writing.
+///
+/// The first phase parses and validates the input, and the second phase emits
+/// the target format. The output uses exactly the same target normalization as
+/// [`convert_with`]. Reader diagnostics come first in the returned vector;
+/// writer diagnostics follow them.
+pub fn convert_with_config_and_diagnostics(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let mut compact = parse_compact(input, from, config)?;
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )?;
+
+    // `normalize_for` deliberately lowers colors and typesetting attributes
+    // for LaTeX, OMML and UnicodeMath before their ordinary writer runs. Keep
+    // a loss report from the pre-lowered tree for those targets, otherwise
+    // target normalization would make the loss invisible. UnicodeMath has a
+    // traversal-only collector; LaTeX and OMML need their emitting collector
+    // only when normalization actually has something to remove.
+    let mut diagnostics = std::mem::take(&mut compact.diagnostics);
+    let mut writer_diagnostics = Vec::new();
+    let needs_pre_normalization_report =
+        matches!(to, Format::LaTeX | Format::Omml | Format::UnicodeMath);
+    let needs_pre_normalization_serialization = needs_pre_normalization_report
+        && has_loss_dropped_by_target_normalization(&compact.expr, to);
+    if needs_pre_normalization_report {
+        writer_diagnostics = if to == Format::UnicodeMath {
+            // UnicodeMath already exposes a traversal-only loss collector, so
+            // keep this target to one serialization even though normalization
+            // clears its attributes before the ordinary writer runs.
+            UnicodeMathWriter::compact_diagnostics(&compact.expr, config)
+        } else if needs_pre_normalization_serialization {
+            // LaTeX and OMML currently discover some losses while emitting;
+            // collect them before normalization makes those nodes disappear.
+            write_compact_with_diagnostics(&compact.expr, to, config)?.1
+        } else {
+            Vec::new()
+        };
+    }
+
+    normalize_for(&mut compact.expr, from, to)?;
+    let (output, final_writer_diagnostics) =
+        if needs_pre_normalization_serialization || to == Format::UnicodeMath {
+            // The writer already ran once above to collect losses. Avoid running
+            // its diagnostic path a second time: normalization may have removed
+            // exactly the nodes that need reporting, while this plain write is the
+            // established one-shot output path. UnicodeMath's traversal-only
+            // collector likewise already covered the whole pre-normalized tree.
+            (write_compact(&compact.expr, to, config)?, Vec::new())
+        } else {
+            write_compact_with_diagnostics(&compact.expr, to, config)?
+        };
+    writer_diagnostics.extend(final_writer_diagnostics);
+    diagnostics.extend(writer_diagnostics);
+    Ok((output, diagnostics))
 }
 
 /// Normalize a freshly read expression. The letters of an operator's name are
@@ -89,6 +171,34 @@ pub(crate) fn drop_unwritten(expr: &mut CompactExpr, target: Format) -> Result<(
     Ok(())
 }
 
+/// Whether target normalization removes information before the target writer
+/// can report it. When it does not, the diagnostic writer can emit the final
+/// output directly, avoiding a second serialization on the common path.
+fn has_loss_dropped_by_target_normalization(expr: &CompactExpr, target: Format) -> bool {
+    match target {
+        Format::LaTeX => {
+            expr.arena.has_attrs()
+                || expr.arena.nodes().iter().any(|node| {
+                    matches!(
+                        node,
+                        crate::ast::compact::CompactNode::Color { .. }
+                            | crate::ast::compact::CompactNode::Boxed { .. }
+                    )
+                })
+        },
+        Format::Omml => {
+            expr.arena.has_attrs()
+                || expr
+                    .arena
+                    .nodes()
+                    .iter()
+                    .any(|node| matches!(node, crate::ast::compact::CompactNode::Color { .. }))
+        },
+        Format::UnicodeMath => expr.arena.has_attrs(),
+        _ => false,
+    }
+}
+
 fn parse_compact(input: &str, format: Format, config: &Config) -> Result<CompactParseResult> {
     match format {
         Format::LaTeX => LatexReader::parse_compact(input, config),
@@ -123,6 +233,26 @@ fn write_compact(
             let options = crate::render::RenderOptions::default();
             crate::render::render_to_svg_compact(expr, &options)
         },
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats produce binary output; use render_to_image() instead".into(),
+        )),
+    }
+}
+
+fn write_compact_with_diagnostics(
+    expr: &crate::ast::compact::CompactExpr,
+    format: Format,
+    config: &Config,
+) -> Result<(String, Vec<Diagnostic>)> {
+    match format {
+        Format::LaTeX => LatexWriter::write_compact_with_diagnostics(expr, config),
+        Format::MathML => MathmlWriter::write_compact_with_diagnostics(expr, config),
+        Format::Omml => OmmlWriter::write_compact_with_diagnostics(expr, config),
+        Format::Mtef => MtefWriter::write_compact_with_diagnostics(expr, config),
+        Format::UnicodeMath => UnicodeMathWriter::write_compact_with_diagnostics(expr, config),
+        #[cfg(feature = "render")]
+        Format::Svg => Ok((write_compact(expr, format, config)?, Vec::new())),
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
             "raster formats produce binary output; use render_to_image() instead".into(),
@@ -629,6 +759,84 @@ mod tests {
     fn latex_to_latex_identity() {
         let result = convert("x", Format::LaTeX, Format::LaTeX).unwrap();
         assert!(result.contains("x"));
+    }
+
+    #[test]
+    fn one_shot_diagnostics_match_plain_output() {
+        for to in [
+            Format::LaTeX,
+            Format::MathML,
+            Format::Omml,
+            Format::Mtef,
+            Format::UnicodeMath,
+        ] {
+            let plain = convert(r"{}_1^2X", Format::LaTeX, to).unwrap();
+            let (diagnostic, _) = convert_with_diagnostics(r"{}_1^2X", Format::LaTeX, to).unwrap();
+            assert_eq!(diagnostic, plain, "target {to:?}");
+        }
+    }
+
+    #[test]
+    fn one_shot_diagnostics_combine_reader_and_writer_phases() {
+        let config = Config::default().with_strictness(crate::error::Strictness::Lenient);
+        let plain = convert_with(
+            r"\unknowncommand\color{red}{x}",
+            Format::LaTeX,
+            Format::UnicodeMath,
+            &config,
+        )
+        .unwrap();
+        let (diagnostic, diagnostics) = convert_with_config_and_diagnostics(
+            r"\unknowncommand\color{red}{x}",
+            Format::LaTeX,
+            Format::UnicodeMath,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(diagnostic, plain);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("undefined")),
+            "reader diagnostics: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("color")),
+            "writer diagnostics: {diagnostics:?}"
+        );
+
+        let (_, unicode_losses) =
+            convert_with_diagnostics(r"\boxed{x}", Format::LaTeX, Format::UnicodeMath).unwrap();
+        assert_eq!(
+            unicode_losses
+                .iter()
+                .filter(|diagnostic| diagnostic.message.contains("box"))
+                .count(),
+            1,
+            "duplicate UnicodeMath loss: {unicode_losses:?}"
+        );
+    }
+
+    #[test]
+    fn one_shot_diagnostics_use_default_config() {
+        let (default_output, default_diagnostics) =
+            convert_with_diagnostics(r"\color{red}{x}", Format::LaTeX, Format::Omml).unwrap();
+        let (configured_output, configured_diagnostics) = convert_with_config_and_diagnostics(
+            r"\color{red}{x}",
+            Format::LaTeX,
+            Format::Omml,
+            &Config::default(),
+        )
+        .unwrap();
+        assert_eq!(default_output, configured_output);
+        assert_eq!(default_diagnostics.len(), configured_diagnostics.len());
+        assert!(
+            default_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("host run properties"))
+        );
     }
 
     #[cfg(feature = "render")]

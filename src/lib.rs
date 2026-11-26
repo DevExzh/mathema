@@ -23,6 +23,14 @@
 //! let result = mathema::from_latex(r"\frac{1}{2}").unwrap();
 //! let _mathml = result.to_mathml().unwrap();
 //! let _omml = result.to_omml().unwrap();
+//!
+//! // Ask a one-shot conversion to report both reader and writer diagnostics.
+//! let (_unicode_math, diagnostics) = mathema::convert_with_diagnostics(
+//!     r"\color{red}{x}",
+//!     Format::LaTeX,
+//!     Format::UnicodeMath,
+//! ).unwrap();
+//! assert!(!diagnostics.is_empty());
 //! ```
 //!
 //! ## Feature flags
@@ -66,9 +74,10 @@ pub use ast::arena::AstArena;
 pub use ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 pub use ast::{MathExpr, MathNode};
 pub use convert::{
-    ConvertResult, convert, convert_with, from_latex, from_latex_with, from_mathml,
-    from_mathml_with, from_mtef, from_mtef_bytes, from_mtef_bytes_with, from_mtef_with, from_omml,
-    from_omml_with, from_unicode_math, from_unicode_math_with,
+    ConvertResult, convert, convert_with, convert_with_config_and_diagnostics,
+    convert_with_diagnostics, from_latex, from_latex_with, from_mathml, from_mathml_with,
+    from_mtef, from_mtef_bytes, from_mtef_bytes_with, from_mtef_with, from_omml, from_omml_with,
+    from_unicode_math, from_unicode_math_with,
 };
 pub use error::{
     Config, Diagnostic, DiagnosticKind, Error, Format, LimitKind, ParseResult, Result, Strictness,
