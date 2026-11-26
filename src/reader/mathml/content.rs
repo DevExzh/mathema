@@ -33,6 +33,11 @@ enum COp {
 struct Applied {
     args: Vec<NodeId>,
     bvars: Vec<NodeId>,
+    /// A degree attached to each corresponding `<bvar>`, when present.
+    /// Content MathML puts derivative order in the bvar itself for the
+    /// ordinary `diff` form; keeping it parallel to `bvars` avoids losing it
+    /// while the other bound-variable users continue to use just the name.
+    bvar_degrees: Vec<Option<NodeId>>,
     lowlimit: Option<NodeId>,
     uplimit: Option<NodeId>,
     degree: Option<NodeId>,
@@ -322,6 +327,144 @@ impl<'a> MathmlCompactParser<'a> {
         )
     }
 
+    fn is_empty_node(&self, id: NodeId) -> bool {
+        matches!(self.arena.node(id), CompactNode::Row(span) if span.is_empty())
+    }
+
+    /// Return the top-level infix operation of a row made by one of the
+    /// Content MathML operators.  Looking at the direct children is enough:
+    /// nested applies remain one child, so their operation cannot be confused
+    /// with the operation of the enclosing apply.
+    fn row_infix(&self, id: NodeId) -> Option<&str> {
+        let CompactNode::Row(span) = *self.arena.node(id) else {
+            return None;
+        };
+        for &child in self.arena.children(span) {
+            let CompactNode::Symbol(_, sid) = *self.arena.node(child) else {
+                continue;
+            };
+            let symbol = self.arena.str_val(sid);
+            if matches!(
+                symbol,
+                "+" | "\u{2212}"
+                    | "-"
+                    | "\u{00D7}"
+                    | "\u{2062}"
+                    | "\u{22C5}"
+                    | "="
+                    | "\u{2260}"
+                    | "<"
+                    | ">"
+                    | "\u{2264}"
+                    | "\u{2265}"
+                    | "\u{2261}"
+                    | "\u{2248}"
+                    | "\u{2192}"
+                    | "\u{2223}"
+                    | "\u{21D2}"
+                    | "\u{2208}"
+                    | "\u{2209}"
+                    | "\u{2286}"
+                    | "\u{2282}"
+                    | "\u{2288}"
+                    | "\u{2284}"
+                    | "\u{222A}"
+                    | "\u{2229}"
+                    | "\u{2216}"
+                    | "\u{2227}"
+                    | "\u{2228}"
+                    | "\u{22BB}"
+                    | "\u{2218}"
+            ) {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+
+    fn is_relation_node(&self, id: NodeId) -> bool {
+        matches!(
+            self.row_infix(id),
+            Some(
+                "=" | "\u{2260}"
+                    | "<"
+                    | ">"
+                    | "\u{2264}"
+                    | "\u{2265}"
+                    | "\u{2261}"
+                    | "\u{2248}"
+                    | "\u{2192}"
+                    | "\u{2223}"
+                    | "\u{21D2}"
+                    | "\u{2208}"
+                    | "\u{2209}"
+                    | "\u{2286}"
+                    | "\u{2282}"
+                    | "\u{2288}"
+                    | "\u{2284}"
+            )
+        )
+    }
+
+    fn is_additive_node(&self, id: NodeId) -> bool {
+        matches!(self.row_infix(id), Some("+" | "\u{2212}" | "-"))
+    }
+
+    fn is_nary_node(&self, id: NodeId) -> bool {
+        matches!(self.arena.node(id), CompactNode::Nary { .. })
+    }
+
+    /// Add visible parentheses when an apply operand would otherwise be read
+    /// with a different precedence.  Existing fences are already sufficient;
+    /// leaves are atoms and need no wrapper.
+    fn parenthesize(&mut self, id: NodeId) -> NodeId {
+        if self.is_simple(id) || matches!(self.arena.node(id), CompactNode::Fenced { .. }) {
+            id
+        } else {
+            self.c_fenced("(", ")", &[id])
+        }
+    }
+
+    fn wrap_plus_operand(&mut self, id: NodeId, position: usize) -> NodeId {
+        // A subtraction/relational expression used as a later summand needs
+        // grouping: `a + (b - c)`.  A first summand is already interpreted by
+        // the usual left-associative reading (`(a - b) + c`).
+        if self.is_relation_node(id) || (position > 0 && self.is_additive_node(id)) {
+            self.parenthesize(id)
+        } else {
+            id
+        }
+    }
+
+    fn wrap_minus_operand(&mut self, id: NodeId, position: usize) -> NodeId {
+        if position == 0 {
+            // Left-associative subtraction does not need parentheses around a
+            // left sum/difference, but relations and n-ary operators do.
+            if self.is_relation_node(id) || self.is_nary_node(id) {
+                self.parenthesize(id)
+            } else {
+                id
+            }
+        } else if self.is_additive_node(id) || self.is_relation_node(id) {
+            // The right operand is non-associative: `a - (b - c)`.
+            self.parenthesize(id)
+        } else {
+            id
+        }
+    }
+
+    fn wrap_factor(&mut self, id: NodeId) -> NodeId {
+        // A sum (including a rendered n-ary sum) must remain one factor:
+        // `(a + b) c`, `\sum_i a_i x`.  Relations are similarly lower than
+        // multiplication.  Fractions, roots and powers already carry their
+        // own visual grouping.
+        if self.is_additive_node(id) || self.is_relation_node(id) || self.is_nary_node(id) {
+            self.parenthesize(id)
+        } else {
+            id
+        }
+    }
+
     // ── entry point from the presentation dispatcher ───────────────────
     pub(super) fn parse_content_element(
         &mut self,
@@ -330,7 +473,7 @@ impl<'a> MathmlCompactParser<'a> {
         is_empty: bool,
     ) -> Result<NodeId> {
         if is_empty {
-            return self.parse_empty_content_element(name);
+            return self.parse_empty_content_element(name, start);
         }
         match name {
             "apply" | "reln" => self.parse_apply(name),
@@ -346,7 +489,7 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "set" => self.parse_container("set", "{", "}"),
             "list" => self.parse_container("list", "[", "]"),
-            "interval" => self.parse_container("interval", "[", "]"),
+            "interval" => self.parse_interval(start),
             "vector" => self.parse_container("vector", "(", ")"),
             "matrix" => self.parse_matrix(),
             "matrixrow" => self.parse_container("matrixrow", "(", ")"),
@@ -388,7 +531,11 @@ impl<'a> MathmlCompactParser<'a> {
     /// event.  Empty qualifiers and containers are complete elements, so a
     /// following sibling must remain available to their parent `<apply>` or
     /// container parser.
-    fn parse_empty_content_element(&mut self, name: &str) -> Result<NodeId> {
+    fn parse_empty_content_element(
+        &mut self,
+        name: &str,
+        start: &quick_xml::events::BytesStart<'_>,
+    ) -> Result<NodeId> {
         if let Some((text, kind)) = content_constant(name) {
             return Ok(self.c_sym(text, kind));
         }
@@ -412,7 +559,11 @@ impl<'a> MathmlCompactParser<'a> {
             "cn" => Ok(self.c_num("")),
             "csymbol" => Ok(self.c_ident("")),
             "set" => Ok(self.c_fenced("{", "}", &[])),
-            "list" | "interval" => Ok(self.c_fenced("[", "]", &[])),
+            "list" => Ok(self.c_fenced("[", "]", &[])),
+            "interval" => {
+                let (open, close) = self.interval_delimiters(start);
+                Ok(self.c_fenced(open, close, &[]))
+            },
             "vector" | "matrixrow" => Ok(self.c_fenced("(", ")", &[])),
             "matrix" => Ok(self.empty_matrix()),
             "piecewise" => Ok(self.empty_piecewise()),
@@ -593,12 +744,13 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<()> {
         match name {
             "bvar" => {
-                let v = if is_empty {
-                    self.empty_row()
+                let (v, degree) = if is_empty {
+                    (self.empty_row(), None)
                 } else {
                     self.parse_bvar()?
                 };
                 acc.bvars.push(v);
+                acc.bvar_degrees.push(degree);
             },
             "lowlimit" => acc.lowlimit = Some(self.parse_qualifier(name, is_empty)?),
             "uplimit" => acc.uplimit = Some(self.parse_qualifier(name, is_empty)?),
@@ -610,9 +762,10 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "interval" => {
                 acc.interval = Some(if is_empty {
-                    self.c_fenced("[", "]", &[])
+                    let (open, close) = self.interval_delimiters(start);
+                    self.c_fenced(open, close, &[])
                 } else {
-                    self.parse_container("interval", "[", "]")?
+                    self.parse_interval(start)?
                 });
             },
             _ => {
@@ -664,7 +817,7 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     /// `<bvar>` may contain a variable and an optional `<degree>`.
-    fn parse_bvar(&mut self) -> Result<NodeId> {
+    fn parse_bvar(&mut self) -> Result<(NodeId, Option<NodeId>)> {
         let mut var: Option<NodeId> = None;
         let mut degree: Option<NodeId> = None;
         loop {
@@ -717,15 +870,38 @@ impl<'a> MathmlCompactParser<'a> {
             }
         }
         let var = var.unwrap_or_else(|| self.empty_row());
-        // Stash degree on the var via a superscript-style marker is overkill;
-        // higher-order derivatives read `degree` from the apply qualifier path,
-        // so here we simply return the variable (degree, if any, is ignored
-        // for the bvar token itself but used by `diff`).
-        let _ = degree;
-        Ok(var)
+        // An empty `<degree/>` carries no useful order.  Keep non-empty
+        // degrees alongside the variable so `diff`/`partialdiff` can use
+        // both the MathML bvar form and the sibling qualifier form.
+        let degree = degree.filter(|&id| !self.is_empty_node(id));
+        Ok((var, degree))
     }
 
     // ── containers ─────────────────────────────────────────────────────
+    fn interval_delimiters(
+        &mut self,
+        start: &quick_xml::events::BytesStart<'_>,
+    ) -> (&'static str, &'static str) {
+        let closure = get_attr(start, "closure").unwrap_or_else(|| "closed".to_owned());
+        match closure.trim().to_ascii_lowercase().as_str() {
+            "open" => ("(", ")"),
+            "open-closed" => ("(", "]"),
+            "closed-open" => ("[", ")"),
+            "closed" | "closed-closed" => ("[", "]"),
+            _ => {
+                self.style_warning(format!(
+                    "Content MathML interval closure {closure:?} is not representable; using a closed interval"
+                ));
+                ("[", "]")
+            },
+        }
+    }
+
+    fn parse_interval(&mut self, start: &quick_xml::events::BytesStart<'_>) -> Result<NodeId> {
+        let (open, close) = self.interval_delimiters(start);
+        self.parse_container("interval", open, close)
+    }
+
     fn parse_container(&mut self, tag: &str, open: &str, close: &str) -> Result<NodeId> {
         let children = self.parse_children(tag)?;
         let mut items: SmallVec<[NodeId; 8]> = SmallVec::new();
@@ -964,7 +1140,8 @@ impl<'a> MathmlCompactParser<'a> {
                 Event::Start(e) => {
                     let n = e.local_name().into_inner();
                     if n == "bvar" {
-                        bvars.push(self.parse_bvar()?);
+                        let (var, _) = self.parse_bvar()?;
+                        bvars.push(var);
                     } else {
                         let id = self.parse_element_by_name(n, &e)?;
                         if body.is_none() {
@@ -1036,21 +1213,55 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn build_token_apply(&mut self, token: &str, a: Applied) -> NodeId {
         use SymbolKind::*;
-        let _unused_quals = (a.domain, a.interval);
         let args = &a.args;
         match token {
-            "plus" => self.join_infix(args, "+", BinaryOp),
-            "vectorproduct" => self.join_infix(args, "\u{00D7}", BinaryOp),
-            "times" => self.join_infix(args, "\u{2062}", Ordinary), // InvisibleTimes (zero-width)
-            "scalarproduct" => self.join_infix(args, "\u{22C5}", BinaryOp),
-            "outerproduct" => self.join_infix(args, "\u{2297}", BinaryOp),
+            "plus" => {
+                let mut grouped = SmallVec::<[NodeId; 8]>::new();
+                for (position, &arg) in args.iter().enumerate() {
+                    grouped.push(self.wrap_plus_operand(arg, position));
+                }
+                self.join_infix(&grouped, "+", BinaryOp)
+            },
+            "vectorproduct" => {
+                let mut grouped = SmallVec::<[NodeId; 8]>::new();
+                for &arg in args {
+                    grouped.push(self.wrap_factor(arg));
+                }
+                self.join_infix(&grouped, "\u{00D7}", BinaryOp)
+            },
+            "times" => {
+                let mut grouped = SmallVec::<[NodeId; 8]>::new();
+                for &arg in args {
+                    grouped.push(self.wrap_factor(arg));
+                }
+                self.join_infix(&grouped, "\u{2062}", Ordinary) // InvisibleTimes (zero-width)
+            },
+            "scalarproduct" => {
+                let mut grouped = SmallVec::<[NodeId; 8]>::new();
+                for &arg in args {
+                    grouped.push(self.wrap_factor(arg));
+                }
+                self.join_infix(&grouped, "\u{22C5}", BinaryOp)
+            },
+            "outerproduct" => {
+                let mut grouped = SmallVec::<[NodeId; 8]>::new();
+                for &arg in args {
+                    grouped.push(self.wrap_factor(arg));
+                }
+                self.join_infix(&grouped, "\u{2297}", BinaryOp)
+            },
             "minus" => {
                 if args.len() == 1 {
                     let m = self.c_sym("\u{2212}", BinaryOp);
-                    let row = [m, args[0]];
+                    let arg = self.parenthesize(args[0]);
+                    let row = [m, arg];
                     self.c_row(&row)
                 } else {
-                    self.join_infix(args, "\u{2212}", BinaryOp)
+                    let mut grouped = SmallVec::<[NodeId; 8]>::new();
+                    for (position, &arg) in args.iter().enumerate() {
+                        grouped.push(self.wrap_minus_operand(arg, position));
+                    }
+                    self.join_infix(&grouped, "\u{2212}", BinaryOp)
                 }
             },
             "divide" => {
@@ -1060,7 +1271,17 @@ impl<'a> MathmlCompactParser<'a> {
                     self.func_arg(args)
                 }
             },
-            "power" if args.len() >= 2 => self.c_sup(args[0], args[1]),
+            "power" if args.len() >= 2 => {
+                let base = if self.is_additive_node(args[0])
+                    || self.is_relation_node(args[0])
+                    || self.is_nary_node(args[0])
+                {
+                    self.parenthesize(args[0])
+                } else {
+                    args[0]
+                };
+                self.c_sup(base, args[1])
+            },
             "root" => {
                 let radicand = args.first().copied().unwrap_or_else(|| self.empty_row());
                 match a.degree {
@@ -1311,14 +1532,61 @@ impl<'a> MathmlCompactParser<'a> {
         self.empty_row()
     }
 
+    fn combine_qualifiers(&mut self, parts: &[NodeId]) -> NodeId {
+        match parts {
+            [] => self.empty_row(),
+            [only] => *only,
+            _ => {
+                let mut row: SmallVec<[NodeId; 8]> = SmallVec::new();
+                for (i, &part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        row.push(self.c_sym(",", SymbolKind::Punctuation));
+                    }
+                    row.push(part);
+                }
+                self.c_row(&row)
+            },
+        }
+    }
+
+    /// Lower integral-only domain qualifiers into the one lower-limit slot
+    /// available in the presentation AST.  The qualifier remains visible as
+    /// `[a,b]` or `x ∈ D`; when ordinary bounds are also present it is joined
+    /// with a comma instead of being silently discarded.
+    fn integral_qualifier(&mut self, a: &Applied) -> Option<NodeId> {
+        let mut parts: SmallVec<[NodeId; 4]> = SmallVec::new();
+        if let Some(interval) = a.interval {
+            parts.push(interval);
+        }
+        if let Some(domain) = a.domain {
+            let domain = if let Some(&bv) = a.bvars.first() {
+                let belongs = self.c_sym("\u{2208}", SymbolKind::Relation);
+                self.c_row(&[bv, belongs, domain])
+            } else {
+                domain
+            };
+            parts.push(domain);
+        }
+        if let Some(condition) = a.condition {
+            parts.push(condition);
+        }
+        (!parts.is_empty()).then(|| self.combine_qualifiers(&parts))
+    }
+
     fn integral(&mut self, a: Applied) -> NodeId {
-        let sub = a.lowlimit.unwrap_or_else(|| self.empty_row());
+        let qualifier = self.integral_qualifier(&a);
+        let sub = match (a.lowlimit, qualifier) {
+            (Some(low), Some(qualifier)) => self.combine_qualifiers(&[low, qualifier]),
+            (Some(low), None) => low,
+            (None, Some(qualifier)) => qualifier,
+            (None, None) => self.empty_row(),
+        };
         let sup = a.uplimit.unwrap_or_else(|| self.empty_row());
         let integrand = a.args.first().copied().unwrap_or_else(|| self.empty_row());
-        // body = integrand  d(bvar)
-        let mut body: SmallVec<[NodeId; 4]> = SmallVec::new();
+        // body = integrand d(bvar₁) d(bvar₂) …
+        let mut body: SmallVec<[NodeId; 8]> = SmallVec::new();
         body.push(integrand);
-        if let Some(&bv) = a.bvars.first() {
+        for &bv in &a.bvars {
             let d = self.c_ident("d");
             body.push(d);
             body.push(bv);
@@ -1354,36 +1622,132 @@ impl<'a> MathmlCompactParser<'a> {
         self.c_row(&row)
     }
 
-    fn diff(&mut self, a: Applied) -> NodeId {
-        // d/d(bvar) f  — ordinary derivative
-        let f = a.args.first().copied().unwrap_or_else(|| self.empty_row());
-        if let Some(&bv) = a.bvars.first() {
-            let d_num = self.c_ident("d");
-            let d_den = self.c_ident("d");
-            let den_row = [d_den, bv];
-            let den = self.c_row(&den_row);
-            let frac = self.c_frac(d_num, den);
-            let row = [frac, f];
-            self.c_row(&row)
+    fn numeric_degree(&self, id: NodeId) -> Option<u32> {
+        let CompactNode::Number(sid) = *self.arena.node(id) else {
+            return None;
+        };
+        self.arena.str_val(sid).trim().parse().ok()
+    }
+
+    fn degree_for_bvar(&self, a: &Applied, index: usize) -> Option<NodeId> {
+        let per_bvar = a.bvar_degrees.get(index).copied().flatten();
+        per_bvar.or_else(|| (a.bvars.len() == 1).then_some(a.degree).flatten())
+    }
+
+    fn derivative_order(&mut self, a: &Applied) -> Option<NodeId> {
+        if a.bvars.len() == 1 {
+            return self.degree_for_bvar(a, 0);
+        }
+        if let Some(degree) = a.degree.filter(|&id| !self.is_empty_node(id)) {
+            return Some(degree);
+        }
+        if a.bvars.len() <= 1 {
+            return None;
+        }
+        if a.bvar_degrees.iter().all(Option::is_none) {
+            // A mixed derivative has one differentiation for each bvar.
+            return Some(self.c_num(a.bvars.len().to_string().as_str()));
+        }
+
+        // Sum per-bvar orders.  Numeric orders can stay a compact literal;
+        // symbolic orders are kept as an explicit `n + m` superscript rather
+        // than being replaced by the number of variables.
+        let mut terms: SmallVec<[NodeId; 4]> = SmallVec::new();
+        let mut total = 0u32;
+        let mut numeric = true;
+        for index in 0..a.bvars.len() {
+            let degree = a
+                .bvar_degrees
+                .get(index)
+                .copied()
+                .flatten()
+                .unwrap_or_else(|| self.c_num("1"));
+            if let Some(value) = self.numeric_degree(degree) {
+                total = total.saturating_add(value);
+            } else {
+                numeric = false;
+            }
+            terms.push(degree);
+        }
+        if numeric {
+            Some(self.c_num(total.to_string().as_str()))
         } else {
-            // f' notation
-            let prime = self.c_sym("\u{2032}", SymbolKind::Ordinary);
-            self.c_sup(f, prime)
+            let mut order: SmallVec<[NodeId; 8]> = SmallVec::new();
+            for (index, term) in terms.iter().copied().enumerate() {
+                if index > 0 {
+                    order.push(self.c_sym("+", SymbolKind::BinaryOp));
+                }
+                order.push(term);
+            }
+            Some(self.c_row(&order))
         }
     }
 
-    fn partialdiff(&mut self, a: Applied) -> NodeId {
-        let f = a.args.first().copied().unwrap_or_else(|| self.empty_row());
-        if let Some(&bv) = a.bvars.first() {
-            let p_num = self.c_sym("\u{2202}", SymbolKind::Ordinary);
-            let p_den = self.c_sym("\u{2202}", SymbolKind::Ordinary);
-            let den_row = [p_den, bv];
-            let den = self.c_row(&den_row);
-            let frac = self.c_frac(p_num, den);
-            let row = [frac, f];
-            self.c_row(&row)
-        } else {
-            f
+    fn degree_is_one(&self, id: NodeId) -> bool {
+        self.numeric_degree(id) == Some(1)
+    }
+
+    fn derivative_numerator(&mut self, marker: NodeId, order: Option<NodeId>) -> NodeId {
+        match order {
+            Some(order) if !self.is_empty_node(order) && !self.degree_is_one(order) => {
+                self.c_sup(marker, order)
+            },
+            _ => marker,
         }
+    }
+
+    fn derivative_denominator(&mut self, marker: &str, a: &Applied) -> NodeId {
+        let mut den: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for (index, &bv) in a.bvars.iter().enumerate() {
+            den.push(self.c_sym(marker, SymbolKind::Ordinary));
+            let variable = match self.degree_for_bvar(a, index) {
+                Some(degree) if !self.is_empty_node(degree) && !self.degree_is_one(degree) => {
+                    self.c_sup(bv, degree)
+                },
+                _ => bv,
+            };
+            den.push(variable);
+        }
+        self.c_row(&den)
+    }
+
+    fn derivative_body(&mut self, id: NodeId) -> NodeId {
+        // The derivative operator applies to the complete Content operand;
+        // keep products, function applications, and other compound bodies
+        // together just as we already do for sums and relations.
+        self.parenthesize(id)
+    }
+
+    fn derivative(&mut self, a: Applied, partial: bool) -> NodeId {
+        let f = a.args.first().copied().unwrap_or_else(|| self.empty_row());
+        if a.bvars.is_empty() {
+            if partial {
+                return f;
+            }
+            // With no bound variable there is no faithful denominator.  Keep
+            // the historical prime fallback rather than inventing one.
+            let prime = self.c_sym("\u{2032}", SymbolKind::Ordinary);
+            return self.c_sup(f, prime);
+        }
+
+        let marker = if partial {
+            self.c_sym("\u{2202}", SymbolKind::Ordinary)
+        } else {
+            self.c_ident("d")
+        };
+        let order = self.derivative_order(&a);
+        let numerator = self.derivative_numerator(marker, order);
+        let denominator = self.derivative_denominator(if partial { "\u{2202}" } else { "d" }, &a);
+        let frac = self.c_frac(numerator, denominator);
+        let body = self.derivative_body(f);
+        self.c_row(&[frac, body])
+    }
+
+    fn diff(&mut self, a: Applied) -> NodeId {
+        self.derivative(a, false)
+    }
+
+    fn partialdiff(&mut self, a: Applied) -> NodeId {
+        self.derivative(a, true)
     }
 }
