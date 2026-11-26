@@ -230,6 +230,7 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let (element, empty) = loop {
+            self.arena.check_limits()?;
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => break (e, false),
                 Ok(Event::Empty(e)) => break (e, true),
@@ -507,6 +508,7 @@ impl<'a> MathmlCompactParser<'a> {
         }
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
+            self.arena.check_limits()?;
             let event = self.reader.read_event();
             if nodes.len() >= max_children {
                 match &event {
@@ -2336,6 +2338,7 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<MathmlTable> {
         let mut table = MathmlTable::default();
         loop {
+            self.arena.check_limits()?;
             let event = self.reader.read_event();
             let empty = matches!(event, Ok(Event::Empty(_)));
             match event {
@@ -2389,6 +2392,7 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<usize> {
         let start = table.cells.len();
         loop {
+            self.arena.check_limits()?;
             let index = table.cells.len() - start;
             let event = self.reader.read_event();
             if index >= max_columns {
@@ -2769,6 +2773,7 @@ impl<'a> MathmlCompactParser<'a> {
     fn skip_element_body(&mut self, tag_name: &str) -> Result<()> {
         let mut nested = 0usize;
         loop {
+            self.arena.check_limits()?;
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     if e.local_name().into_inner() == tag_name {
@@ -2812,6 +2817,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut in_pre = false;
 
         loop {
+            self.arena.check_limits()?;
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = e.local_name().into_inner();
@@ -6143,6 +6149,18 @@ mod tests {
         expr.roots = expr.arena.push_children(&[added]).unwrap();
         normalize_compact_expr(&mut expr).unwrap();
         assert_eq!(expr.arena.node_count(), count + 1);
+    }
+
+    #[test]
+    fn node_limit_is_reported_before_later_malformed_xml() {
+        let input = "<math><mspace/><mspace/><";
+        assert!(matches!(
+            MathmlReader::parse_compact(input, &Config::default().with_max_nodes(Some(1))),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::Nodes,
+                limit: 1
+            })
+        ));
     }
 
     #[test]
