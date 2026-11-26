@@ -581,8 +581,9 @@ fn write_undefined_command_group(buf: &mut LatexBuffer, arena: &AstArena, group:
         // A group holding just a group (MathML `<mrow>` around a style row)
         // is written as that one group.
         CompactNode::Row(span) => match *arena.children(span) {
-            [only] if let CompactNode::Row(inner) = *arena.node(only) => {
-                write_nodes(buf, arena, inner)
+            [only] => match *arena.node(only) {
+                CompactNode::Row(inner) => write_nodes(buf, arena, inner),
+                _ => write_nodes(buf, arena, span),
             },
             _ => write_nodes(buf, arena, span),
         },
