@@ -200,6 +200,90 @@ fn unicode_math_operands_read_and_write_back() {
     });
 }
 
+#[test]
+fn unicode_math_reports_an_unrecoverable_symbol_class() {
+    let read = mathema::from_latex(r"{:}_{x}xx").unwrap();
+    let (written, diagnostics) = read.to_unicode_math_with_diagnostics().unwrap();
+
+    assert_eq!(written, ":_x xx");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].message.contains("math atom spacing class"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn unicode_math_does_not_report_recoverable_symbol_classes() {
+    for input in ["a:b", r"\ldotp", r"\left|x\right|", r"\sum x", r"\sin x"] {
+        let read = mathema::from_latex(input).unwrap();
+        let (_, diagnostics) = read.to_unicode_math_with_diagnostics().unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("math atom spacing class")),
+            "{input}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn unicode_math_reports_symbols_that_split_or_become_text() {
+    for (source, expected, warning) in [
+        (
+            r#"<mo data-mjx-texclass="REL">@</mo>"#,
+            "@",
+            "spacing class",
+        ),
+        (
+            r#"<mo data-mjx-texclass="BIN">?</mo>"#,
+            "?",
+            "spacing class",
+        ),
+        (
+            r#"<mo data-mjx-texclass="OPEN">(</mo>"#,
+            "(",
+            "spacing class",
+        ),
+        ("<mo>≨≨</mo>", "≨≨", "as one operator token"),
+        ("<mo>()</mo>", "()", "as one operator token"),
+        ("<mo>..</mo>", "..", "as one operator token"),
+    ] {
+        let read = mathema::from_mathml(&format!("<math>{source}</math>")).unwrap();
+        let (written, diagnostics) = read.to_unicode_math_with_diagnostics().unwrap();
+        assert_eq!(written, expected, "{source}");
+        assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains(warning),
+            "{source}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn unicode_math_keeps_paired_delimiter_tokens_representable() {
+    let read = mathema::from_mathml("<math><mo>(</mo><mi>x</mi><mo>)</mo></math>").unwrap();
+    let (written, diagnostics) = read.to_unicode_math_with_diagnostics().unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(written, "(x)");
+
+    let nested = mathema::from_latex(r"\left[(x)\right]").unwrap();
+    let (written, diagnostics) = nested.to_unicode_math_with_diagnostics().unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("math atom spacing class")),
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        mathema::from_unicode_math(&written)
+            .unwrap()
+            .to_unicode_math()
+            .unwrap(),
+        written
+    );
+}
+
 /// LaTeX whose UnicodeMath spelling reads back as the same MathML.
 const LATEX: &[(&str, &str)] = &[
     ("\\int x\\,dx", "∫ x\u{2009}dx"),

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- UnicodeMath absorbs balanced grouping parentheses in scripts and radicals
+  regardless of the distance to their closing delimiter, preserving long
+  expressions on a UnicodeMath round trip.
+- UnicodeMath writer diagnostics report when a symbol's spacing class cannot be
+  recovered from its written glyph, such as an ordinary braced colon. They also
+  report when one MathML operator token splits into multiple UnicodeMath atoms.
 - **Breaking (behavior):** letters that are separate in the source stay
   separate. `convert`, `normalize_expr` and `normalize_compact_expr` joined
   neighbouring ASCII letters into one identifier, which MathML draws upright:

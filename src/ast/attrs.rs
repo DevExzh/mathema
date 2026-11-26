@@ -4,7 +4,7 @@
 //! The compact arena keeps them beside its nodes
 //! ([`AstArena::attrs`](crate::AstArena::attrs)), so a tree with
 //! attributes has the same nodes as one without. The heap AST wraps a node in
-//! [`MathNode::Attributed`](super::MathNode::Attributed).
+//! [`MathNode::Attributed`].
 //!
 //! An attribute applies to a node and everything inside it that has no such
 //! attribute of its own.
