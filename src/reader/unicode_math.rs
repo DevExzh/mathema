@@ -3677,7 +3677,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_alphanumeric_matches_std() {
+    fn unicode_math_alphanumeric_matches_std() {
         for c in '\0'..=char::MAX {
             assert_eq!(is_alphanumeric(c), c.is_alphanumeric(), "{c:?}");
         }
