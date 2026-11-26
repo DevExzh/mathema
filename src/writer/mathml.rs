@@ -1186,6 +1186,10 @@ fn write_node_in(
                     {
                         write_literal_fence(w, text)
                     },
+                    FencedItem::Element(MathNode::Symbol(
+                        kind @ (SymbolKind::Open | SymbolKind::Close),
+                        text,
+                    )) => write_literal_delimiter(w, *kind, text),
                     FencedItem::Element(node) => write_node(w, node, style),
                     FencedItem::Middle(_) => Ok(()),
                 };
@@ -1778,7 +1782,7 @@ fn write_node_in(
                 && let MathNode::Symbol(_, s) = content.as_ref()
                 && let Some(marker) = atom_marker(kind, s)
             {
-                write_symbol_marked(w, kind, s, marker)
+                write_symbol_marked(w, kind, s, marker, false)
             } else {
                 write_node_in(w, content, single_argument, display_style)
             }
@@ -1812,17 +1816,21 @@ fn write_node_in(
     }
 }
 
+fn is_directional_bar(kind: SymbolKind, text: &str) -> bool {
+    matches!(kind, SymbolKind::Open | SymbolKind::Close) && matches!(text, "|" | "‖")
+}
+
 /// The `data-mjx-texclass` a symbol's `<mo>` needs so the reader does not
 /// give it the glyph's default class: an ordinary use of an operator glyph
 /// (`\mathord{-}`, `\mathord{\lneqq}`, `\dag`), or a non-ASCII glyph used
-/// with another operator class. ASCII operators keep their context-dependent
-/// plain spelling (`:` and `!` are written unmarked).
+/// with another operator class. ASCII glyphs whose default class already
+/// matches remain unmarked (`:` and `!` keep their natural spellings).
 fn symbol_marker(kind: SymbolKind, text: &str) -> Option<&'static str> {
+    if is_directional_bar(kind, text) {
+        return crate::unicode::operators::texclass_name(kind);
+    }
     if kind == SymbolKind::Ordinary && text == "'" {
         return Some("ORD");
-    }
-    if kind != SymbolKind::Ordinary && text.is_ascii() {
-        return None;
     }
     crate::unicode::operators::mo_texclass_marker(text, kind)
 }
@@ -1845,16 +1853,7 @@ fn atom_symbol_kind(atom: MathAtomType) -> Option<SymbolKind> {
 /// and `None` when no marker can carry the class (listed fences), so the
 /// caller keeps writing the content as before.
 fn atom_marker(kind: SymbolKind, text: &str) -> Option<Option<&'static str>> {
-    if kind == SymbolKind::Ordinary && text == "'" {
-        return Some(Some("ORD"));
-    }
-    // ASCII operators are left unmarked, as for plain symbols.
-    let marker = if kind != SymbolKind::Ordinary && text.is_ascii() {
-        None
-    } else {
-        crate::unicode::operators::mo_texclass_marker(text, kind)
-    };
-    match marker {
+    match symbol_marker(kind, text) {
         Some(marker) => Some(Some(marker)),
         None if crate::unicode::operators::mo_class(text).kind == kind => Some(None),
         None => None,
@@ -1862,7 +1861,7 @@ fn atom_marker(kind: SymbolKind, text: &str) -> Option<Option<&'static str>> {
 }
 
 fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
-    write_symbol_marked(w, kind, text, symbol_marker(kind, text))
+    write_symbol_marked(w, kind, text, symbol_marker(kind, text), false)
 }
 
 fn write_symbol_marked(
@@ -1870,13 +1869,18 @@ fn write_symbol_marked(
     kind: SymbolKind,
     text: &str,
     marker: Option<&str>,
+    non_fence: bool,
 ) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(text, "|" | "‖");
-    match kind {
-        SymbolKind::LargeOp => elem.push_attribute(("largeop", "true")),
-        SymbolKind::Fence => elem.push_attribute(("fence", "true")),
-        _ => {},
+    if non_fence || is_directional_bar(kind, text) {
+        elem.push_attribute(("fence", "false"));
+    } else {
+        match kind {
+            SymbolKind::LargeOp => elem.push_attribute(("largeop", "true")),
+            SymbolKind::Fence => elem.push_attribute(("fence", "true")),
+            _ => {},
+        }
     }
     if ordinary_literal_bar {
         elem.push_attribute(("fence", "false"));
@@ -2058,6 +2062,14 @@ fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)?;
     Ok(())
+}
+
+/// A bracket-shaped symbol inside a fence is content, even when its own
+/// symbol class is Open or Close. Mark it as a non-fence so a MathML reader
+/// does not mistake it for another endpoint of the enclosing row.
+fn write_literal_delimiter(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
+    let marker = crate::unicode::operators::texclass_name(kind);
+    write_symbol_marked(w, kind, text, marker, true)
 }
 
 fn needs_stretchy_endpoints(open: &str, close: &str) -> bool {
@@ -3064,7 +3076,7 @@ fn write_bare_node_fast(
                 && let CompactNode::Symbol(_, sid) = *arena.node(content)
                 && let Some(marker) = atom_marker(kind, arena.str_val(sid))
             {
-                write_mo_symbol_marked(buf, kind, arena.str_val(sid), marker);
+                write_mo_symbol_marked_fast(buf, kind, arena.str_val(sid), marker, false);
             } else {
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
@@ -3811,6 +3823,27 @@ fn write_literal_fence_fast(buf: &mut XmlBuffer, text: &str) {
     buf.push_str("</mo>");
 }
 
+fn write_literal_delimiter_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    kind: SymbolKind,
+    text: &str,
+) {
+    let start = buf.len();
+    write_mo_symbol_marked_fast(
+        buf,
+        kind,
+        text,
+        crate::unicode::operators::texclass_name(kind),
+        true,
+    );
+    if let Some(size) = arena.attrs(id).and_then(|attrs| attrs.size) {
+        let attributes = size_attributes(size, buf.base_pt);
+        buf.insert_str(start + "<mo".len(), &attributes);
+    }
+}
+
 fn is_literal_fence_glyph(text: &str) -> bool {
     matches!(text, "|" | "‖" | "∣" | "∥")
 }
@@ -3845,10 +3878,14 @@ fn write_nodes_fenced_fast(
 
 #[inline]
 fn write_fenced_node_fast(buf: &mut XmlBuffer, arena: &AstArena, id: NodeId, style: MathStyle) {
-    if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
+    if let CompactNode::Symbol(kind, sid) = *arena.node(id) {
         let text = arena.str_val(sid);
-        if is_literal_fence_glyph(text) {
+        if is_literal_fence_glyph(text) && kind == SymbolKind::Fence {
             write_literal_fence_fast(buf, text);
+            return;
+        }
+        if matches!(kind, SymbolKind::Open | SymbolKind::Close) {
+            write_literal_delimiter_fast(buf, arena, id, kind, text);
             return;
         }
     }
@@ -3870,16 +3907,26 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
 }
 
 fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
-    write_mo_symbol_marked(buf, kind, s, symbol_marker(kind, s));
+    write_mo_symbol_marked_fast(buf, kind, s, symbol_marker(kind, s), false);
 }
 
-fn write_mo_symbol_marked(buf: &mut XmlBuffer, kind: SymbolKind, s: &str, marker: Option<&str>) {
+fn write_mo_symbol_marked_fast(
+    buf: &mut XmlBuffer,
+    kind: SymbolKind,
+    s: &str,
+    marker: Option<&str>,
+    non_fence: bool,
+) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
-    match kind {
-        SymbolKind::LargeOp => buf.push_str(" largeop=\"true\""),
-        SymbolKind::Fence => buf.push_str(" fence=\"true\""),
-        _ => {},
+    if non_fence || is_directional_bar(kind, s) {
+        buf.push_str(" fence=\"false\"");
+    } else {
+        match kind {
+            SymbolKind::LargeOp => buf.push_str(" largeop=\"true\""),
+            SymbolKind::Fence => buf.push_str(" fence=\"true\""),
+            _ => {},
+        }
     }
     if ordinary_literal_bar {
         buf.push_str(" fence=\"false\" stretchy=\"false\"");
@@ -3915,6 +3962,7 @@ mod tests {
     use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
     use crate::reader::Reader;
     use crate::reader::latex::LatexReader;
+    use crate::reader::mathml::MathmlReader;
 
     fn write(node: MathNode) -> String {
         let expr = MathExpr::inline(vec![node]);
@@ -4086,6 +4134,55 @@ mod tests {
             marked,
             crate::from_latex("x-y").unwrap().to_mathml().unwrap()
         );
+    }
+
+    #[test]
+    fn explicit_nondefault_ascii_classes_survive_heap_and_compact_mathml() {
+        let config = Config::default();
+        for input in [
+            r#"<math><mo data-mjx-texclass="REL">@</mo></math>"#,
+            r#"<math><mo data-mjx-texclass="REL">?</mo></math>"#,
+            r#"<math><mfenced><mo data-mjx-texclass="REL">@</mo></mfenced></math>"#,
+        ] {
+            let heap = MathmlReader::parse(input, &config).unwrap().expr;
+            let compact = MathmlReader::parse_compact(input, &config).unwrap().expr;
+            let heap_xml = MathmlWriter::write(&heap, &config).unwrap();
+            let compact_xml = MathmlWriter::write_compact(&compact, &config).unwrap();
+            assert_eq!(heap_xml, compact_xml, "{input}");
+            assert!(
+                heap_xml.contains(r#"data-mjx-texclass="REL""#),
+                "{heap_xml}"
+            );
+
+            let reread_heap = MathmlReader::parse(&heap_xml, &config).unwrap().expr;
+            let reread_compact = MathmlReader::parse_compact(&heap_xml, &config)
+                .unwrap()
+                .expr;
+            assert_eq!(
+                MathmlWriter::write(&reread_heap, &config).unwrap(),
+                heap_xml
+            );
+            assert_eq!(
+                MathmlWriter::write_compact(&reread_compact, &config).unwrap(),
+                heap_xml
+            );
+        }
+
+        let natural = crate::from_latex(r"a:b! a?b").unwrap().to_mathml().unwrap();
+        assert!(!natural.contains("data-mjx-texclass"), "{natural}");
+
+        for source in [r"\mathrel{@}", r"\mathrel{?}"] {
+            let mathml = crate::from_latex(source).unwrap().to_mathml().unwrap();
+            assert!(
+                mathml.contains(r#"data-mjx-texclass="REL""#),
+                "{source}: {mathml}"
+            );
+            assert_eq!(
+                crate::from_mathml(&mathml).unwrap().to_mathml().unwrap(),
+                mathml,
+                "{source}"
+            );
+        }
     }
 
     #[test]

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- MathML round trips preserve the outer fence around a literal opening or
+  closing delimiter, including sized delimiters. Explicit spacing classes on
+  ASCII operators also survive a write and reread.
+
 - UnicodeMath absorbs balanced grouping parentheses in scripts and radicals
   regardless of the distance to their closing delimiter, preserving long
   expressions on a UnicodeMath round trip.
