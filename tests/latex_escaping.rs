@@ -2833,3 +2833,32 @@ fn compound_symbols_are_null_delimiters() {
         }
     }
 }
+
+/// A word with scripts before it is read back as letters, the scripts on the
+/// first: it is written so (the fuzz input reached it through `\va`, a macro
+/// name the preprocessor never expanded after an unterminated `\verb`).
+#[test]
+fn leading_scripts_of_a_word_are_on_its_first_letter() {
+    use mathema::Format::{LaTeX, MathML};
+    for (input, format, expected) in [
+        (
+            "<math><mmultiscripts><mi>va</mi><mprescripts/><none/><mo>′</mo></mmultiscripts></math>",
+            MathML,
+            r"{{}^{\prime}v}a",
+        ),
+        (
+            "<math><mmultiscripts><mi>αβ</mi><mprescripts/><mi>i</mi><none/></mmultiscripts></math>",
+            MathML,
+            r"{{}_{i}\alpha}\beta",
+        ),
+        (
+            "\\text{\\verb\u{1}}$'\\va",
+            LaTeX,
+            r"\texttt{} {{}^{\prime}v}a",
+        ),
+    ] {
+        let written = mathema::convert(input, format, LaTeX).unwrap();
+        assert_eq!(written, expected, "{input}");
+        assert_eq!(mathema::convert(&written, LaTeX, LaTeX).unwrap(), written);
+    }
+}

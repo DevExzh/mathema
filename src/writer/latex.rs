@@ -1724,6 +1724,24 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if scalar_last && node_starts_with_ascii_letter(arena, base) {
                 buf.push(' ');
             }
+            // An identifier of several letters is read back as one letter
+            // each, the scripts on the first only: `{{}^{\prime}v}a`.
+            let word = match *arena.node(base) {
+                CompactNode::Identifier(sid) => arena
+                    .str_val(sid)
+                    .char_indices()
+                    .nth(1)
+                    .map(|(at, _)| arena.str_val(sid).split_at(at)),
+                _ => None,
+            };
+            if let Some((first, rest)) = word {
+                write_identifier_text(buf, first);
+                if !bare_space_base {
+                    buf.push('}');
+                }
+                write_identifier_text(buf, rest);
+                return;
+            }
             // The base is written as a sequence of one node, as in a row,
             // so that its own scripts are braced as there.
             match *arena.node(base) {
