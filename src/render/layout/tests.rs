@@ -732,6 +732,7 @@ fn limits_have_the_gaps_of_the_font() {
         ("\\lim_{x\\to0}", 0.694, 0.766),
         ("\\int\\limits_0^1", 2.146, 1.627),
         ("\\scriptstyle\\sum\\limits_i^n", 0.975, 0.715),
+        ("\\scriptscriptstyle\\sum\\limits_i^n", 0.762, 0.608),
     ] {
         assert_arena_heap_equivalent(latex, MathStyle::Display);
         let expr = crate::from_latex(latex).unwrap().expr();
@@ -749,12 +750,20 @@ fn limits_have_the_gaps_of_the_font() {
 /// one the other outputs draw (`∑` from 1em of ink to 1.4em, `∫` to 2.222em).
 #[test]
 fn text_svg_draws_display_operators_in_their_box() {
-    for (latex, size) in [("\\displaystyle\\sum", 22.4), ("\\displaystyle\\int", 32.0)] {
+    // The top of the ink is that of the box (the sum's at y = 0).
+    for (latex, size, y) in [
+        ("\\displaystyle\\sum", 22.4, 16.8),
+        ("\\displaystyle\\int", 32.0, 25.76),
+    ] {
         let svg = crate::from_latex(latex).unwrap().to_svg_text().unwrap();
-        let start = svg.find("font-size=\"").unwrap() + "font-size=\"".len();
-        let end = start + svg[start..].find('"').unwrap();
-        let actual: f64 = svg[start..end].parse().unwrap();
-        assert!((actual - size).abs() < 1e-3, "{svg}");
+        let attr = |name: &str| -> f64 {
+            let text = &svg[svg.find("<text").unwrap()..];
+            let start = text.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+            let end = start + text[start..].find('"').unwrap();
+            text[start..end].parse().unwrap()
+        };
+        assert!((attr("font-size") - size).abs() < 1e-3, "{svg}");
+        assert!((attr("y") - y).abs() < 1e-3, "{svg}");
     }
 }
 
