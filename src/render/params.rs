@@ -69,10 +69,14 @@ const SIGMA_DELIM1: [f64; 3] = [2.390, 1.700, 1.980];
 const SIGMA_DELIM2: [f64; 3] = [1.010, 1.157, 1.420];
 const XI_RULE: [f64; 3] = [0.040, 0.049, 0.049];
 const SIGMA_QUAD: [f64; 3] = [1.000, 1.171, 1.472];
+/// Limits and labels: the gaps and baseline distances of Latin Modern Math's
+/// MATH table (UpperLimitGapMin 0.2, LowerLimitGapMin 0.167, UpperLimitBaselineRiseMin
+/// 0.111, LowerLimitBaselineDropMin 0.6), as XeTeX uses them, and its 0.12em
+/// outside of them, at every size.
 const XI_BIG_OP_SPACING: [[f64; 5]; 3] = [
-    [0.111, 0.166, 0.200, 0.600, 0.100],
-    [0.111, 0.166, 0.200, 0.611, 0.143],
-    [0.111, 0.166, 0.200, 0.611, 0.143],
+    [0.200, 0.167, 0.111, 0.600, 0.120],
+    [0.200, 0.167, 0.111, 0.600, 0.120],
+    [0.200, 0.167, 0.111, 0.600, 0.120],
 ];
 
 impl TexParams {

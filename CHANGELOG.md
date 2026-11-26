@@ -420,6 +420,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rendering: limits of large operators and labels of `\overset`, `\underset` and the
+  arrows have the gaps of Latin Modern Math's MATH table, as in XeTeX; a fraction
+  above `\sum` sat 0.09em low.
 - LaTeX: `\bbsum`, which is written `\mathop{⅀}` for KaTeX, is read back as the
   operator, with its scripts and operand; the rewritten text differed from pass
   to pass next to primes, scripts and groups. `left=` and `right=` of empheq are

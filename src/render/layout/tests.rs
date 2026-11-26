@@ -580,25 +580,26 @@ fn invisible_operators_have_no_space() {
     }
 }
 
-/// Labels above and below are placed by Rule 13a, braces and lines are not.
+/// Labels above and below are placed by Rule 13a with the font's constants (as
+/// XeTeX does), braces and lines are not.
 #[test]
 fn labels_are_as_far_away_as_limits() {
     for (latex, height, depth) in [
-        ("\\overset{a}{=}", 0.976, 0.0),
-        ("\\underset{a}{=}", 0.367, 0.707),
-        ("\\overset{p}{X}", 1.339, 0.0),
-        ("\\underset{T}{y}", 0.431, 0.933),
-        ("\\overset{a}{\\underset{b}{X}}", 1.292, 0.759),
-        ("\\xrightarrow{f}", 1.358, 0.011),
-        ("\\xrightarrow[g]{f}", 1.358, 0.854),
-        ("\\xrightarrow{abcdefgh}", 1.307, 0.0),
-        ("\\xrightarrow[abcdefgh]{f}", 1.307, 0.902),
-        ("\\underset{abcdefgh}{\\to}", 0.46, 0.902),
-        ("\\underset{\\lim}{X}", 0.683, 0.752),
-        ("x^{\\underset{a}{b}}", 1.139, 0.0),
-        ("\\underbrace{ab}_{n}", 0.694, 1.355),
-        ("\\overbrace{ab}^{n}", 2.051, 0.0),
-        ("\\underbrace{ab}", 0.694, 0.648),
+        ("\\overset{a}{=}", 1.003, 0.0),
+        ("\\underset{a}{=}", 0.367, 0.727),
+        ("\\overset{p}{X}", 1.447, 0.0),
+        ("\\underset{T}{y}", 0.431, 0.954),
+        ("\\overset{a}{\\underset{b}{X}}", 1.319, 0.78),
+        ("\\xrightarrow{f}", 1.467, 0.011),
+        ("\\xrightarrow[g]{f}", 1.467, 0.874),
+        ("\\xrightarrow{abcdefgh}", 1.416, 0.0),
+        ("\\xrightarrow[abcdefgh]{f}", 1.416, 0.923),
+        ("\\underset{abcdefgh}{\\to}", 0.46, 0.923),
+        ("\\underset{\\lim}{X}", 0.683, 0.773),
+        ("x^{\\underset{a}{b}}", 1.115, 0.0),
+        ("\\underbrace{ab}_{n}", 0.694, 1.395),
+        ("\\overbrace{ab}^{n}", 1.989, 0.0),
+        ("\\underbrace{ab}", 0.694, 0.668),
         ("\\overline{ab}", 0.894, 0.0),
     ] {
         assert_arena_heap_equivalent(latex, MathStyle::Text);
@@ -718,6 +719,30 @@ fn display_operators_are_their_variants_at_their_size() {
     assert_eq!(display.matches("scale(0.016000)").count(), 3, "{display}");
     let large = svg("\\textstyle\\Large\\sum");
     assert!(!large.contains("#vg"), "{large}");
+}
+
+/// The limits of displayed operators are as far away as in XeTeX with the font,
+/// a fraction too.
+#[test]
+fn limits_have_the_gaps_of_the_font() {
+    for (latex, height, depth) in [
+        ("\\sum_i^n", 1.586, 1.208),
+        ("\\sum_{\\frac{a}{b}}^{\\frac{c}{d}}", 2.006, 1.473),
+        ("\\bigvee_{\\frac{a}{b}}^{\\frac{c}{d}}", 2.003, 1.470),
+        ("\\lim_{x\\to0}", 0.694, 0.766),
+        ("\\int\\limits_0^1", 2.146, 1.627),
+        ("\\scriptstyle\\sum\\limits_i^n", 0.975, 0.715),
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Display);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, MathStyle::Display, &default_options());
+        assert!(
+            (root.height - height).abs() < 2e-3,
+            "{latex}: {}",
+            root.height
+        );
+        assert!((root.depth - depth).abs() < 2e-3, "{latex}: {}", root.depth);
+    }
 }
 
 /// The scripts at the side of a displayed sum are where pdfTeX puts them,
