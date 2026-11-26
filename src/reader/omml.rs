@@ -198,7 +198,7 @@ impl MathReader for OmmlReader {
                     diags,
                 ))
             },
-            Err(e) => Err(e),
+            Err(e) => Err(parser.globalize_limit(e)),
         }
     }
 }
@@ -227,7 +227,9 @@ impl OmmlReader {
                 for eq in doc.equations {
                     let mut arena = eq.arena.unwrap_or_default();
                     let roots = checked_span(&mut arena, &eq.ids)?;
-                    arena.check_limits()?;
+                    arena
+                        .check_limits()
+                        .map_err(|e| parser.globalize_limit(e))?;
                     let base = eq.sizes.apply(&mut arena);
                     let mut expr = CompactExpr::new(arena, roots, display);
                     expr.drop_unreachable_attrs();
@@ -250,7 +252,7 @@ impl OmmlReader {
                     diagnostics,
                 })
             },
-            Err(e) => Err(e),
+            Err(e) => Err(parser.globalize_limit(e)),
         }
     }
 }
@@ -454,6 +456,11 @@ struct Parser<'i> {
     arena: AstArena,
     strict: bool,
     split_arenas: bool,
+    /// Maximum nodes for the complete parse, including all paragraph
+    /// equations when arenas are split.
+    max_nodes: Option<usize>,
+    /// Nodes committed to completed split arenas.
+    nodes_created: usize,
     depth: u32,
     /// Remaining number of padding cells that short matrix rows may add,
     /// summed over the whole input (see `build_array`).
@@ -535,9 +542,11 @@ impl<'i> Parser<'i> {
             in_name: false,
             style: config.display.into(),
             reader,
-            arena: AstArena::new(),
+            arena: AstArena::with_node_limit(config.max_nodes),
             strict: config.strictness == Strictness::Strict,
             split_arenas,
+            max_nodes: config.max_nodes,
+            nodes_created: 0,
             depth: 0,
             padding_budget: (input.len() / 4).max(MIN_PADDING_BUDGET),
             diags: Vec::new(),
@@ -571,6 +580,29 @@ impl<'i> Parser<'i> {
         }
     }
 
+    fn new_arena(&self) -> AstArena {
+        AstArena::with_node_limit(
+            self.max_nodes
+                .map(|limit| limit.saturating_sub(self.nodes_created)),
+        )
+    }
+
+    fn globalize_limit(&self, error: Error) -> Error {
+        match (self.max_nodes, error) {
+            (
+                Some(limit),
+                Error::LimitExceeded {
+                    kind: crate::error::LimitKind::Nodes,
+                    ..
+                },
+            ) => Error::LimitExceeded {
+                kind: crate::error::LimitKind::Nodes,
+                limit,
+            },
+            (_, error) => error,
+        }
+    }
+
     // ── Event stream ────────────────────────────────────────────────────
 
     fn xml_err(&self, e: impl std::fmt::Display) -> Error {
@@ -581,6 +613,7 @@ impl<'i> Parser<'i> {
     }
 
     fn next_item(&mut self) -> Result<Item<'i>> {
+        self.arena.check_limits()?;
         loop {
             let read = self.reader.read_resolved_event();
             let (ns, event) = match read {
@@ -925,7 +958,8 @@ impl<'i> Parser<'i> {
 
     fn begin_equation(&mut self, fragment: bool, doc: &mut Document) {
         let arena = if self.split_arenas {
-            Some(std::mem::take(&mut self.arena))
+            let fresh = self.new_arena();
+            Some(std::mem::replace(&mut self.arena, fresh))
         } else {
             None
         };
@@ -944,7 +978,9 @@ impl<'i> Parser<'i> {
             && let Some(eq) = doc.equations.last_mut()
             && let Some(outer) = eq.arena.take()
         {
-            eq.arena = Some(std::mem::replace(&mut self.arena, outer));
+            let equation = std::mem::replace(&mut self.arena, outer);
+            self.nodes_created = self.nodes_created.saturating_add(equation.node_count());
+            eq.arena = Some(equation);
             eq.sizes = std::mem::take(&mut self.sizes);
         }
     }
@@ -1257,6 +1293,7 @@ impl<'i> Parser<'i> {
                     "{n} equations of a math paragraph were stacked into one array; \
                      use OmmlReader::parse_paragraph to keep them separate"
                 ));
+                self.arena.ensure_node_budget(n)?;
                 let mut rows = Vec::with_capacity(n);
                 for eq in &doc.equations {
                     let span = checked_span(&mut self.arena, &eq.ids)?;
@@ -2542,6 +2579,11 @@ impl<'i> Parser<'i> {
             if columns.len() + count > u16::MAX as usize {
                 return Err(omml_err("matrix declares too many columns"));
             }
+            // Each declared column becomes a compact alignment node in
+            // `build_array`; reject before growing the temporary declaration
+            // vector when the configured node budget is already too small.
+            self.arena
+                .ensure_node_budget(columns.len().saturating_add(count))?;
             columns.extend(std::iter::repeat_n(align, count));
         }
         Ok(columns)
@@ -2584,6 +2626,11 @@ impl<'i> Parser<'i> {
             )));
         }
         self.padding_budget -= extra;
+        // Every alignment entry, generated padding cell, and the array
+        // wrapper is an AST node. Check all of them before reserving the
+        // rectangular cell buffer.
+        self.arena
+            .ensure_node_budget(ncols.saturating_add(padding).saturating_add(1))?;
         // Each padding cell is its own node, so editing one in place cannot
         // change the others.
         let mut cells: Vec<NodeId> = Vec::with_capacity(rows.len() * ncols);

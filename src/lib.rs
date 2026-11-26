@@ -44,9 +44,10 @@
 //! ## Hardening
 //!
 //! Readers enforce [`Config::max_input_bytes`] (default 4 MiB) and layered parse
-//! limits, so adversarial input is rejected rather than exhausting memory. The
-//! LaTeX, MTEF and UnicodeMath readers enforce [`Config::max_nodes`]. MTEF and
-//! UnicodeMath also enforce [`Config::max_depth`] while constructing trees.
+//! limits, so adversarial input is rejected rather than exhausting memory.
+//! Every reader enforces [`Config::max_nodes`] while constructing its AST,
+//! including generated MathML and OMML table nodes. MTEF and UnicodeMath also
+//! enforce [`Config::max_depth`] while constructing trees.
 //! `convert_with` and the `from_*` functions validate the configured depth on
 //! every parsed tree. Limit failures use [`Error::LimitExceeded`].
 

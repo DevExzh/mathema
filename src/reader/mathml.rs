@@ -32,14 +32,15 @@ impl MathReader for MathmlReader {
                 config.display,
             )));
         }
-        let parser_result = MathmlCompactParser::new(trimmed, config.display);
+        let parser_result =
+            MathmlCompactParser::new_with_node_limit(trimmed, config.display, config.max_nodes);
         let mut parser = match parser_result {
             Ok(mut p) => {
                 p.lenient = config.strictness == Strictness::Lenient;
                 p
             },
             Err(e) => {
-                if config.strictness == Strictness::Lenient {
+                if config.strictness == Strictness::Lenient && !is_limit(&e) {
                     return Ok(CompactParseResult::with_diagnostics(
                         CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, config.display),
                         vec![Diagnostic {
@@ -67,7 +68,12 @@ impl MathReader for MathmlReader {
                 ))
             },
             Err(e) => {
-                if config.strictness == Strictness::Lenient {
+                // A node/list/arena limit is a resource failure, not a
+                // recoverable MathML syntax error. `push_node` records node
+                // budget exhaustion while keeping temporary IDs valid, so
+                // check it before considering lenient recovery.
+                parser.arena.check_limits()?;
+                if config.strictness == Strictness::Lenient && !is_limit(&e) {
                     let display = parser.display.unwrap_or(config.display);
                     let mut diagnostics = parser.diagnostics;
                     diagnostics.push(Diagnostic {
@@ -87,6 +93,13 @@ impl MathReader for MathmlReader {
 }
 
 const MAX_PARSE_DEPTH: u32 = 128;
+
+fn is_limit(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::LimitExceeded { .. } | Error::InputTooLarge { .. }
+    )
+}
 
 /// Cells already have their final compact representation. Row lengths are
 /// retained until the widest row determines the amount of rectangular padding.
@@ -165,7 +178,16 @@ enum FenceRole {
 }
 
 impl<'a> MathmlCompactParser<'a> {
+    #[cfg(test)]
     fn new(input: &'a str, display: DisplayStyle) -> Result<Self> {
+        Self::new_with_node_limit(input, display, None)
+    }
+
+    fn new_with_node_limit(
+        input: &'a str,
+        display: DisplayStyle,
+        max_nodes: Option<usize>,
+    ) -> Result<Self> {
         let mut reader = Reader::from_str(input);
         // Keep token text bytes intact so token-level MathML whitespace can be
         // normalized by `read_text_content`. Formatting whitespace between
@@ -176,7 +198,12 @@ impl<'a> MathmlCompactParser<'a> {
         let est_nodes = input.len() / 15 + 4;
         Ok(Self {
             reader,
-            arena: AstArena::with_capacity(est_nodes, est_nodes, input.len() / 4),
+            arena: AstArena::with_capacity_and_node_limit(
+                est_nodes,
+                est_nodes,
+                input.len() / 4,
+                max_nodes,
+            ),
             display: None,
             depth: 0,
             movable_limit_operators: HashMap::new(),
@@ -663,6 +690,7 @@ impl<'a> MathmlCompactParser<'a> {
     /// Read the next XML event, mapping reader errors to our error type.
     /// Shared by the Content MathML lowering in the `content` submodule.
     fn reader_read_event(&mut self) -> Result<Event<'a>> {
+        self.arena.check_limits()?;
         self.reader.read_event().map_err(|e| Error::MathmlParse {
             message: format!("XML error: {e}"),
         })
@@ -2254,6 +2282,14 @@ impl<'a> MathmlCompactParser<'a> {
         let (col_seps, row_seps, dashes, array_style) =
             self.table_rule_masks(start, row_lengths.len(), stride);
 
+        // Alignment entries, generated empty cells, and the array wrapper are
+        // all AST nodes. Check the complete generated count before reserving
+        // the rectangular cell buffer, so a small node budget cannot be
+        // bypassed by a wide ragged table.
+        let padding = total.saturating_sub(table_cells.len());
+        self.arena
+            .ensure_node_budget(columns.len().saturating_add(padding).saturating_add(1))?;
+
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
         for align in columns {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
@@ -2448,6 +2484,11 @@ impl<'a> MathmlCompactParser<'a> {
                     },
                 };
             let alignment = cell_alignment(inherited, index, own_alignment);
+            let new_columns = index + cell_span;
+            if new_columns > table.columns.len() {
+                self.arena
+                    .ensure_node_budget(new_columns - table.columns.len())?;
+            }
             while table.columns.len() < index + cell_span {
                 table.columns.push(alignment);
             }
@@ -2476,6 +2517,9 @@ impl<'a> MathmlCompactParser<'a> {
             };
             table.cells.push(id);
             if cell_span > 1 {
+                if table.span_padding.is_none() {
+                    self.arena.ensure_node_budget(1)?;
+                }
                 let padding = *table.span_padding.get_or_insert_with(|| self.empty_row());
                 table
                     .cells
@@ -3869,7 +3913,7 @@ fn lone_letter(text: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Config;
+    use crate::error::{Config, Error, LimitKind, Strictness};
     use crate::writer::Writer;
 
     fn parse(input: &str) -> Vec<MathNode> {
@@ -6039,6 +6083,46 @@ mod tests {
         let config = Config::default();
         let result = MathmlReader::parse("", &config).unwrap();
         assert!(result.expr.nodes.is_empty());
+    }
+
+    #[test]
+    fn node_limit_covers_mathml_nodes_and_generated_table_padding() {
+        let input = r#"<math><mtable><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>"#;
+        let unlimited = Config::default().with_max_nodes(None);
+        let count = MathmlReader::parse_compact(input, &unlimited)
+            .unwrap()
+            .expr
+            .arena
+            .node_count();
+        assert!(count > 0);
+
+        for strictness in [Strictness::Strict, Strictness::Lenient] {
+            let exact = Config::default()
+                .with_strictness(strictness)
+                .with_max_nodes(Some(count));
+            let parsed = MathmlReader::parse_compact(input, &exact).unwrap();
+            assert_eq!(parsed.expr.arena.node_count(), count);
+
+            let below = exact.with_max_nodes(Some(count - 1));
+            assert!(matches!(
+                MathmlReader::parse_compact(input, &below),
+                Err(Error::LimitExceeded {
+                    kind: LimitKind::Nodes,
+                    limit
+                }) if limit == count - 1
+            ));
+        }
+
+        assert!(matches!(
+            MathmlReader::parse_compact(
+                "<math><mi>x</mi></math>",
+                &Config::default().with_max_nodes(Some(0))
+            ),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::Nodes,
+                limit: 0
+            })
+        ));
     }
 
     #[test]

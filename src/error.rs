@@ -347,7 +347,8 @@ pub struct Config {
     /// Maximum number of AST nodes a single parse may create. `None` disables
     /// the limit. Exceeding it fails with [`Error::LimitExceeded`] and
     /// [`LimitKind::Nodes`]. Defaults to [`DEFAULT_MAX_NODES`]. Enforced by
-    /// the LaTeX, MTEF and UnicodeMath readers.
+    /// all readers while constructing their AST, including generated MathML
+    /// and OMML table nodes.
     pub max_nodes: Option<usize>,
     /// Maximum AST nesting depth: a top-level node is at depth 0, its
     /// children at depth 1, and so on. Exceeding it fails with

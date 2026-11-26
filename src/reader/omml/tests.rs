@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::{Error, LimitKind};
 
 const NS: &str = r#"xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math""#;
 
@@ -55,6 +56,48 @@ fn simple_run_number() {
 #[test]
 fn simple_run_identifier() {
     assert_eq!(parse_one(&omath(&run("x"))), id("x"));
+}
+
+#[test]
+fn node_limit_covers_omml_nodes_and_paragraph_equations() {
+    let input = omath(&run("x"));
+    let unlimited = Config::default().with_max_nodes(None);
+    let count = OmmlReader::parse_compact(&input, &unlimited)
+        .unwrap()
+        .expr
+        .arena
+        .node_count();
+    assert!(count > 0);
+
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let exact = Config::default()
+            .with_strictness(strictness)
+            .with_max_nodes(Some(count));
+        let parsed = OmmlReader::parse_compact(&input, &exact).unwrap();
+        assert_eq!(parsed.expr.arena.node_count(), count);
+
+        let below = exact.with_max_nodes(Some(count - 1));
+        assert!(matches!(
+            OmmlReader::parse_compact(&input, &below),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::Nodes,
+                limit
+            }) if limit == count - 1
+        ));
+    }
+
+    let paragraph = format!(
+        r#"<m:oMathPara {NS}><m:oMath>{}</m:oMath><m:oMath>{}</m:oMath></m:oMathPara>"#,
+        run("a"),
+        run("b")
+    );
+    assert!(matches!(
+        OmmlReader::parse_paragraph(&paragraph, &Config::default().with_max_nodes(Some(count))),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Nodes,
+            limit
+        }) if limit == count
+    ));
 }
 
 #[test]
@@ -1235,7 +1278,12 @@ fn declared_matrix_columns_draw_on_the_padding_budget() {
     );
     let input = omath(&matrix.repeat(312));
     assert!(input.len() <= crate::error::DEFAULT_MAX_INPUT_BYTES);
-    assert!(strict_err(&input).contains("column alignments"));
+    // Disable the AST node budget here so this test continues to exercise the
+    // input-scaled padding budget specifically.
+    let error = OmmlReader::parse(&input, &Config::default().with_max_nodes(None))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("column alignments"));
     // Declared columns that rows actually use cost nothing extra.
     let used = omath(
         r#"<m:m><m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val="2"/></m:mcPr></m:mc></m:mcs></m:mPr><m:mr><m:e/><m:e/></m:mr></m:m>"#,
