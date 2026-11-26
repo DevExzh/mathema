@@ -14,7 +14,7 @@ use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, LimitKind, ParseResult, Result,
-    Strictness,
+    Span, Strictness,
 };
 use crate::reader::Reader;
 
@@ -246,6 +246,10 @@ struct CompactParser {
     /// order they were completed (a nested matrix before the one around it).
     /// Formatted into diagnostics only once the parse succeeded.
     matrix_skips: Vec<MatrixSkips>,
+    /// Structured input left over after the element parser stopped. The
+    /// parser intentionally keeps this as text for compatibility, but the
+    /// loss of structure must be observable to callers.
+    literal_fallback: Option<Span>,
     /// Matrix cells created but not yet stored as nodes; they count towards
     /// [`Config::max_nodes`] as soon as they are created.
     pending_cells: usize,
@@ -305,6 +309,7 @@ impl CompactParser {
             dead_walk: Vec::new(),
             dot_run: (0, 0),
             matrix_skips: Vec::new(),
+            literal_fallback: None,
             pending_cells: 0,
             baseless_ok: false,
             #[cfg(test)]
@@ -484,6 +489,9 @@ impl CompactParser {
         }
         let remaining = remaining.trim_matches(is_blank);
         if !remaining.is_empty() {
+            let start = self.offset(remaining);
+            let end = start + remaining.len();
+            self.literal_fallback = Some(Span::new(start, end));
             let sid = self.arena.push_str(remaining);
             ids.push(self.push_node(CompactNode::Text(TextStyle::Normal, sid)));
         }
@@ -1616,6 +1624,7 @@ impl CompactParser {
             parse_box_phantom,
             parse_sqrt,
             parse_cbrt,
+            parse_cases,
             parse_matrix,
             parse_text_quoted,
             parse_nary_op,
@@ -1947,6 +1956,30 @@ impl CompactParser {
         Ok((input, content))
     }
 
+    /// UTN #28's readable cases operator (`Ⓒ`) is a matrix with a one-sided
+    /// left brace.  Keep the brace as a normal fenced AST node so LaTeX and
+    /// MathML writers see the same structure as a LaTeX `cases` environment.
+    /// The matrix body deliberately omits the `■` marker: `Ⓒ(a&b@c&d)` is the
+    /// standard UnicodeMath spelling, unlike an ordinary matrix
+    /// (`■(a&b@c&d)`).
+    fn parse_cases<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = satisfy(|c| c == '\u{24B8}')(input)?; // Ⓒ
+        let (input, _) = satisfy(|c| c == '(')(input)?;
+        let (input, content) = self.parse_matrix_content(input)?;
+        let (input, _) = satisfy(|c| c == ')')(input)?;
+        self.arena
+            .mark_array_environment(content, MatrixKind::Matrix);
+        let open = self.arena.push_str("{");
+        let close = self.arena.push_str("");
+        let fenced_content = self.arena.push_children_deferred(&[content]);
+        let fenced = self.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content: fenced_content,
+        });
+        Ok((input, fenced))
+    }
+
     fn is_dead_walk(&self, offset: usize) -> bool {
         self.dead_walk
             .get(offset / 64)
@@ -2013,6 +2046,20 @@ impl CompactParser {
                 end,
             ));
         }
+        if let Some(fallback) = self.literal_fallback {
+            diagnostics.push(warning(
+                format!(
+                    "UnicodeMath parse fallback (recovered as text): unparsed input was kept as literal text at bytes {}..{}",
+                    lead + fallback.start,
+                    lead + fallback.end
+                ),
+                fallback.start,
+                fallback.end,
+            ));
+        }
+        diagnostics.sort_unstable_by_key(|diagnostic| {
+            diagnostic.span.map_or(usize::MAX, |span| span.start)
+        });
         diagnostics
     }
 
@@ -3528,7 +3575,12 @@ mod tests {
                 result.expr.nodes
             );
             assert_eq!(text_of(&result.expr.nodes), text, "{input}");
-            assert!(result.diagnostics.is_empty());
+            assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+            assert!(
+                result.diagnostics[0].message.contains("recovered as text"),
+                "{:?}",
+                result.diagnostics
+            );
         }
         // Whitespace is not content.
         let nodes = parse("\u{25A0}(a & b @ c & d)");
@@ -3615,7 +3667,12 @@ mod tests {
         // The unclosed `(` makes the group around the matrix fail, so the
         // matrix is not part of the result and nothing of it was skipped.
         let result = parse_with("(\u{25A0}(a#b)", Strictness::Lenient).unwrap();
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert!(
+            result.diagnostics[0].message.contains("recovered as text"),
+            "{:?}",
+            result.diagnostics
+        );
     }
 
     #[test]

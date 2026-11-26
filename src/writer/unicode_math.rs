@@ -383,6 +383,16 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             close,
             content,
         } => {
+            if open == "{"
+                && close.is_empty()
+                && let Some(array) = cases_array(content)
+            {
+                // UTN #28's cases operator keeps the table structure while
+                // avoiding the unmatched left brace that the LaTeX shape
+                // uses internally (`Ⓒ(value&condition@…)`).
+                write_heap_table(out, array, 'Ⓒ');
+                return;
+            }
             out.push_str(open);
             let start = out.len();
             let mut segment: SmallVec<[&MathNode; 8]> = SmallVec::new();
@@ -633,56 +643,8 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             out.push(*accent);
         },
 
-        MathNode::Array { rows, .. }
-        | MathNode::Matrix { rows, .. }
-        | MathNode::NativeArray { rows, .. } => {
-            out.push('\u{25A0}'); // ■
-            out.push('(');
-            // A merged cell projects to its content followed by empty
-            // columns. Match the compact rectangle so later operands retain
-            // their logical column even when the source was ragged.
-            let expanded = rows.iter().flatten().any(|cell| table_cell_span(cell) > 1);
-            let width = if expanded {
-                let declared = match node {
-                    MathNode::Array { columns, .. } | MathNode::NativeArray { columns, .. } => {
-                        columns.len()
-                    },
-                    _ => 0,
-                };
-                rows.iter()
-                    .map(|r| table_row_width(r))
-                    .max()
-                    .unwrap_or(0)
-                    .max(declared)
-            } else {
-                0
-            };
-            let mut row_start = 0;
-            for (i, row) in rows.iter().enumerate() {
-                if i > 0 {
-                    out.push('@');
-                }
-                row_start = out.len();
-                let mut column = 0;
-                for cell in row {
-                    if column != 0 {
-                        out.push('&');
-                    }
-                    write_nodes_with_style(out, cell, MathStyle::Text);
-                    let span = table_cell_span(cell);
-                    out.extend(std::iter::repeat_n('&', span - 1));
-                    column += span;
-                }
-                out.extend(std::iter::repeat_n(
-                    '&',
-                    width.saturating_sub(column.max(1)),
-                ));
-            }
-            // The reader drops an empty last row that no `@` ends.
-            if !rows.is_empty() && out.len() == row_start {
-                out.push('@');
-            }
-            out.push(')');
+        MathNode::Array { .. } | MathNode::Matrix { .. } | MathNode::NativeArray { .. } => {
+            write_heap_table(out, node, '■');
         },
 
         MathNode::Phantom(inner, _) => {
@@ -1618,6 +1580,126 @@ fn group_negatable(out: &mut String, start: usize) {
 /// Whether the reader takes a fence of `open` and `close` as one group.
 fn is_bracket_pair(open: &str, close: &str) -> bool {
     matches!((open, close), ("(", ")") | ("[", "]") | ("{", "}"))
+}
+
+/// A LaTeX cases/numcases fence is represented in the shared AST as a
+/// one-sided left brace around one table. UnicodeMath has a dedicated
+/// operator for exactly that shape; return the table when this is the shape
+/// we can spell without losing the fence's structure.
+fn cases_array(content: &[FencedItem]) -> Option<&MathNode> {
+    let [FencedItem::Element(node)] = content else {
+        return None;
+    };
+    matches!(
+        node,
+        MathNode::Array { .. } | MathNode::Matrix { .. } | MathNode::NativeArray { .. }
+    )
+    .then_some(node)
+}
+
+/// Write a heap table using the requested UnicodeMath marker. Ordinary
+/// matrices use U+25A0; cases use U+24B8 and share this exact body formatter.
+fn write_heap_table(out: &mut String, node: &MathNode, marker: char) {
+    let rows = match node {
+        MathNode::Array { rows, .. }
+        | MathNode::Matrix { rows, .. }
+        | MathNode::NativeArray { rows, .. } => rows,
+        _ => return,
+    };
+    out.push(marker);
+    out.push('(');
+    // A merged cell projects to its content followed by empty columns. Match
+    // the compact rectangle so later operands retain their logical column
+    // even when the source was ragged.
+    let expanded = rows.iter().flatten().any(|cell| table_cell_span(cell) > 1);
+    let width = if expanded {
+        let declared = match node {
+            MathNode::Array { columns, .. } | MathNode::NativeArray { columns, .. } => {
+                columns.len()
+            },
+            _ => 0,
+        };
+        rows.iter()
+            .map(|r| table_row_width(r))
+            .max()
+            .unwrap_or(0)
+            .max(declared)
+    } else {
+        0
+    };
+    let mut row_start = 0;
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push('@');
+        }
+        row_start = out.len();
+        let mut column = 0;
+        for cell in row {
+            if column != 0 {
+                out.push('&');
+            }
+            write_nodes_with_style(out, cell, MathStyle::Text);
+            let span = table_cell_span(cell);
+            out.extend(std::iter::repeat_n('&', span - 1));
+            column += span;
+        }
+        out.extend(std::iter::repeat_n(
+            '&',
+            width.saturating_sub(column.max(1)),
+        ));
+    }
+    // The reader drops an empty last row that no at-sign ends.
+    if !rows.is_empty() && out.len() == row_start {
+        out.push('@');
+    }
+    out.push(')');
+}
+
+/// Compact counterpart of cases_array.
+fn cases_array_c(arena: &AstArena, content: crate::ast::compact::NodeSpan) -> Option<NodeId> {
+    let [id] = arena.children(content) else {
+        return None;
+    };
+    matches!(*arena.node(*id), CompactNode::Array { .. }).then_some(*id)
+}
+
+/// Write a compact table using the requested UnicodeMath marker. The body is
+/// shared by ordinary matrices and cases, so nested cases are emitted once
+/// while their cells are traversed.
+fn write_compact_table(out: &mut String, arena: &AstArena, id: NodeId, marker: char) {
+    let CompactNode::Array {
+        cells, num_cols, ..
+    } = *arena.node(id)
+    else {
+        return;
+    };
+    out.push(marker);
+    out.push('(');
+    let cell_ids = arena.children(cells);
+    let stride = usize::from(num_cols.max(1));
+    let mut row_start = 0;
+    for (i, row) in cell_ids.chunks(stride).enumerate() {
+        if i > 0 {
+            out.push('@');
+        }
+        row_start = out.len();
+        for (j, &cell_id) in row.iter().enumerate() {
+            if j > 0 {
+                out.push('&');
+            }
+            if let CompactNode::Row(cell_span) = *arena.node(cell_id) {
+                write_nodes_c_with_style(out, arena, cell_span, MathStyle::Text);
+            } else {
+                write_node_c(out, arena, cell_id, MathStyle::Text);
+            }
+        }
+        out.extend(std::iter::repeat_n('&', stride - row.len()));
+    }
+    // The reader drops an empty last row that no at-sign ends.
+    if !cell_ids.is_empty() && out.len() == row_start {
+        out.push('@');
+    }
+    out.push(')');
 }
 
 /// A symbol that is no script operand by itself: of several characters, a
@@ -2941,6 +3023,15 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             close,
             content,
         } => {
+            if arena.str_val(open) == "{"
+                && arena.str_val(close).is_empty()
+                && let Some(array) = cases_array_c(arena, content)
+            {
+                // See the heap writer above.  Keep this path in lockstep with
+                // it because ConvertResult normally writes the compact tree.
+                write_compact_table(out, arena, array, 'Ⓒ');
+                return;
+            }
             out.push_str(arena.str_val(open));
             let start = out.len();
             // A `\middle` delimiter starts a new segment, with the fence's
@@ -3193,36 +3284,8 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push(accent);
         },
 
-        CompactNode::Array {
-            cells, num_cols, ..
-        } => {
-            out.push('\u{25A0}');
-            out.push('(');
-            let cell_ids = arena.children(cells);
-            let stride = usize::from(num_cols.max(1));
-            let mut row_start = 0;
-            for (i, row) in cell_ids.chunks(stride).enumerate() {
-                if i > 0 {
-                    out.push('@');
-                }
-                row_start = out.len();
-                for (j, &cell_id) in row.iter().enumerate() {
-                    if j > 0 {
-                        out.push('&');
-                    }
-                    if let CompactNode::Row(cell_span) = *arena.node(cell_id) {
-                        write_nodes_c_with_style(out, arena, cell_span, MathStyle::Text);
-                    } else {
-                        write_node_c(out, arena, cell_id, MathStyle::Text);
-                    }
-                }
-                out.extend(std::iter::repeat_n('&', stride - row.len()));
-            }
-            // The reader drops an empty last row that no `@` ends.
-            if !cell_ids.is_empty() && out.len() == row_start {
-                out.push('@');
-            }
-            out.push(')');
+        CompactNode::Array { .. } => {
+            write_compact_table(out, arena, id, '\u{25A0}');
         },
 
         CompactNode::Phantom(inner, _) => {
