@@ -409,6 +409,32 @@ fn face_glyph_metrics(font: FontId, ch: char) -> Option<GlyphMetrics> {
 mod tests {
     use super::*;
 
+    /// Scripts and scripts of scripts each have a glyph of their own (`ssty`),
+    /// and a character without such designs has none.
+    #[test]
+    fn script_designs_have_their_own_glyphs() {
+        for ch in ['\u{1D467}', 'A', '2', '\u{1D6FC}', '\u{2032}'] {
+            let text = glyph_index(FontId::Math, ch).unwrap();
+            let script = glyph_index(FontId::MathScript, ch).unwrap();
+            let script_script = glyph_index(FontId::MathScriptScript, ch).unwrap();
+            assert!(
+                text != script && script != script_script && text != script_script,
+                "{ch}"
+            );
+            assert_eq!(script_font(ch, 1), Some(FontId::MathScript));
+            assert_eq!(script_font(ch, 2), Some(FontId::MathScriptScript));
+            assert_eq!(script_font(ch, 0), None);
+        }
+        for ch in ['+', '=', '(', '\u{2211}'] {
+            assert_eq!(glyph_index(FontId::MathScript, ch), None, "{ch}");
+            assert_eq!(script_font(ch, 1), None, "{ch}");
+        }
+        // Their metrics are those of their glyphs.
+        let width = |id| text_metrics('2', false, id).width;
+        assert!(width(FontId::MathScriptScript) > width(FontId::MathScript));
+        assert!(width(FontId::MathScript) > width(FontId::Math));
+    }
+
     #[test]
     fn every_font_parses() {
         for id in ALL_FONTS {
