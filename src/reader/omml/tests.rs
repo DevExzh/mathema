@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::normalize::normalize_compact_expr;
 use crate::error::{Error, LimitKind};
 
 const NS: &str = r#"xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math""#;
@@ -85,6 +86,28 @@ fn node_limit_covers_omml_nodes_and_paragraph_equations() {
             }) if limit == count - 1
         ));
     }
+
+    let mut edited =
+        OmmlReader::parse_compact(&input, &Config::default().with_max_nodes(Some(count)))
+            .unwrap()
+            .expr;
+    let added = edited.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+    edited.roots = edited.arena.push_children(&[added]).unwrap();
+    normalize_compact_expr(&mut edited).unwrap();
+    assert_eq!(edited.arena.node_count(), count + 1);
+
+    let paragraph = format!(
+        r#"<m:oMathPara {NS}><m:oMath>{}</m:oMath></m:oMathPara>"#,
+        run("x")
+    );
+    let mut paragraph =
+        OmmlReader::parse_paragraph(&paragraph, &Config::default().with_max_nodes(Some(count)))
+            .unwrap();
+    let equation = paragraph.equations.first_mut().unwrap();
+    let added = equation.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+    equation.roots = equation.arena.push_children(&[added]).unwrap();
+    normalize_compact_expr(equation).unwrap();
+    assert_eq!(equation.arena.node_count(), count + 1);
 
     let paragraph = format!(
         r#"<m:oMathPara {NS}><m:oMath>{}</m:oMath><m:oMath>{}</m:oMath></m:oMathPara>"#,

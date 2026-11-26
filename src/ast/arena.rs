@@ -104,13 +104,11 @@ struct AttrStore(HashMap<NodeId, NodeAttrs>);
 #[derive(Debug, Clone)]
 pub struct AstArena {
     nodes: Vec<CompactNode>,
-    /// Optional reader-wide cap on nodes created in this arena.
-    node_limit: Option<usize>,
+    /// Reader-wide cap on nodes created in this arena. `usize::MAX` disables
+    /// the parser-only cap for ordinary caller-built arenas.
+    node_limit: usize,
     /// Set when a reader tried to create more nodes than its configured cap.
     node_overflow: bool,
-    /// A valid stand-in returned after a node-cap refusal when the arena is
-    /// still empty. It is never included in `nodes` or in `node_count()`.
-    fallback_node: CompactNode,
     /// Sparse provenance for explicitly typed spaces and parsed table forms.
     provenance: ProvenanceStore,
     /// Typesetting attributes of the nodes that have any.
@@ -139,9 +137,8 @@ impl AstArena {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
-            node_limit: None,
+            node_limit: usize::MAX,
             node_overflow: false,
-            fallback_node: CompactNode::Row(NodeSpan::EMPTY),
             provenance: ProvenanceStore::default(),
             attrs: None,
             children: Vec::new(),
@@ -162,9 +159,8 @@ impl AstArena {
         str_starts.push(0);
         Self {
             nodes: Vec::with_capacity(nodes),
-            node_limit: None,
+            node_limit: usize::MAX,
             node_overflow: false,
-            fallback_node: CompactNode::Row(NodeSpan::EMPTY),
             provenance: ProvenanceStore::default(),
             attrs: None,
             children: Vec::with_capacity(children),
@@ -197,15 +193,24 @@ impl AstArena {
             })
         };
         let mut arena = Self::with_capacity(nodes, heuristic(children, 8), heuristic(strings, 16));
-        arena.node_limit = node_limit;
+        arena.node_limit = node_limit.unwrap_or(usize::MAX);
         arena
     }
 
     /// Create an empty arena with an optional node cap.
     pub(crate) fn with_node_limit(node_limit: Option<usize>) -> Self {
         let mut arena = Self::new();
-        arena.node_limit = node_limit;
+        arena.node_limit = node_limit.unwrap_or(usize::MAX);
         arena
+    }
+
+    /// Remove a parser-only node cap after the parser has checked it.
+    ///
+    /// Parsed arenas must remain editable: normalization, writers and callers
+    /// may legitimately create additional nodes after input validation.
+    pub(crate) fn clear_node_limit(&mut self) {
+        self.node_limit = usize::MAX;
+        self.node_overflow = false;
     }
 
     // ── Safe builder API ───────────────────────────────────────────────
@@ -216,15 +221,27 @@ impl AstArena {
 
     /// Push a node into the arena and return its `NodeId`.
     ///
-    /// An arena that already holds its configured node limit or
-    /// [`MAX_ENTRIES`](Self::MAX_ENTRIES) nodes stores nothing, returns the id
-    /// of its last node, and remembers the failure, which
-    /// [`check_limits`](Self::check_limits) reports.
+    /// An arena that already holds its configured node limit stores one empty
+    /// row as a temporary sentinel, returns that id for the refused node and
+    /// remembers the failure. Further pushes return the same sentinel without
+    /// growing the arena. [`check_limits`](Self::check_limits) reports the
+    /// failure before the arena can be handed out.
+    ///
+    /// An arena that already holds [`MAX_ENTRIES`](Self::MAX_ENTRIES) nodes
+    /// stores nothing, returns the id of its last node and remembers the
+    /// failure, which [`check_limits`](Self::check_limits) reports.
     #[inline]
     pub fn push_node(&mut self, node: CompactNode) -> NodeId {
         let id = self.nodes.len();
-        if self.node_limit.is_some_and(|limit| id >= limit) {
+        if id >= self.node_limit {
+            if self.node_overflow {
+                return NodeId::new(self.nodes.len().saturating_sub(1) as u32);
+            }
             self.node_overflow = true;
+            if id < self.entry_limit {
+                self.nodes.push(CompactNode::Row(NodeSpan::EMPTY));
+                return NodeId::new(id as u32);
+            }
             return if id == 0 {
                 NodeId::new(0)
             } else {
@@ -289,11 +306,7 @@ impl AstArena {
 
     #[inline]
     fn store_string(&mut self, bytes: usize, append: impl FnOnce(&mut String)) -> StrId {
-        if self
-            .node_limit
-            .is_some_and(|limit| self.nodes.len() >= limit)
-        {
-            self.node_overflow = true;
+        if self.node_overflow {
             return StrId::EMPTY;
         }
         let id = self.str_starts.len() - 1;
@@ -355,12 +368,12 @@ impl AstArena {
     /// configured reader budget. Callers use this before reserving large
     /// temporary vectors for generated table cells.
     pub(crate) fn ensure_node_budget(&self, additional: usize) -> crate::error::Result<()> {
-        if let Some(limit) = self.node_limit
-            && (self.node_overflow || additional > limit.saturating_sub(self.nodes.len()))
+        if self.node_limit != usize::MAX
+            && (self.node_overflow || additional > self.node_limit.saturating_sub(self.nodes.len()))
         {
             return Err(crate::error::Error::LimitExceeded {
                 kind: crate::error::LimitKind::Nodes,
-                limit,
+                limit: self.node_limit,
             });
         }
         Ok(())
@@ -398,15 +411,14 @@ impl AstArena {
     /// # Errors
     ///
     /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
-    /// [`LimitKind::ArenaSize`](crate::LimitKind::ArenaSize) or
+    /// [`LimitKind::Nodes`](crate::LimitKind::Nodes),
+    /// [`LimitKind::ArenaSize`](crate::LimitKind::ArenaSize), or
     /// [`LimitKind::ListLength`](crate::LimitKind::ListLength).
     pub fn check_limits(&self) -> crate::error::Result<()> {
-        if let Some(limit) = self.node_limit
-            && self.node_overflow
-        {
+        if self.node_limit != usize::MAX && self.node_overflow {
             return Err(crate::error::Error::LimitExceeded {
                 kind: crate::error::LimitKind::Nodes,
-                limit,
+                limit: self.node_limit,
             });
         }
         if self.size_overflow {
@@ -429,11 +441,7 @@ impl AstArena {
     /// Return a shared reference to the node identified by `id`.
     #[inline]
     pub fn node(&self, id: NodeId) -> &CompactNode {
-        if (self.node_overflow || self.size_overflow) && self.nodes.is_empty() {
-            &self.fallback_node
-        } else {
-            &self.nodes[id.index()]
-        }
+        &self.nodes[id.index()]
     }
 
     /// Return a mutable reference to the node identified by `id`.
@@ -456,11 +464,7 @@ impl AstArena {
     /// what it is.
     #[inline]
     pub(crate) fn node_mut_in_place(&mut self, id: NodeId) -> &mut CompactNode {
-        if (self.node_overflow || self.size_overflow) && self.nodes.is_empty() {
-            &mut self.fallback_node
-        } else {
-            &mut self.nodes[id.index()]
-        }
+        &mut self.nodes[id.index()]
     }
 
     /// Every node in the arena, reachable or not.
@@ -524,7 +528,7 @@ impl AstArena {
         };
         let attrs = &valid;
         // A refused push returns the last existing id (see `push_node`).
-        if attrs.is_empty() || self.size_overflow || self.node_overflow {
+        if attrs.is_empty() || self.size_overflow {
             return;
         }
         // A sign's size is not that of what a list or cell holds.
@@ -583,7 +587,6 @@ impl AstArena {
     /// Give a node made from another one its source metadata.
     pub(crate) fn copy_provenance(&mut self, from: NodeId, to: NodeId) {
         if !self.size_overflow
-            && !self.node_overflow
             && let Some(provenance) = self.provenance.get(from)
         {
             self.provenance.insert(to, provenance);
@@ -622,7 +625,7 @@ impl AstArena {
     pub(crate) fn mark_array_environment(&mut self, id: NodeId, environment: MatrixKind) {
         // A refused push returns the last existing id. Its metadata belongs to
         // the original node, even while propagating the arena size error.
-        if !self.size_overflow && !self.node_overflow {
+        if !self.size_overflow {
             self.provenance.insert(id, Provenance::Array(environment));
         }
     }
@@ -639,7 +642,7 @@ impl AstArena {
 
     #[inline]
     pub(crate) fn mark_native_array(&mut self, id: NodeId, dashes: RuleDashes) {
-        if !self.size_overflow && !self.node_overflow {
+        if !self.size_overflow {
             self.provenance.insert(id, Provenance::NativeArray(dashes));
         }
     }
@@ -720,7 +723,7 @@ impl AstArena {
 
     #[inline]
     pub(crate) fn mark_matrix_padding(&mut self, id: NodeId) {
-        if !self.size_overflow && !self.node_overflow {
+        if !self.size_overflow {
             self.provenance.insert(id, Provenance::MatrixPadding);
         }
     }
@@ -905,6 +908,29 @@ mod tests {
             entry_limit: limit,
             ..AstArena::new()
         }
+    }
+
+    #[test]
+    fn node_budget_allows_metadata_strings_until_an_extra_node() {
+        let mut arena = AstArena::with_node_limit(Some(1));
+        arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        let metadata = arena.push_str("metadata");
+        assert_eq!(arena.str_val(metadata), "metadata");
+        assert!(arena.check_limits().is_ok());
+
+        let sentinel = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        assert_eq!(arena.node_count(), 2);
+        assert!(matches!(arena.node(sentinel), CompactNode::Row(span) if span.is_empty()));
+        assert_eq!(arena.push_node(CompactNode::Number(StrId::EMPTY)), sentinel);
+        assert_eq!(arena.node_count(), 2);
+        assert_eq!(arena.push_str("discarded"), StrId::EMPTY);
+        assert!(matches!(
+            arena.check_limits(),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::Nodes,
+                limit: 1
+            })
+        ));
     }
 
     #[test]

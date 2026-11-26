@@ -183,6 +183,7 @@ impl MathReader for OmmlReader {
                     ..
                 } = parser;
                 arena.check_limits()?;
+                arena.clear_node_limit();
                 let base = sizes.apply(&mut arena);
                 let mut expr = CompactExpr::new(arena, roots, display);
                 expr.drop_unreachable_attrs();
@@ -230,6 +231,7 @@ impl OmmlReader {
                     arena
                         .check_limits()
                         .map_err(|e| parser.globalize_limit(e))?;
+                    arena.clear_node_limit();
                     let base = eq.sizes.apply(&mut arena);
                     let mut expr = CompactExpr::new(arena, roots, display);
                     expr.drop_unreachable_attrs();
@@ -1639,6 +1641,7 @@ impl<'i> Parser<'i> {
         if text.is_empty() {
             return Ok(());
         }
+        self.arena.ensure_node_budget(1)?;
         let mut ids = Ids::new();
         if props.nor {
             let sid = self.arena.push_str(text);
@@ -1668,6 +1671,7 @@ impl<'i> Parser<'i> {
             Some([r, g, b]) => {
                 let color = self.arena.push_str(&format!("#{r:02X}{g:02X}{b:02X}"));
                 for content in ids {
+                    self.arena.check_limits()?;
                     out.push(self.arena.push_node(CompactNode::Color { color, content }));
                 }
             },
@@ -1709,6 +1713,7 @@ impl<'i> Parser<'i> {
         let mut i = 0;
         let mut buf = String::new();
         while i < chars.len() {
+            self.arena.check_limits()?;
             let (orig, base, cstyle) = chars[i];
             if let Some(width) = space_width(orig) {
                 out.push(self.arena.push_node(CompactNode::Space(width)));
@@ -1824,6 +1829,7 @@ impl<'i> Parser<'i> {
     /// letters of an italic run are identifiers of their own; those of a run in
     /// another style (upright, bold, bold italic or a script) are one in it.
     fn letters(&mut self, text: &str, style: Option<TextStyle>, out: &mut Ids) -> Result<()> {
+        self.arena.ensure_node_budget(1)?;
         let sid = self.arena.push_str(text);
         let is_operator =
             text.chars().count() > 1 && crate::unicode::symbols::is_operator_command(text);
@@ -1843,6 +1849,7 @@ impl<'i> Parser<'i> {
             None | Some(TextStyle::Italic) if !self.in_name => {
                 let mut letter = [0u8; 4];
                 for c in text.chars() {
+                    self.arena.check_limits()?;
                     let sid = self.arena.push_str(c.encode_utf8(&mut letter));
                     out.push(self.arena.push_node(CompactNode::Identifier(sid)));
                 }

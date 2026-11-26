@@ -58,6 +58,7 @@ impl MathReader for MathmlReader {
                 let display = parser.display.unwrap_or(config.display);
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
+                parser.arena.clear_node_limit();
                 let base_size = parser.base_size.take();
                 let mut expr = CompactExpr::new(parser.arena, roots, display);
                 expr.drop_unreachable_attrs();
@@ -81,6 +82,7 @@ impl MathReader for MathmlReader {
                         message: format!("MathML parse error (recovered): {e}"),
                         span: None,
                     });
+                    parser.arena.clear_node_limit();
                     let mut expr = CompactExpr::new(parser.arena, NodeSpan::EMPTY, display);
                     expr.drop_unreachable_attrs();
                     Ok(CompactParseResult::with_diagnostics(expr, diagnostics))
@@ -3913,6 +3915,7 @@ fn lone_letter(text: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::normalize::normalize_compact_expr;
     use crate::error::{Config, Error, LimitKind, Strictness};
     use crate::writer::Writer;
 
@@ -6123,6 +6126,23 @@ mod tests {
                 limit: 0
             })
         ));
+    }
+
+    #[test]
+    fn exact_node_limit_is_removed_before_editing_and_normalization() {
+        let input = "<math><mi>x</mi></math>";
+        let unlimited = Config::default().with_max_nodes(None);
+        let count = MathmlReader::parse_compact(input, &unlimited)
+            .unwrap()
+            .expr
+            .arena
+            .node_count();
+        let exact = Config::default().with_max_nodes(Some(count));
+        let mut expr = MathmlReader::parse_compact(input, &exact).unwrap().expr;
+        let added = expr.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        expr.roots = expr.arena.push_children(&[added]).unwrap();
+        normalize_compact_expr(&mut expr).unwrap();
+        assert_eq!(expr.arena.node_count(), count + 1);
     }
 
     #[test]
