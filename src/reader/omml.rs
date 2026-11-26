@@ -949,6 +949,155 @@ impl<'i> Parser<'i> {
         }
     }
 
+    /// Accept one of the host document's transparent content-control
+    /// children, refusing duplicates in Strict mode and skipping later ones
+    /// in Lenient mode.
+    fn once_host_child(&mut self, seen: &mut bool, child: &Elem<'_>, parent: &str) -> Result<bool> {
+        if *seen {
+            let message = format!("duplicate <{}> in <{parent}>", child.qname());
+            self.recover(message)?;
+            self.skip()?;
+            return Ok(false);
+        }
+        *seen = true;
+        Ok(true)
+    }
+
+    /// Drop content-control metadata while making the loss explicit. The
+    /// shared AST has no document-host metadata, but the `sdtContent` child is
+    /// still parsed below. This deliberately consumes the whole properties
+    /// element so math-looking material in a placeholder or tag cannot be
+    /// mistaken for equation content.
+    fn sdt_metadata(&mut self, el: &Elem<'_>) -> Result<()> {
+        let name = el.qname().to_owned();
+        self.skip()?;
+        self.info(format!(
+            "content-control metadata <{name}> has no equivalent in the AST and was dropped"
+        ));
+        Ok(())
+    }
+
+    /// Read the common children of a `w:sdt`. Only its `w:sdtContent` is
+    /// passed to the caller; `w:sdtPr` and `w:sdtEndPr` are host metadata, not
+    /// equation content. The content callback is the only difference between
+    /// a control at document level and one nested in an OMML object.
+    fn sdt_container(&mut self, mut content: impl FnMut(&mut Self) -> Result<()>) -> Result<()> {
+        let mut seen_pr = false;
+        let mut seen_end_pr = false;
+        let mut seen_content = false;
+        while let Some(child) = self.next_child("w:sdt")? {
+            match (child.ns, child.local()) {
+                (Ns::Wml, "sdtPr") => {
+                    if self.once_host_child(&mut seen_pr, &child, "w:sdt")? {
+                        self.sdt_metadata(&child)?;
+                    }
+                },
+                (Ns::Wml, "sdtEndPr") => {
+                    if self.once_host_child(&mut seen_end_pr, &child, "w:sdt")? {
+                        self.sdt_metadata(&child)?;
+                    }
+                },
+                (Ns::Wml, "sdtContent") => {
+                    if self.once_host_child(&mut seen_content, &child, "w:sdt")? {
+                        content(self)?;
+                    }
+                },
+                _ => self.unknown(&child, "w:sdt")?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a `w:sdt` content control at document level.
+    fn sdt_top(&mut self, doc: &mut Document, open_fragment: &mut bool) -> Result<()> {
+        self.sdt_container(|parser| parser.sdt_top_content(doc, open_fragment))
+    }
+
+    /// Read the equation-bearing children of a document-level
+    /// `w:sdtContent`. Host runs and paragraphs remain outside this reader's
+    /// scope; an OMML container or nested content control is dispatched as
+    /// usual so nested controls do not hide equations.
+    fn sdt_top_content(&mut self, doc: &mut Document, open_fragment: &mut bool) -> Result<()> {
+        while let Some(child) = self.next_child("w:sdtContent")? {
+            match (child.ns, child.local()) {
+                (Ns::Wml, "p") => self.sdt_top_host_children(&child, doc, open_fragment)?,
+                (Ns::Wml, "sdt") => self.top_element(child, doc, open_fragment)?,
+                (Ns::Math, "oMath" | "oMathPara") => {
+                    self.top_element(child, doc, open_fragment)?;
+                },
+                (Ns::Math, _) => self.top_element(child, doc, open_fragment)?,
+                (Ns::Wml, _) => self.sdt_top_host_children(&child, doc, open_fragment)?,
+                _ => self.unknown(&child, "w:sdtContent")?,
+            }
+        }
+        Ok(())
+    }
+
+    /// The host paragraph form of a block content control can contain prose,
+    /// run properties and equation objects side by side. Traverse only host
+    /// containers and OMML equation containers so prose never becomes a math
+    /// run and paragraph metadata is never harvested as formula content.
+    fn sdt_top_host_children(
+        &mut self,
+        parent: &Elem<'_>,
+        doc: &mut Document,
+        open_fragment: &mut bool,
+    ) -> Result<()> {
+        let name = parent.qname().to_owned();
+        while let Some(child) = self.next_host_child(&name)? {
+            match (child.ns, child.local()) {
+                (Ns::Math, "oMath" | "oMathPara") => {
+                    self.top_element(child, doc, open_fragment)?;
+                },
+                (Ns::Wml, "sdt") => self.top_element(child, doc, open_fragment)?,
+                (Ns::Wml, "sdtPr" | "sdtEndPr") => self.sdt_metadata(&child)?,
+                (Ns::Wml, "pPr" | "rPr") => self.skip()?,
+                (Ns::Wml, "del" | "moveFrom") => {
+                    self.skip()?;
+                    self.info(
+                        "deleted tracked-change content in a content control was skipped".into(),
+                    );
+                },
+                (Ns::Math, _) => self.skip()?,
+                _ => self.sdt_top_host_children(&child, doc, open_fragment)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a `w:sdt` nested inside an OMML container. Its metadata is
+    /// intentionally dropped with an Info diagnostic, while descendants of
+    /// `w:sdtContent` continue through the same math-element dispatcher.
+    fn sdt_math(&mut self, out: &mut Ids) -> Result<()> {
+        self.sdt_container(|parser| parser.sdt_math_content(out))
+    }
+
+    /// Read only the content of a `w:sdtContent` nested in math. A direct
+    /// `w:sdtContent` is accepted as a transparent fragment as well; the
+    /// enclosing `w:sdt` remains responsible for filtering metadata.
+    fn sdt_math_content(&mut self, out: &mut Ids) -> Result<()> {
+        while let Some(child) = self.next_child("w:sdtContent")? {
+            self.math_element(child, "w:sdtContent", out)?;
+        }
+        Ok(())
+    }
+
+    /// The host paragraph walker deliberately ignores ordinary text. Its
+    /// caller is interested only in descendant OMML containers, not in the
+    /// visible prose around them.
+    fn next_host_child(&mut self, parent: &str) -> Result<Option<Elem<'i>>> {
+        loop {
+            match self.next_item()? {
+                Item::Start(e) => return Ok(Some(e)),
+                Item::End => return Ok(None),
+                Item::Text(_) => {},
+                Item::Eof => {
+                    return Err(omml_err(format!("unexpected end of input in <{parent}>")));
+                },
+            }
+        }
+    }
+
     fn parse_document(&mut self) -> Result<Document> {
         let mut doc = Document::default();
         let mut open_fragment = false;
@@ -1005,6 +1154,12 @@ impl<'i> Parser<'i> {
         if el.is_math("mathPr") {
             // Document-wide math settings (`m:mathPr`, §22.1.2.62).
             return self.drop_property(&el, "the input");
+        }
+        if el.ns == Ns::Wml && el.local() == "sdt" {
+            return self.sdt_top(doc, open_fragment);
+        }
+        if el.ns == Ns::Wml && el.local() == "sdtContent" {
+            return self.sdt_top_content(doc, open_fragment);
         }
         if el.ns == Ns::Math {
             // A bare math object: read it as part of an equation fragment.
@@ -1169,6 +1324,8 @@ impl<'i> Parser<'i> {
                     self.info("deleted tracked-change content in an equation was skipped".into());
                     Ok(())
                 },
+                "sdt" => self.sdt_math(out),
+                "sdtContent" => self.sdt_math_content(out),
                 "r" => self.wml_run(out),
                 _ => self.unknown(&el, parent),
             },

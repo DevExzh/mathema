@@ -978,6 +978,138 @@ fn tracked_changes_and_bookmarks_inside_equations() {
 }
 
 #[test]
+fn content_controls_keep_only_content_in_strict_and_lenient_modes() {
+    let input = r#"
+      <w:sdt xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+        <w:sdtPr>
+          <w:alias w:val="equation"/>
+          <w:tag w:val="not-equation-content"/>
+          <m:oMath><m:r><m:t>metadata</m:t></m:r></m:oMath>
+        </w:sdtPr>
+        <w:sdtEndPr><w:rPr><w:color w:val="00FF00"/></w:rPr></w:sdtEndPr>
+        <w:sdtContent><m:r><m:t>x</m:t></m:r></w:sdtContent>
+      </w:sdt>
+    "#;
+
+    let strict = OmmlReader::parse(input, &Config::default()).unwrap();
+    assert_eq!(strict.expr.nodes, vec![id("x")]);
+    assert!(
+        strict
+            .diagnostics
+            .iter()
+            .all(|d| d.kind == DiagnosticKind::Info)
+    );
+    assert!(
+        strict
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("sdtPr") && d.message.contains("dropped"))
+    );
+    assert!(
+        strict
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("sdtEndPr") && d.message.contains("dropped"))
+    );
+
+    let lenient = lenient(input);
+    assert_eq!(lenient.expr.nodes, vec![id("x")]);
+    assert!(
+        lenient
+            .diagnostics
+            .iter()
+            .all(|d| d.kind == DiagnosticKind::Info)
+    );
+}
+
+#[test]
+fn nested_content_controls_preserve_descendant_equations_and_namespace() {
+    let input = r#"
+      <q:sdt xmlns:q="http://purl.oclc.org/ooxml/wordprocessingml/main"
+              xmlns:z="http://purl.oclc.org/ooxml/officeDocument/math">
+        <q:sdtPr><q:id q:val="1"/></q:sdtPr>
+        <q:sdtContent>
+          <q:sdt>
+            <q:sdtPr><q:tag q:val="inner"/></q:sdtPr>
+            <q:sdtContent><z:oMath><z:r><z:t>y</z:t></z:r></z:oMath></q:sdtContent>
+          </q:sdt>
+        </q:sdtContent>
+      </q:sdt>
+    "#;
+    let result = OmmlReader::parse(input, &Config::default()).unwrap();
+    assert_eq!(result.expr.nodes, vec![id("y")]);
+}
+
+#[test]
+fn content_control_inside_math_keeps_its_math_content() {
+    let input = r#"
+      <m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+               xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <m:r><m:t>a</m:t></m:r>
+        <w:sdt>
+          <w:sdtPr><w:alias w:val="inner"/></w:sdtPr>
+          <w:sdtContent><m:r><m:t>b</m:t></m:r></w:sdtContent>
+        </w:sdt>
+        <m:r><m:t>c</m:t></m:r>
+      </m:oMath>
+    "#;
+    assert_eq!(parse(input), vec![id("a"), id("b"), id("c")]);
+}
+
+#[test]
+fn block_content_controls_traverse_paragraphs_but_skip_prose() {
+    let input = r#"
+      <w:sdt xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+        <w:sdtPr><w:alias w:val="equation"/></w:sdtPr>
+        <w:sdtContent>
+          <w:p>
+            <w:pPr><w:pStyle w:val="Normal"/></w:pPr>
+            <w:r><w:t>before the equation</w:t></w:r>
+            <m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>
+            <w:r><w:t>after the equation</w:t></w:r>
+          </w:p>
+        </w:sdtContent>
+      </w:sdt>
+    "#;
+    let result = OmmlReader::parse(input, &Config::default()).unwrap();
+    assert_eq!(result.expr.nodes, vec![id("x")]);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.kind == DiagnosticKind::Info)
+    );
+}
+
+#[test]
+fn content_controls_may_omit_content_in_strict_mode() {
+    let metadata_only = r#"
+      <w:sdt xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:sdtPr><w:alias w:val="empty"/></w:sdtPr>
+      </w:sdt>
+    "#;
+    let result = OmmlReader::parse(metadata_only, &Config::default()).unwrap();
+    assert!(result.expr.nodes.is_empty());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.kind == DiagnosticKind::Info)
+    );
+
+    let empty_in_math = r#"
+      <m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+               xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:sdt><w:sdtPr><w:id w:val="1"/></w:sdtPr></w:sdt>
+      </m:oMath>
+    "#;
+    let result = OmmlReader::parse(empty_in_math, &Config::default()).unwrap();
+    assert!(result.expr.nodes.is_empty());
+}
+
+#[test]
 fn hidden_limit_content_is_dropped_with_a_note() {
     let input = omath(&format!(
         r#"<m:nary><m:naryPr><m:subHide m:val="1"/></m:naryPr><m:sub>{}</m:sub><m:sup>{}</m:sup><m:e>{}</m:e></m:nary>"#,
