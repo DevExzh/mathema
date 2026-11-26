@@ -105,6 +105,10 @@ pub struct RenderArgs {
     #[arg(long)]
     pub lenient: bool,
 
+    /// Also print informational diagnostics to stderr (warnings are always shown)
+    #[arg(long)]
+    pub diagnostics: bool,
+
     /// Input: file paths or an inline expression (reads stdin if omitted)
     pub input: Vec<String>,
 }
@@ -391,9 +395,9 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
             from,
             &config,
             &source_name,
+            args.diagnostics,
         ) {
-            Ok(parsed) => {
-                print_diagnostics(&source_name, parsed.diagnostics(), args.diagnostics);
+            Ok(_) => {
                 if !is_batch {
                     println!("{source_name}: valid ({from:?})");
                 }
@@ -477,6 +481,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
             args.output,
             &config,
             &render_opts,
+            args.diagnostics,
         );
     }
 
@@ -497,6 +502,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
         from,
         &config,
         &source_name,
+        args.diagnostics,
     )?;
 
     match args.format {
@@ -545,12 +551,13 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Parse input into a `ConvertResult` for validation or multi-output rendering.
+/// Parse the input and report its reader diagnostics for validation and rendering.
 fn parse_input(
     input: &str,
     from: Format,
     config: &mathema::Config,
     source_name: &str,
+    include_info: bool,
 ) -> Result<mathema::ConvertResult, CliError> {
     let result = match from {
         Format::LaTeX => mathema::from_latex_with(input, config),
@@ -564,7 +571,9 @@ fn parse_input(
             )));
         },
     };
-    result.map_err(|e| CliError::from_mathema(e, input, source_name))
+    let parsed = result.map_err(|e| CliError::from_mathema(e, input, source_name))?;
+    print_diagnostics(source_name, parsed.diagnostics(), include_info);
+    Ok(parsed)
 }
 
 #[cfg(feature = "raster")]
@@ -590,6 +599,7 @@ fn run_render_batch(
     output: Option<PathBuf>,
     config: &mathema::Config,
     render_opts: &mathema::RenderOptions,
+    include_info: bool,
 ) -> Result<(), CliError> {
     if let Some(ref out_dir) = output
         && !out_dir.is_dir()
@@ -636,7 +646,13 @@ fn run_render_batch(
             },
         };
 
-        let conv = match parse_input(input_for_format(&content, fmt), fmt, config, &source_name) {
+        let conv = match parse_input(
+            input_for_format(&content, fmt),
+            fmt,
+            config,
+            &source_name,
+            include_info,
+        ) {
             Ok(c) => c,
             Err(e) => {
                 failures.push((source_name, e));

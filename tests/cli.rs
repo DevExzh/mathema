@@ -218,6 +218,36 @@ fn render_latex_to_svg() {
 
 #[cfg(feature = "render")]
 #[test]
+fn render_reports_recovery_on_stderr() {
+    mathema()
+        .args(["render", "--lenient", "-f", "latex", r"\frac{1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("<svg"))
+        .stderr(predicate::str::contains("<inline>: warning:"));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn batch_render_names_the_file_that_needed_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.tex");
+    let incomplete = dir.path().join("incomplete.tex");
+    std::fs::write(&good, "x").unwrap();
+    std::fs::write(&incomplete, r"\frac{1").unwrap();
+    mathema()
+        .args(["render", "--lenient"])
+        .arg(&good)
+        .arg(&incomplete)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("incomplete.tex: warning:"))
+        .stderr(predicate::str::contains("good.tex: warning:").not());
+    assert!(incomplete.with_extension("svg").is_file());
+}
+
+#[cfg(feature = "render")]
+#[test]
 fn render_with_font_size() {
     mathema()
         .args(["render", "--from", "latex", "--font-size", "24", "x^2"])
