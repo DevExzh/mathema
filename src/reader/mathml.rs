@@ -160,7 +160,7 @@ enum FenceRole {
     Prefix,
     Infix,
     Postfix,
-    FixedLiteral,
+    LiteralContent,
     Constrained,
 }
 
@@ -350,6 +350,12 @@ impl<'a> MathmlCompactParser<'a> {
                     _ => std::slice::from_ref(&id),
                 };
                 for &id in run {
+                    if marks
+                        .next_if(|&(mark, role)| mark == id && role == FenceRole::LiteralContent)
+                        .is_some()
+                    {
+                        continue;
+                    }
                     let Some(sid) = self.fence_delimiter(id) else {
                         continue;
                     };
@@ -365,9 +371,9 @@ impl<'a> MathmlCompactParser<'a> {
                 }
                 continue;
             };
-            // This marked operator is fixed-width content, even when its
+            // This marked operator is part of the content, even when its
             // glyph is identical to the enclosing closing delimiter.
-            if role == FenceRole::FixedLiteral {
+            if role == FenceRole::LiteralContent {
                 continue;
             }
             let sid = self.fence_delimiter(id)?;
@@ -1424,12 +1430,13 @@ impl<'a> MathmlCompactParser<'a> {
         if mark_fences && attrs.fenced {
             self.fence_marks.push((id, attrs.fence_role()));
         } else if mark_fences
-            && attrs.fixed_literal
-            && !attrs.constrained
-            && attrs.form == FenceRole::Inferred
-            && is_vertical_bar(name)
+            && (attrs.non_fence && matches!(kind, SymbolKind::Open | SymbolKind::Close)
+                || attrs.fixed_literal
+                    && !attrs.constrained
+                    && attrs.form == FenceRole::Inferred
+                    && is_vertical_bar(name))
         {
-            self.fence_marks.push((id, FenceRole::FixedLiteral));
+            self.fence_marks.push((id, FenceRole::LiteralContent));
         }
         if kind == SymbolKind::LargeOp {
             if let Some(value) = movable {
@@ -5151,6 +5158,51 @@ mod tests {
                 content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
             }
         );
+    }
+
+    #[test]
+    fn mfenced_keeps_one_sided_classed_delimiters_in_content() {
+        let config = Config::default();
+        for source in [
+            r#"<math><mfenced open="(" close=")"><mo data-mjx-texclass="OPEN">(</mo></mfenced></math>"#,
+            r#"<math><mfenced open="(" close=")"><mo data-mjx-texclass="CLOSE">)</mo></mfenced></math>"#,
+            r#"<math><mfenced open="(" close=")"><mo data-mjx-texclass="OPEN">(</mo><mo data-mjx-texclass="CLOSE">)</mo></mfenced></math>"#,
+            r#"<math><mfenced open="(" close=")"><mo data-mjx-texclass="CLOSE">(</mo></mfenced><mfenced open="[" close="]"><mo data-mjx-texclass="OPEN">]</mo></mfenced></math>"#,
+        ] {
+            let original = crate::from_mathml(source).unwrap();
+            let compact = original.to_mathml().unwrap();
+            let heap =
+                crate::writer::mathml::MathmlWriter::write(&original.expr(), &config).unwrap();
+            assert_eq!(heap, compact, "heap and compact writers diverged: {source}");
+            assert!(compact.contains(r#"fence="false""#), "{compact}");
+            let reparsed = crate::from_mathml(&compact).unwrap();
+            assert_eq!(reparsed.expr(), original.expr(), "{source}: {compact}");
+            assert_eq!(reparsed.to_mathml().unwrap(), compact, "{source}");
+        }
+        let marked = crate::from_mathml(
+            r#"<math><mfenced open="(" close=")"><mo data-mjx-texclass="OPEN">(</mo></mfenced></math>"#,
+        )
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+        assert!(
+            marked.contains(r#"fence="false""#)
+                && marked.contains(r#"data-mjx-texclass="OPEN""#)
+                && marked.contains(r#"form="prefix""#),
+            "{marked}"
+        );
+        let sized = crate::from_mathml(
+            r#"<math><mfenced open="(" close=")"><mo mathsize="20pt" data-mjx-texclass="OPEN">(</mo></mfenced><mi>x</mi></math>"#,
+        )
+        .unwrap();
+        let sized_compact = sized.to_mathml().unwrap();
+        let sized_heap =
+            crate::writer::mathml::MathmlWriter::write(&sized.expr(), &config).unwrap();
+        assert_eq!(sized_heap, sized_compact);
+        assert!(sized_compact.contains(r#"mathsize="20pt" fence="false""#));
+        let sized_reparsed = crate::from_mathml(&sized_compact).unwrap();
+        assert_eq!(sized_reparsed.expr(), sized.expr());
+        assert_eq!(sized_reparsed.to_mathml().unwrap(), sized_compact);
     }
 
     #[test]

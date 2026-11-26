@@ -1186,6 +1186,10 @@ fn write_node_in(
                     {
                         write_literal_fence(w, text)
                     },
+                    FencedItem::Element(MathNode::Symbol(
+                        kind @ (SymbolKind::Open | SymbolKind::Close),
+                        text,
+                    )) => write_literal_delimiter(w, *kind, text),
                     FencedItem::Element(node) => write_node(w, node, style),
                     FencedItem::Middle(_) => Ok(()),
                 };
@@ -1778,7 +1782,7 @@ fn write_node_in(
                 && let MathNode::Symbol(_, s) = content.as_ref()
                 && let Some(marker) = atom_marker(kind, s)
             {
-                write_symbol_marked(w, kind, s, marker)
+                write_symbol_marked(w, kind, s, marker, false)
             } else {
                 write_node_in(w, content, single_argument, display_style)
             }
@@ -1842,11 +1846,7 @@ fn atom_symbol_kind(atom: MathAtomType) -> Option<SymbolKind> {
 /// and `None` when no marker can carry the class (listed fences), so the
 /// caller keeps writing the content as before.
 fn atom_marker(kind: SymbolKind, text: &str) -> Option<Option<&'static str>> {
-    if kind == SymbolKind::Ordinary && text == "'" {
-        return Some(Some("ORD"));
-    }
-    let marker = crate::unicode::operators::mo_texclass_marker(text, kind);
-    match marker {
+    match symbol_marker(kind, text) {
         Some(marker) => Some(Some(marker)),
         None if crate::unicode::operators::mo_class(text).kind == kind => Some(None),
         None => None,
@@ -1854,7 +1854,7 @@ fn atom_marker(kind: SymbolKind, text: &str) -> Option<Option<&'static str>> {
 }
 
 fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
-    write_symbol_marked(w, kind, text, symbol_marker(kind, text))
+    write_symbol_marked(w, kind, text, symbol_marker(kind, text), false)
 }
 
 fn write_symbol_marked(
@@ -1862,13 +1862,18 @@ fn write_symbol_marked(
     kind: SymbolKind,
     text: &str,
     marker: Option<&str>,
+    non_fence: bool,
 ) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(text, "|" | "‖");
-    match kind {
-        SymbolKind::LargeOp => elem.push_attribute(("largeop", "true")),
-        SymbolKind::Fence => elem.push_attribute(("fence", "true")),
-        _ => {},
+    if non_fence {
+        elem.push_attribute(("fence", "false"));
+    } else {
+        match kind {
+            SymbolKind::LargeOp => elem.push_attribute(("largeop", "true")),
+            SymbolKind::Fence => elem.push_attribute(("fence", "true")),
+            _ => {},
+        }
     }
     if ordinary_literal_bar {
         elem.push_attribute(("fence", "false"));
@@ -2050,6 +2055,14 @@ fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)?;
     Ok(())
+}
+
+/// A bracket-shaped symbol inside a fence is content, even when its own
+/// symbol class is Open or Close. Mark it as a non-fence so a MathML reader
+/// does not mistake it for another endpoint of the enclosing row.
+fn write_literal_delimiter(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
+    let marker = crate::unicode::operators::texclass_name(kind);
+    write_symbol_marked(w, kind, text, marker, true)
 }
 
 fn needs_stretchy_endpoints(open: &str, close: &str) -> bool {
@@ -3056,7 +3069,7 @@ fn write_bare_node_fast(
                 && let CompactNode::Symbol(_, sid) = *arena.node(content)
                 && let Some(marker) = atom_marker(kind, arena.str_val(sid))
             {
-                write_mo_symbol_marked(buf, kind, arena.str_val(sid), marker);
+                write_mo_symbol_marked_fast(buf, kind, arena.str_val(sid), marker, false);
             } else {
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
@@ -3803,6 +3816,27 @@ fn write_literal_fence_fast(buf: &mut XmlBuffer, text: &str) {
     buf.push_str("</mo>");
 }
 
+fn write_literal_delimiter_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    kind: SymbolKind,
+    text: &str,
+) {
+    let start = buf.len();
+    write_mo_symbol_marked_fast(
+        buf,
+        kind,
+        text,
+        crate::unicode::operators::texclass_name(kind),
+        true,
+    );
+    if let Some(size) = arena.attrs(id).and_then(|attrs| attrs.size) {
+        let attributes = size_attributes(size, buf.base_pt);
+        buf.insert_str(start + "<mo".len(), &attributes);
+    }
+}
+
 fn is_literal_fence_glyph(text: &str) -> bool {
     matches!(text, "|" | "‖" | "∣" | "∥")
 }
@@ -3837,10 +3871,14 @@ fn write_nodes_fenced_fast(
 
 #[inline]
 fn write_fenced_node_fast(buf: &mut XmlBuffer, arena: &AstArena, id: NodeId, style: MathStyle) {
-    if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
+    if let CompactNode::Symbol(kind, sid) = *arena.node(id) {
         let text = arena.str_val(sid);
-        if is_literal_fence_glyph(text) {
+        if is_literal_fence_glyph(text) && kind == SymbolKind::Fence {
             write_literal_fence_fast(buf, text);
+            return;
+        }
+        if matches!(kind, SymbolKind::Open | SymbolKind::Close) {
+            write_literal_delimiter_fast(buf, arena, id, kind, text);
             return;
         }
     }
@@ -3862,16 +3900,26 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
 }
 
 fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
-    write_mo_symbol_marked(buf, kind, s, symbol_marker(kind, s));
+    write_mo_symbol_marked_fast(buf, kind, s, symbol_marker(kind, s), false);
 }
 
-fn write_mo_symbol_marked(buf: &mut XmlBuffer, kind: SymbolKind, s: &str, marker: Option<&str>) {
+fn write_mo_symbol_marked_fast(
+    buf: &mut XmlBuffer,
+    kind: SymbolKind,
+    s: &str,
+    marker: Option<&str>,
+    non_fence: bool,
+) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
-    match kind {
-        SymbolKind::LargeOp => buf.push_str(" largeop=\"true\""),
-        SymbolKind::Fence => buf.push_str(" fence=\"true\""),
-        _ => {},
+    if non_fence {
+        buf.push_str(" fence=\"false\"");
+    } else {
+        match kind {
+            SymbolKind::LargeOp => buf.push_str(" largeop=\"true\""),
+            SymbolKind::Fence => buf.push_str(" fence=\"true\""),
+            _ => {},
+        }
     }
     if ordinary_literal_bar {
         buf.push_str(" fence=\"false\" stretchy=\"false\"");
