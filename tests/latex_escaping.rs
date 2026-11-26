@@ -2796,14 +2796,15 @@ fn empheq_sides_are_math() {
         "{".repeat(400),
         "}".repeat(400)
     );
-    assert!(mathema::from_latex(&deep).is_err());
-    let read = mathema::from_latex_with(&deep, &lenient).unwrap();
-    assert!(
-        !read
-            .diagnostics()
-            .iter()
-            .any(|d| d.message.contains("was dropped"))
-    );
+    for config in [mathema::Config::default(), lenient] {
+        assert!(matches!(
+            mathema::from_latex_with(&deep, &config),
+            Err(mathema::Error::LimitExceeded {
+                kind: mathema::LimitKind::Depth,
+                limit: mathema::ast::MAX_AST_DEPTH,
+            })
+        ));
+    }
 }
 
 /// A compound symbol is no delimiter.
