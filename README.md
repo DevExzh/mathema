@@ -65,10 +65,10 @@ mathema convert -f latex -t unicodemath "\\color{red}{x}"
 mathema convert --lenient --diagnostics -f latex -t unicodemath "\\color{red}{x}"
 
 # Render to SVG, PNG, or JPEG
-mathema render "x^2"                              # SVG to stdout
-mathema render --format png -o out.png "x^2"      # PNG (requires raster)
-mathema render --format jpeg -o out.jpeg "x^2"    # JPEG (requires raster)
-mathema render --font-size 24 --color black "x^2" # custom options
+mathema render -f latex "x^2"                              # SVG to stdout
+mathema render -f latex --format png -o out.png "x^2"      # PNG (requires raster)
+mathema render -f latex --format jpeg -o out.jpeg "x^2"    # JPEG (requires raster)
+mathema render -f latex --font-size 24 --color black "x^2" # custom options
 
 # Validate input
 mathema validate -f latex "x^2"
