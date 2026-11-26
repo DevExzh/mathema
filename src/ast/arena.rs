@@ -233,32 +233,36 @@ impl AstArena {
     #[inline]
     pub fn push_node(&mut self, node: CompactNode) -> NodeId {
         let id = self.nodes.len();
+        if id < self.node_limit.min(self.entry_limit) {
+            self.has_size_scale |= matches!(node, CompactNode::SizeScale(_));
+            self.nodes.push(node);
+            return NodeId::new(id as u32);
+        }
+        self.push_node_overflow(id)
+    }
+
+    /// Handle the rare node/arena ceiling path out of the inlined builder.
+    #[cold]
+    #[inline(never)]
+    fn push_node_overflow(&mut self, id: usize) -> NodeId {
         if id >= self.node_limit {
             if self.node_overflow {
                 return NodeId::new(self.nodes.len().saturating_sub(1) as u32);
             }
             self.node_overflow = true;
             if id < self.entry_limit {
+                // Keep one valid ID for in-flight parser references. The
+                // reader reports the typed failure before returning an arena.
                 self.nodes.push(CompactNode::Row(NodeSpan::EMPTY));
                 return NodeId::new(id as u32);
             }
-            return if id == 0 {
-                NodeId::new(0)
-            } else {
-                NodeId::new((id - 1) as u32)
-            };
         }
-        if id >= self.entry_limit {
-            self.size_overflow = true;
-            return if id == 0 {
-                NodeId::new(0)
-            } else {
-                NodeId::new((id - 1) as u32)
-            };
+        self.size_overflow = true;
+        if id == 0 {
+            NodeId::new(0)
+        } else {
+            NodeId::new((id - 1) as u32)
         }
-        self.has_size_scale |= matches!(node, CompactNode::SizeScale(_));
-        self.nodes.push(node);
-        NodeId::new(id as u32)
     }
 
     /// Whether a size declaration was pushed. One stored through
@@ -306,9 +310,6 @@ impl AstArena {
 
     #[inline]
     fn store_string(&mut self, bytes: usize, append: impl FnOnce(&mut String)) -> StrId {
-        if self.node_overflow {
-            return StrId::EMPTY;
-        }
         let id = self.str_starts.len() - 1;
         if id >= self.entry_limit {
             self.size_overflow = true;
@@ -956,7 +957,6 @@ mod tests {
         assert!(matches!(arena.node(sentinel), CompactNode::Row(span) if span.is_empty()));
         assert_eq!(arena.push_node(CompactNode::Number(StrId::EMPTY)), sentinel);
         assert_eq!(arena.node_count(), 2);
-        assert_eq!(arena.push_str("discarded"), StrId::EMPTY);
         assert!(matches!(
             arena.check_limits(),
             Err(Error::LimitExceeded {
