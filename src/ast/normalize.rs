@@ -818,9 +818,8 @@ fn normalize_node_depth_with_identifiers(node: &mut MathNode, depth: usize, rule
 /// or [`LimitKind::ArenaSize`](crate::LimitKind::ArenaSize) when the arena
 /// would outgrow its 32-bit indices.
 ///
-/// Caller-built arenas are validated before any mutation. Malformed or
-/// foreign node, span, and string references return an [`Error::Unsupported`]
-/// error, and the input expression remains unchanged on every error path.
+/// Cycles and out-of-bounds node, span, or string references return
+/// [`crate::Error::Unsupported`]. Normalization updates the input only on success.
 pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()> {
     // Validate every stored node and arena reference before normalization can
     // mutate anything. Work on a clone so a fallible normalization (for

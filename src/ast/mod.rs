@@ -1011,9 +1011,10 @@ pub fn validate_compact_depth(
 /// [`MAX_AST_DEPTH`]). A root node is at depth 0; a tree whose deepest node
 /// lies below `limit` fails with [`crate::Error::LimitExceeded`] and
 /// [`crate::LimitKind::Depth`]. An arena that refused a list or outgrew its
-/// indices fails with the corresponding [`crate::LimitKind`]. Foreign or
-/// missing arena references return an ordinary [`crate::Error`] instead of
-/// panicking while indexing.
+/// indices fails with the corresponding [`crate::LimitKind`]. Missing or
+/// out-of-bounds node references on the traversed path return an error.
+/// Handles are local indices, so an in-bounds index taken from another arena
+/// refers to the node at that index in this arena.
 pub fn validate_compact_depth_with(
     arena: &arena::AstArena,
     roots: compact::NodeSpan,
