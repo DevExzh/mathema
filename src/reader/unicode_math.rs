@@ -20,32 +20,70 @@ use crate::reader::Reader;
 
 pub struct UnicodeMathReader;
 
-/// Maximum bytes to scan for a matching `)` in script and radical arguments.
-///
-/// The bound prevents malformed, unbalanced suffixes from being rescanned
-/// recursively while retaining normal parenthesized UnicodeMath arguments.
-const SCRIPT_PAREN_LOOKAHEAD: usize = 256;
-
-/// Return the byte index immediately after the balanced closing parenthesis.
-fn matching_paren_end(input: &str) -> Option<usize> {
-    debug_assert!(input.starts_with('('));
-    let mut depth = 1_u32;
-    for (index, character) in input.char_indices().skip(1) {
-        if index > SCRIPT_PAREN_LOOKAHEAD {
-            return None;
+/// Decode the text after an opening quote and return the byte offset of the
+/// closing quote. UTN #28 sections 3.2 and 3.15 use `\"` for a quote and
+/// `\\` for a backslash. A backslash before the last quote remains literal.
+fn scan_quoted_text(body: &str, mut push: impl FnMut(char)) -> Option<usize> {
+    let mut chars = body.char_indices();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '"' => return (index != 0).then_some(index),
+            '\\' if body[index + 1..].starts_with('\\') => {
+                push('\\');
+                chars.next();
+            },
+            '\\' if body[index + 1..].starts_with('"') && body[index + 2..].contains('"') => {
+                push('"');
+                chars.next();
+            },
+            _ => push(ch),
         }
+    }
+    None
+}
+
+/// Characters outside quoted text, with byte offsets in the original input.
+fn unquoted_chars(source: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    let mut rest = source;
+    std::iter::from_fn(move || {
+        loop {
+            let index = source.len() - rest.len();
+            let ch = rest.chars().next()?;
+            rest = &rest[ch.len_utf8()..];
+            if ch == '"'
+                && let Some(end) = scan_quoted_text(rest, |_| {})
+            {
+                rest = &rest[end + 1..];
+                continue;
+            }
+            return Some((index, ch));
+        }
+    })
+}
+
+/// Index balanced parentheses by opening offset for lookups during parsing.
+fn paren_ends(source: &str) -> Vec<(usize, usize)> {
+    if !source.as_bytes().contains(&b'(') {
+        return Vec::new();
+    }
+    let mut ends = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for (index, character) in unquoted_chars(source) {
         match character {
-            '(' => depth = depth.saturating_add(1),
+            '(' => {
+                open.push(ends.len());
+                ends.push((index, 0));
+            },
             ')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(index + character.len_utf8());
+                if let Some(at) = open.pop() {
+                    ends[at].1 = index + 1;
                 }
             },
             _ => {},
         }
     }
-    None
+    ends.retain(|&(_, end)| end != 0);
+    ends
 }
 
 /// Find the top-level `&` in the body of an nth-root argument. UnicodeMath
@@ -55,15 +93,7 @@ fn root_separator(input: &str) -> Option<usize> {
     let mut round = 0_u32;
     let mut square = 0_u32;
     let mut curly = 0_u32;
-    let mut quoted = false;
-    for (index, character) in input.char_indices() {
-        if character == '"' {
-            quoted = !quoted;
-            continue;
-        }
-        if quoted {
-            continue;
-        }
+    for (index, character) in unquoted_chars(input) {
         match character {
             '(' => round = round.saturating_add(1),
             ')' => round = round.saturating_sub(1),
@@ -204,6 +234,8 @@ struct CompactParser {
     failed: Vec<u8>,
     /// Bit per byte offset: a matrix content walk from there fails.
     dead_walk: Vec<u64>,
+    /// The balanced parentheses (see [`paren_ends`]).
+    paren_ends: Vec<(usize, usize)>,
     /// The paired bars and brackets (see [`bars`]).
     pairs: bars::Pairs,
     /// Offsets of pairs whose content does not parse.
@@ -256,6 +288,7 @@ impl CompactParser {
             arena: AstArena::new(),
             source_len: source.len(),
             pairs: bars::pair_bars(source),
+            paren_ends: paren_ends(source),
             failed_pairs: BTreeSet::new(),
             lead,
             strictness: config.strictness,
@@ -293,6 +326,18 @@ impl CompactParser {
 
     fn offset(&self, rest: &str) -> usize {
         self.source_len - rest.len()
+    }
+
+    /// The byte index in `input`, which starts with `(`, just after the `)`
+    /// that closes it.
+    fn matching_paren_end(&self, input: &str) -> Option<usize> {
+        debug_assert!(input.starts_with('('));
+        let at = self.offset(input);
+        let found = self
+            .paren_ends
+            .binary_search_by_key(&at, |&(open, _)| open)
+            .ok()?;
+        Some(self.paren_ends[found].1 - at)
     }
 
     /// Push a node, enforcing [`Config::max_nodes`]. Past the limit the node
@@ -1377,7 +1422,7 @@ impl CompactParser {
         // and return the inner content. This keeps the writer's `√(x)` / `x^(a+b)`
         // wrapping invertible (otherwise re-reading would nest a literal Fenced
         // and the next write would double the parentheses).
-        if input.starts_with('(') && matching_paren_end(input).is_some() {
+        if input.starts_with('(') && self.matching_paren_end(input).is_some() {
             match self.parse_absorbing_paren_group(input) {
                 Ok(r) => return Ok(r),
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
@@ -1437,7 +1482,7 @@ impl CompactParser {
             return Ok(found);
         }
         let grouping = input.starts_with('(')
-            && matching_paren_end(input).is_some_and(|end| {
+            && self.matching_paren_end(input).is_some_and(|end| {
                 !starts_script(&input[end..]) && unicode_accent_suffix(&input[end..]).is_none()
             });
         if grouping {
@@ -1851,7 +1896,7 @@ impl CompactParser {
         // radical parser. The separator search is depth-aware so nested
         // grouped operands and matrix contents remain intact.
         if input.starts_with('(')
-            && let Some(end) = matching_paren_end(input)
+            && let Some(end) = self.matching_paren_end(input)
             && root_separator(&input[1..end - 1]).is_some()
         {
             // Parsed as suffixes of the input, as everything is (failures are
@@ -2145,43 +2190,12 @@ impl CompactParser {
     }
 
     fn parse_text_quoted<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if !input.starts_with('"') {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-        let body = &input['"'.len_utf8()..];
-        // UTN #28 sections 3.2 and 3.15: in text, `\"` is a quote and `\\` a
-        // backslash; any other backslash is literal. A backslash before the
-        // last quote of the input ends the text (`"C:\"` is the text `C:\`).
+        let body = input
+            .strip_prefix('"')
+            .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Char))?;
         let mut text = String::new();
-        let mut end = None;
-        let mut chars = body.char_indices();
-        while let Some((index, c)) = chars.next() {
-            match c {
-                '"' => {
-                    end = Some(index);
-                    break;
-                },
-                '\\' if body[index + 1..].starts_with('\\') => {
-                    text.push('\\');
-                    chars.next();
-                },
-                '\\' if body[index + 1..].starts_with('"') => {
-                    if body[index + 2..].contains('"') {
-                        text.push('"');
-                        chars.next();
-                    } else {
-                        text.push('\\');
-                    }
-                },
-                _ => text.push(c),
-            }
-        }
-        let Some(end) = end.filter(|_| !text.is_empty()) else {
-            return Err(parse_error(body, nom::error::ErrorKind::Char));
-        };
+        let end = scan_quoted_text(body, |ch| text.push(ch))
+            .ok_or_else(|| parse_error(body, nom::error::ErrorKind::Char))?;
         self.tick(end);
         let rest = &body[end + 1..];
         let sid = self.arena.push_str(&text);
@@ -3078,6 +3092,16 @@ mod tests {
     }
 
     #[test]
+    fn nth_root_separator_ignores_quoted_closing_parentheses() {
+        let nodes = parse(r#"√(n&"a)")"#);
+        let MathNode::Root { index, radicand } = &nodes[0] else {
+            panic!("expected nth root, got {nodes:?}");
+        };
+        assert!(matches!(&**index, MathNode::Identifier(text) if text == "n"));
+        assert!(matches!(&**radicand, MathNode::Text(_, text) if text == "a)"));
+    }
+
+    #[test]
     fn latex_nth_root_unicode_roundtrip_preserves_mathml() {
         let config = Config::default().with_display(DisplayStyle::Inline);
         let source = crate::from_latex_with(r"\sqrt[204]{206}", &config).unwrap();
@@ -3088,12 +3112,26 @@ mod tests {
     }
 
     #[test]
-    fn script_parenthesis_lookahead_is_balanced_and_bounded() {
-        assert_eq!(matching_paren_end("(x)y"), Some(3));
-        assert_eq!(matching_paren_end("((x))y"), Some(5));
-        assert_eq!(matching_paren_end("(x"), None);
-        let distant_close = format!("({})", "x".repeat(SCRIPT_PAREN_LOOKAHEAD + 1));
-        assert_eq!(matching_paren_end(&distant_close), None);
+    fn parentheses_are_matched_however_far() {
+        assert_eq!(paren_ends("(x)y"), [(0, 3)]);
+        assert_eq!(paren_ends("((x))y"), [(0, 5), (1, 4)]);
+        assert_eq!(paren_ends("(x"), []);
+        assert_eq!(paren_ends(")(x)"), [(1, 4)]);
+        let far = format!("x^({})", "x+".repeat(400) + "x");
+        let result = crate::from_unicode_math(&far).unwrap();
+        let expected = crate::from_latex(&format!("x^{{{}}}", "x+".repeat(400) + "x")).unwrap();
+        assert_eq!(result.to_mathml().unwrap(), expected.to_mathml().unwrap());
+        let written = result.to_unicode_math().unwrap();
+        let reread = crate::from_unicode_math(&written).unwrap();
+        assert_eq!(reread.expr(), result.expr());
+    }
+
+    #[test]
+    fn quoted_parentheses_do_not_close_a_script_group() {
+        let result = crate::from_unicode_math(r#"x^("a)")"#).unwrap();
+        let written = result.to_unicode_math().unwrap();
+        let reread = crate::from_unicode_math(&written).unwrap();
+        assert_eq!(reread.expr(), result.expr());
     }
 
     #[test]
