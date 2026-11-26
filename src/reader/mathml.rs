@@ -5181,11 +5181,10 @@ mod tests {
         .to_mathml()
         .unwrap();
         assert!(
-            marked.contains(r#"fence="false""#)
-                && marked.contains(r#"data-mjx-texclass="OPEN""#)
-                && marked.contains(r#"form="prefix""#),
+            marked.contains(r#"fence="false""#) && marked.contains(r#"form="prefix""#),
             "{marked}"
         );
+        assert!(!marked.contains("data-mjx-texclass"), "{marked}");
         let sized = crate::from_mathml(
             r#"<math><mfenced open="(" close=")"><mo mathsize="20pt" data-mjx-texclass="OPEN">(</mo></mfenced><mi>x</mi></math>"#,
         )
@@ -5232,6 +5231,45 @@ mod tests {
                 assert_eq!(reread.to_mathml().unwrap(), xml);
             }
         }
+    }
+
+    #[test]
+    fn angle_delimiters_omit_redundant_fence_content_class_markers() {
+        let config = Config::default();
+        for (glyph, class, form) in [("⟨", "OPEN", "prefix"), ("⟩", "CLOSE", "postfix")] {
+            let source = format!(
+                r#"<math><mfenced open="(" close=")"><mo data-mjx-texclass="{class}">{glyph}</mo></mfenced></math>"#
+            );
+            let original = crate::from_mathml(&source).unwrap();
+            let compact = original.to_mathml().unwrap();
+            let heap =
+                crate::writer::mathml::MathmlWriter::write(&original.expr(), &config).unwrap();
+            assert_eq!(heap, compact, "{source}");
+            assert!(compact.contains(&format!(r#"fence="false" stretchy="true" form="{form}""#)));
+            assert!(!compact.contains("data-mjx-texclass"), "{compact}");
+            let reread = crate::from_mathml(&compact).unwrap();
+            assert_eq!(reread.expr(), original.expr(), "{source}: {compact}");
+            assert_eq!(reread.to_mathml().unwrap(), compact);
+        }
+
+        let unicode = crate::from_latex(r#"\left(\langle\right)"#)
+            .unwrap()
+            .to_unicode_math()
+            .unwrap();
+        let from_unicode = crate::from_unicode_math(&unicode).unwrap();
+        let unicode_mathml = from_unicode.to_mathml().unwrap();
+        assert!(unicode_mathml.contains(r#"fence="false" stretchy="true" form="prefix">⟨"#));
+        assert!(
+            !unicode_mathml.contains("data-mjx-texclass"),
+            "{unicode_mathml}"
+        );
+        assert_eq!(
+            crate::from_mathml(&unicode_mathml)
+                .unwrap()
+                .to_mathml()
+                .unwrap(),
+            unicode_mathml
+        );
     }
 
     #[test]
