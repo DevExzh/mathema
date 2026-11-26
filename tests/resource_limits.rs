@@ -167,6 +167,21 @@ fn nested_sqrts(levels: usize) -> MathExpr {
 }
 
 #[test]
+fn mathml_builder_honors_a_tighter_writer_depth_limit() {
+    let parsed = mathema::from_latex(r"\frac{1}{\sqrt{x}}").unwrap();
+    let fits = Config::default().with_max_depth(2);
+    assert_eq!(
+        parsed.to_mathml_with(&fits).unwrap(),
+        parsed.to_mathml().unwrap()
+    );
+    assert_depth_limit(
+        parsed.to_mathml_with(&Config::default().with_max_depth(1)),
+        1,
+        "MathML builder",
+    );
+}
+
+#[test]
 fn public_heap_and_compact_writers_validate_configured_depth() {
     let expr = nested_sqrts(3);
     let compact = CompactExpr::from_math_expr(&expr).unwrap();

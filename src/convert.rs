@@ -331,7 +331,7 @@ impl ConvertResult {
 
     /// Serialize the parsed expression to Presentation MathML.
     pub fn to_mathml(&self) -> Result<String> {
-        MathmlWriter::write_compact_trusted(&self.compact.expr, &self.config)
+        crate::writer::mathml::write_compact_validated(&self.compact.expr)
     }
 
     /// Serialize to LaTeX, also returning writer-side loss diagnostics: text
@@ -352,7 +352,10 @@ impl ConvertResult {
 
     /// Serialize to Presentation MathML using the given configuration.
     pub fn to_mathml_with(&self, config: &Config) -> Result<String> {
-        MathmlWriter::write_compact_trusted(&self.compact.expr, config)
+        if config.effective_max_depth() < self.config.effective_max_depth() {
+            check_depth(&self.compact, config)?;
+        }
+        self.to_mathml()
     }
 
     /// Serialize the parsed expression to OMML (Office MathML).
@@ -458,7 +461,7 @@ impl ConvertResult {
     /// warnings from parsing — this surfaces *writer-side* loss (e.g. a node
     /// kind the target cannot express). Use it when round-trip fidelity matters.
     pub fn to_mathml_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        MathmlWriter::write_compact_with_diagnostics_trusted(&self.compact.expr, &self.config)
+        crate::writer::mathml::write_with_diagnostics_validated(&self.compact.expr)
     }
 
     /// Serialize to OMML, also returning writer-side loss diagnostics.
@@ -712,6 +715,8 @@ fn finish_mtef(
 ) -> Result<ConvertResult> {
     check_depth(&compact, config)?;
     normalize_for(&mut compact.expr, Format::Mtef, Format::Mtef)?;
+    // Builder writes reuse this check on the normalized expression held by the result.
+    check_depth(&compact, config)?;
     Ok(ConvertResult {
         compact,
         config: *config,

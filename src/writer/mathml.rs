@@ -137,9 +137,7 @@ impl MathWriter for MathmlWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         super::validate_compact_for_write(expr, config)?;
-        let out = write_compact_validated(expr)?;
-        let diags = super::collect_loss_diagnostics(expr, mathml_loss);
-        Ok((out, diags))
+        write_with_diagnostics_validated(expr)
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
@@ -162,13 +160,21 @@ impl MathmlWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         super::validate_compact_trusted(expr, config)?;
-        let out = write_compact_validated(expr)?;
-        let diags = super::collect_loss_diagnostics(expr, mathml_loss);
-        Ok((out, diags))
+        write_with_diagnostics_validated(expr)
     }
 }
 
-fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
+/// Write an immutable expression whose arena and depth have already been checked.
+pub(crate) fn write_with_diagnostics_validated(
+    expr: &CompactExpr,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let out = write_compact_validated(expr)?;
+    let diagnostics = super::collect_loss_diagnostics(expr, mathml_loss);
+    Ok((out, diagnostics))
+}
+
+/// Write an immutable expression whose arena and depth have already been checked.
+pub(crate) fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
     let buf = write_math_fast(expr, expr.arena.has_size_scale());
     // A size declaration the arena did not count.
     if buf.missed_size {
