@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- UnicodeMath writer diagnostics report when a symbol's spacing class cannot be
+  recovered from its written glyph, such as an ordinary braced colon.
 - **Breaking (behavior):** letters that are separate in the source stay
   separate. `convert`, `normalize_expr` and `normalize_compact_expr` joined
   neighbouring ASCII letters into one identifier, which MathML draws upright:

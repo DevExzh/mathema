@@ -47,6 +47,11 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
+        // A symbol of another class than its character has where it is read
+        // (`{:}`, an ordinary colon): UTN #28 has no class markup.
+        CompactNode::Symbol(kind, sid) if symbol_class_is_lost(*kind, arena.str_val(*sid)) => {
+            Some("UnicodeMath does not preserve the math atom spacing class".into())
+        },
         CompactNode::Overscript { over, movable_limits: true, .. } if !is_overunder_line(arena, *over) => Some(
             "UnicodeMath uses a superscript for a movable upper bound; placement depends on its base".into(),
         ),
@@ -55,6 +60,28 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         ),
         _ => None,
     }
+}
+
+/// Whether a one-character symbol reads back with a different known class.
+fn symbol_class_is_lost(kind: SymbolKind, text: &str) -> bool {
+    let mut chars = text.chars();
+    let (Some(ch), None) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    let read = match ch {
+        // The writer quotes a solidus so the UnicodeMath reader keeps it an
+        // ordinary symbol instead of treating it as a fraction operator.
+        '/' => SymbolKind::Ordinary,
+        // A period is parsed as punctuation outside a number.
+        '.' => SymbolKind::Punctuation,
+        _ => {
+            let Some(read) = crate::unicode::symbols::glyph_class(ch) else {
+                return false;
+            };
+            read
+        },
+    };
+    read != kind
 }
 
 pub struct UnicodeMathWriter;

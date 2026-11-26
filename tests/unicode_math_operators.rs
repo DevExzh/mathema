@@ -200,6 +200,33 @@ fn unicode_math_operands_read_and_write_back() {
     });
 }
 
+#[test]
+fn unicode_math_reports_an_unrecoverable_symbol_class() {
+    let read = mathema::from_latex(r"{:}_{x}xx").unwrap();
+    let (written, diagnostics) = read.to_unicode_math_with_diagnostics().unwrap();
+
+    assert_eq!(written, ":_x xx");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].message.contains("math atom spacing class"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn unicode_math_does_not_report_recoverable_symbol_classes() {
+    for input in ["a:b", r"\ldotp", r"\left|x\right|", r"\sum x", r"\sin x"] {
+        let read = mathema::from_latex(input).unwrap();
+        let (_, diagnostics) = read.to_unicode_math_with_diagnostics().unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("math atom spacing class")),
+            "{input}: {diagnostics:?}"
+        );
+    }
+}
+
 /// LaTeX whose UnicodeMath spelling reads back as the same MathML.
 const LATEX: &[(&str, &str)] = &[
     ("\\int x\\,dx", "∫ x\u{2009}dx"),
