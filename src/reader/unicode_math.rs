@@ -3117,9 +3117,10 @@ mod tests {
         assert_eq!(paren_ends("((x))y"), [(0, 5), (1, 4)]);
         assert_eq!(paren_ends("(x"), []);
         assert_eq!(paren_ends(")(x)"), [(1, 4)]);
-        let far = format!("x^({})", "x+".repeat(400) + "x");
-        let result = crate::from_unicode_math(&far).unwrap();
-        let expected = crate::from_latex(&format!("x^{{{}}}", "x+".repeat(400) + "x")).unwrap();
+        let terms = "x+".repeat(400) + "x";
+        let result = crate::from_unicode_math(&format!("x^({terms})")).unwrap();
+        let config = Config::default().with_display(DisplayStyle::Inline);
+        let expected = crate::from_latex_with(&format!("x^{{{terms}}}"), &config).unwrap();
         assert_eq!(result.to_mathml().unwrap(), expected.to_mathml().unwrap());
         let written = result.to_unicode_math().unwrap();
         let reread = crate::from_unicode_math(&written).unwrap();
@@ -3128,10 +3129,12 @@ mod tests {
 
     #[test]
     fn quoted_parentheses_do_not_close_a_script_group() {
-        let result = crate::from_unicode_math(r#"x^("a)")"#).unwrap();
-        let written = result.to_unicode_math().unwrap();
-        let reread = crate::from_unicode_math(&written).unwrap();
-        assert_eq!(reread.expr(), result.expr());
+        for source in [r#"x^("a)")"#, r#"x^("a\")b")"#, r#"x^("a\\)b")"#] {
+            let result = crate::from_unicode_math(source).unwrap();
+            let written = result.to_unicode_math().unwrap();
+            let reread = crate::from_unicode_math(&written).unwrap();
+            assert_eq!(reread.expr(), result.expr(), "{source}: {written}");
+        }
     }
 
     #[test]
