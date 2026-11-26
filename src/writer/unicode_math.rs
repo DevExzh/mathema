@@ -61,6 +61,20 @@ pub struct UnicodeMathWriter;
 
 const ZERO_WIDTH_SPACE: char = '\u{200B}';
 
+impl UnicodeMathWriter {
+    pub(crate) fn compact_diagnostics(expr: &CompactExpr, config: &Config) -> Vec<Diagnostic> {
+        let mut diagnostics = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        if expr.arena.has_attrs() && config.typesetting == TypesettingPolicy::Preserve {
+            diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Info,
+                message: "UnicodeMath has no font sizes; they were dropped".into(),
+                span: None,
+            });
+        }
+        diagnostics
+    }
+}
+
 fn write_unicode_space(out: &mut String, em: f64) {
     // UnicodeMath has no negative space (LaTeX `\!`): it is dropped rather
     // than written as a positive one. The zero-width space (UTN #28 section
@@ -119,15 +133,7 @@ impl MathWriter for UnicodeMathWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let out = Self::write_compact(expr, config)?;
-        let mut diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
-        if expr.arena.has_attrs() && config.typesetting == TypesettingPolicy::Preserve {
-            diags.push(Diagnostic {
-                kind: DiagnosticKind::Info,
-                message: "UnicodeMath has no font sizes; they were dropped".into(),
-                span: None,
-            });
-        }
-        Ok((out, diags))
+        Ok((out, Self::compact_diagnostics(expr, config)))
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {

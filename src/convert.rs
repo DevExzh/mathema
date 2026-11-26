@@ -347,9 +347,9 @@ impl ConvertResult {
     pub fn to_unicode_math_with_diagnostics(
         &self,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        let (_, diagnostics) =
-            UnicodeMathWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)?;
-        Ok((self.to_unicode_math()?, diagnostics))
+        let output = self.to_unicode_math()?;
+        let diagnostics = UnicodeMathWriter::compact_diagnostics(&self.compact.expr, &self.config);
+        Ok((output, diagnostics))
     }
 
     /// Render to a standalone SVG with embedded glyph outlines.
