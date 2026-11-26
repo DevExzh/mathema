@@ -1815,14 +1815,11 @@ fn write_node_in(
 /// The `data-mjx-texclass` a symbol's `<mo>` needs so the reader does not
 /// give it the glyph's default class: an ordinary use of an operator glyph
 /// (`\mathord{-}`, `\mathord{\lneqq}`, `\dag`), or a non-ASCII glyph used
-/// with another operator class. ASCII operators keep their context-dependent
-/// plain spelling (`:` and `!` are written unmarked).
+/// with another operator class. ASCII glyphs whose default class already
+/// matches remain unmarked (`:` and `!` keep their natural spellings).
 fn symbol_marker(kind: SymbolKind, text: &str) -> Option<&'static str> {
     if kind == SymbolKind::Ordinary && text == "'" {
         return Some("ORD");
-    }
-    if kind != SymbolKind::Ordinary && text.is_ascii() {
-        return None;
     }
     crate::unicode::operators::mo_texclass_marker(text, kind)
 }
@@ -1848,12 +1845,7 @@ fn atom_marker(kind: SymbolKind, text: &str) -> Option<Option<&'static str>> {
     if kind == SymbolKind::Ordinary && text == "'" {
         return Some(Some("ORD"));
     }
-    // ASCII operators are left unmarked, as for plain symbols.
-    let marker = if kind != SymbolKind::Ordinary && text.is_ascii() {
-        None
-    } else {
-        crate::unicode::operators::mo_texclass_marker(text, kind)
-    };
+    let marker = crate::unicode::operators::mo_texclass_marker(text, kind);
     match marker {
         Some(marker) => Some(Some(marker)),
         None if crate::unicode::operators::mo_class(text).kind == kind => Some(None),
@@ -3915,6 +3907,7 @@ mod tests {
     use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
     use crate::reader::Reader;
     use crate::reader::latex::LatexReader;
+    use crate::reader::mathml::MathmlReader;
 
     fn write(node: MathNode) -> String {
         let expr = MathExpr::inline(vec![node]);
@@ -4086,6 +4079,55 @@ mod tests {
             marked,
             crate::from_latex("x-y").unwrap().to_mathml().unwrap()
         );
+    }
+
+    #[test]
+    fn explicit_nondefault_ascii_classes_survive_heap_and_compact_mathml() {
+        let config = Config::default();
+        for input in [
+            r#"<math><mo data-mjx-texclass="REL">@</mo></math>"#,
+            r#"<math><mo data-mjx-texclass="REL">?</mo></math>"#,
+            r#"<math><mfenced><mo data-mjx-texclass="REL">@</mo></mfenced></math>"#,
+        ] {
+            let heap = MathmlReader::parse(input, &config).unwrap().expr;
+            let compact = MathmlReader::parse_compact(input, &config).unwrap().expr;
+            let heap_xml = MathmlWriter::write(&heap, &config).unwrap();
+            let compact_xml = MathmlWriter::write_compact(&compact, &config).unwrap();
+            assert_eq!(heap_xml, compact_xml, "{input}");
+            assert!(
+                heap_xml.contains(r#"data-mjx-texclass="REL""#),
+                "{heap_xml}"
+            );
+
+            let reread_heap = MathmlReader::parse(&heap_xml, &config).unwrap().expr;
+            let reread_compact = MathmlReader::parse_compact(&heap_xml, &config)
+                .unwrap()
+                .expr;
+            assert_eq!(
+                MathmlWriter::write(&reread_heap, &config).unwrap(),
+                heap_xml
+            );
+            assert_eq!(
+                MathmlWriter::write_compact(&reread_compact, &config).unwrap(),
+                heap_xml
+            );
+        }
+
+        let natural = crate::from_latex(r"a:b! a?b").unwrap().to_mathml().unwrap();
+        assert!(!natural.contains("data-mjx-texclass"), "{natural}");
+
+        for source in [r"\mathrel{@}", r"\mathrel{?}"] {
+            let mathml = crate::from_latex(source).unwrap().to_mathml().unwrap();
+            assert!(
+                mathml.contains(r#"data-mjx-texclass="REL""#),
+                "{source}: {mathml}"
+            );
+            assert_eq!(
+                crate::from_mathml(&mathml).unwrap().to_mathml().unwrap(),
+                mathml,
+                "{source}"
+            );
+        }
     }
 
     #[test]
