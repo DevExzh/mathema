@@ -4,8 +4,8 @@
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
 use crate::ast::normalize::{
-    normalize_compact_expr, normalize_compact_expr_keeping_identifiers,
-    normalize_compact_expr_opening_arguments,
+    normalize_compact_expr_keeping_identifiers, normalize_compact_expr_opening_arguments,
+    normalize_compact_expr_trusted,
 };
 use crate::error::{CompactParseResult, Config, Diagnostic, Format, Result};
 use crate::reader::Reader;
@@ -137,7 +137,7 @@ fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()>
     } else if to == Format::LaTeX {
         normalize_compact_expr_opening_arguments
     } else {
-        normalize_compact_expr
+        normalize_compact_expr_trusted
     };
     if from == Format::Mtef && to == Format::LaTeX && expr.arena.has_attrs() {
         // As it is normalized when it is read for a `ConvertResult`: sizes are

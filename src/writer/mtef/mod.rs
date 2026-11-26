@@ -407,7 +407,7 @@ impl MtefWriter {
         // The reading can nest deeper than the tree written. Where that could
         // matter, refuse a tree whose reading cannot be written again.
         if let Some(mut reading) = reading {
-            crate::ast::normalize::normalize_compact_expr(&mut reading)?;
+            crate::ast::normalize::normalize_compact_expr_trusted(&mut reading)?;
             // Any other error is reported when that tree is written.
             if let Err(limit @ crate::error::Error::LimitExceeded { .. }) =
                 Self::encode(&reading, config, options)

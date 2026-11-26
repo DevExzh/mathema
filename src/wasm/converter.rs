@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use wasm_bindgen::prelude::*;
 
 use crate::ast::compact::CompactExpr;
-use crate::ast::normalize::normalize_compact_expr;
+use crate::ast::normalize::normalize_compact_expr_trusted;
 use crate::error::{CompactParseResult, Config, Format, Strictness};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -91,7 +91,7 @@ impl MathemaConverter {
         let mut compact = self.parse_compact(input)?;
         crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)
             .map_err(to_js_err)?;
-        normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
+        normalize_compact_expr_trusted(&mut compact.expr).map_err(to_js_err)?;
         Ok(ParsedMath {
             compact,
             config: self.config,
@@ -147,7 +147,7 @@ impl ParsedMath {
         }
         let mut expr = self.compact.expr.clone();
         crate::convert::drop_unwritten(&mut expr, format).map_err(to_js_err)?;
-        normalize_compact_expr(&mut expr).map_err(to_js_err)?;
+        normalize_compact_expr_trusted(&mut expr).map_err(to_js_err)?;
         Ok(Cow::Owned(expr))
     }
 }

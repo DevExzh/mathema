@@ -19,7 +19,7 @@ pub fn normalize_expr(expr: &mut MathExpr) {
     if super::has_attributes(expr)
         && super::validate_ast_depth(expr).is_ok()
         && let Ok(mut compact) = CompactExpr::from_math_expr_after_validation(expr)
-        && normalize_compact_expr(&mut compact).is_ok()
+        && normalize_compact_expr_trusted(&mut compact).is_ok()
     {
         *expr = compact.to_math_expr();
         return;
@@ -817,7 +817,29 @@ fn normalize_node_depth_with_identifiers(node: &mut MathNode, depth: usize, rule
 /// nested rows would give one node more children than the arena can store,
 /// or [`LimitKind::ArenaSize`](crate::LimitKind::ArenaSize) when the arena
 /// would outgrow its 32-bit indices.
+///
+/// Caller-built arenas are validated before any mutation. Malformed or
+/// foreign node, span, and string references return an [`Error::Unsupported`]
+/// error, and the input expression remains unchanged on every error path.
 pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()> {
+    // Validate every stored node and arena reference before normalization can
+    // mutate anything. Work on a clone so a fallible normalization (for
+    // example, flattening a list past an arena limit) also leaves the caller's
+    // expression untouched on error.
+    super::validate_compact_for_write(&expr.arena, expr.roots, super::MAX_AST_DEPTH)?;
+    let mut normalized = expr.clone();
+    normalize_compact_expr_trusted(&mut normalized)?;
+    *expr = normalized;
+    Ok(())
+}
+
+/// Normalize a compact expression whose arena has already been validated by
+/// an internal parser or conversion boundary.
+///
+/// This is crate-private deliberately: unlike [`normalize_compact_expr`], it
+/// does not scan unreachable arena slots or clone the expression. Callers must
+/// establish that all handles, spans and strings are valid before using it.
+pub(crate) fn normalize_compact_expr_trusted(expr: &mut CompactExpr) -> crate::error::Result<()> {
     expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0)?;
     expr.drop_unreachable_attrs();
     expr.arena.check_limits()
