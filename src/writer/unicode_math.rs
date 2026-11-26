@@ -3,6 +3,7 @@ use smallvec::SmallVec;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
+use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
 use crate::writer::Writer as MathWriter;
@@ -47,11 +48,7 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
-        // A symbol of another class than its character has where it is read
-        // (`{:}`, an ordinary colon): UTN #28 has no class markup.
-        CompactNode::Symbol(kind, sid) if symbol_class_is_lost(*kind, arena.str_val(*sid)) => {
-            Some("UnicodeMath does not preserve the math atom spacing class".into())
-        },
+        CompactNode::Symbol(kind, sid) => symbol_loss(*kind, arena.str_val(*sid)),
         CompactNode::Overscript { over, movable_limits: true, .. } if !is_overunder_line(arena, *over) => Some(
             "UnicodeMath uses a superscript for a movable upper bound; placement depends on its base".into(),
         ),
@@ -62,26 +59,29 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     }
 }
 
-/// Whether a one-character symbol reads back with a different known class.
-fn symbol_class_is_lost(kind: SymbolKind, text: &str) -> bool {
+/// UnicodeMath reads an operator character with the spacing of its glyph.
+fn symbol_loss(kind: SymbolKind, text: &str) -> Option<String> {
     let mut chars = text.chars();
-    let (Some(ch), None) = (chars.next(), chars.next()) else {
-        return false;
-    };
+    let ch = chars.next()?;
+    if chars.next().is_some() {
+        // Even an operator followed by a combining accent becomes two AST nodes.
+        return Some(
+            "UnicodeMath cannot preserve a multi-character symbol as one operator token".into(),
+        );
+    }
     let read = match ch {
-        // The writer quotes a solidus so the UnicodeMath reader keeps it an
-        // ordinary symbol instead of treating it as a fraction operator.
-        '/' => SymbolKind::Ordinary,
-        // A period is parsed as punctuation outside a number.
+        '/' | '?' | '!' => SymbolKind::Ordinary,
         '.' => SymbolKind::Punctuation,
-        _ => {
-            let Some(read) = crate::unicode::symbols::glyph_class(ch) else {
-                return false;
-            };
-            read
+        // Paired bracket endpoints are handled by the enclosing sequence.
+        '@' | '(' | ')' | '[' | ']' | '{' | '}' => {
+            return Some(
+                "UnicodeMath reads this symbol as text and loses its math atom spacing class"
+                    .into(),
+            );
         },
+        _ => crate::unicode::symbols::glyph_class(ch)?,
     };
-    read != kind
+    (read != kind).then(|| "UnicodeMath does not preserve the math atom spacing class".into())
 }
 
 pub struct UnicodeMathWriter;
@@ -90,7 +90,9 @@ const ZERO_WIDTH_SPACE: char = '\u{200B}';
 
 impl UnicodeMathWriter {
     pub(crate) fn compact_diagnostics(expr: &CompactExpr, config: &Config) -> Vec<Diagnostic> {
-        let mut diagnostics = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        let mut visitor = UnicodeMathLossVisitor::default();
+        visitor.visit_expr(expr);
+        let mut diagnostics = visitor.diagnostics;
         if expr.arena.has_attrs() && config.typesetting == TypesettingPolicy::Preserve {
             diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Info,
@@ -99,6 +101,62 @@ impl UnicodeMathWriter {
             });
         }
         diagnostics
+    }
+}
+
+#[derive(Default)]
+struct UnicodeMathLossVisitor {
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl UnicodeMathLossVisitor {
+    fn visit_sequence(&mut self, arena: &AstArena, ids: &[NodeId]) {
+        let mut opens: SmallVec<[(&str, NodeId); 4]> = SmallVec::new();
+        for &id in ids {
+            match *arena.node(id) {
+                CompactNode::Symbol(SymbolKind::Open, sid)
+                    if matches!(arena.str_val(sid), "(" | "[" | "{") =>
+                {
+                    opens.push((arena.str_val(sid), id));
+                },
+                CompactNode::Symbol(SymbolKind::Close, sid)
+                    if opens
+                        .last()
+                        .is_some_and(|&(open, _)| is_bracket_pair(open, arena.str_val(sid))) =>
+                {
+                    opens.pop();
+                },
+                _ => self.visit_node(arena, id),
+            }
+        }
+        for (_, id) in opens {
+            self.visit_node(arena, id);
+        }
+    }
+}
+
+impl CompactVisitor for UnicodeMathLossVisitor {
+    fn visit_expr(&mut self, expr: &CompactExpr) {
+        self.visit_sequence(&expr.arena, expr.arena.children(expr.roots));
+    }
+
+    fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+        let node = arena.node(id);
+        if let Some(message) = unicode_math_loss(arena, node) {
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span: None,
+            });
+        }
+        match *node {
+            CompactNode::Row(span)
+            | CompactNode::Styled(_, span)
+            | CompactNode::Fenced { content: span, .. } => {
+                self.visit_sequence(arena, arena.children(span));
+            },
+            _ => walk_compact_node(self, arena, id),
+        }
     }
 }
 
