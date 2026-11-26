@@ -31,6 +31,22 @@ use super::preprocess::{ExpansionFailure, preprocess_cow};
 
 pub(crate) const MAX_PARSE_DEPTH: u32 = 128;
 
+/// Recovery is deliberately a slow path.  A failed `parse_node_list` may
+/// have walked most of its input before returning, and retrying every suffix
+/// can otherwise turn a short malformed formula into quadratic work.  Charge
+/// each retry by the size of the suffix it was given and allow only a small
+/// linear multiple of the input through recovery.  The floor keeps ordinary
+/// short malformed formulas useful without affecting the hot path.
+const RECOVERY_WORK_MULTIPLIER: usize = 8;
+const MIN_RECOVERY_WORK: usize = 1024;
+
+#[inline]
+fn recovery_work_limit(input_len: usize) -> usize {
+    input_len
+        .saturating_mul(RECOVERY_WORK_MULTIPLIER)
+        .max(MIN_RECOVERY_WORK)
+}
+
 // ---------------------------------------------------------------------------
 // Byte scanning helpers
 // ---------------------------------------------------------------------------
@@ -2118,6 +2134,10 @@ pub(crate) struct LatexCompactParser {
     abort: Option<Error>,
     /// Maximum number of nodes created while parsing, if configured.
     max_nodes: Option<usize>,
+    /// Work already spent retrying malformed input during lenient recovery.
+    recovery_work: usize,
+    /// Linear cap for [`recovery_work`](Self::recovery_work).
+    recovery_work_limit: usize,
     /// User-defined colors registered via `\definecolor`/`\colorlet`,
     /// keyed by exact name, resolved to RGB bytes.
     colors: HashMap<String, [u8; 3]>,
@@ -2214,6 +2234,8 @@ impl LatexCompactParser {
             depth: 0,
             abort: None,
             max_nodes,
+            recovery_work: 0,
+            recovery_work_limit: recovery_work_limit(input_len),
             colors: HashMap::new(),
             diagnostics: Vec::new(),
             rowcolors: None,
@@ -2276,6 +2298,42 @@ impl LatexCompactParser {
             )))
         } else {
             Ok(())
+        }
+    }
+
+    /// Turn the parser's fixed recursion ceiling into a typed resource error.
+    ///
+    /// Structural depth is checked in a number of small parsers which use
+    /// nom's error channel.  Marking the failure here is important: the public
+    /// lenient path otherwise interprets the same `TooLarge` as ordinary bad
+    /// syntax and retries recovery from the input again.
+    #[inline(never)]
+    fn structural_limit<'a>(&mut self, input: &'a str) -> nom::Err<nom::error::Error<&'a str>> {
+        if self.abort.is_none() {
+            self.abort = Some(Error::LimitExceeded {
+                kind: crate::error::LimitKind::Depth,
+                limit: MAX_PARSE_DEPTH as usize,
+            });
+        }
+        nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TooLarge,
+        ))
+    }
+
+    /// Charge one recovery parse.  The parser itself does not expose a cheap
+    /// instruction counter, so the suffix length is a conservative proxy for
+    /// the scan a failed attempt can perform.  Returning `false` asks the
+    /// caller to keep the remaining source as one literal text node.
+    #[inline]
+    fn charge_recovery_work(&mut self, input: &str) -> bool {
+        let amount = input.len().max(1);
+        let next = self.recovery_work.saturating_add(amount);
+        if next > self.recovery_work_limit {
+            false
+        } else {
+            self.recovery_work = next;
+            true
         }
     }
 
@@ -2582,10 +2640,7 @@ impl LatexCompactParser {
         input: &'a str,
     ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
         if self.depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(input));
         }
         self.depth += 1;
         let fence_list = std::mem::replace(&mut self.fence_list, false);
@@ -3036,10 +3091,7 @@ impl LatexCompactParser {
                 ScriptMarker::Sub | ScriptMarker::Sup => {
                     // An argument needs no group either.
                     if self.command_depth >= MAX_PARSE_DEPTH {
-                        return Err(nom::Err::Failure(nom::error::Error::new(
-                            next,
-                            nom::error::ErrorKind::TooLarge,
-                        )));
+                        return Err(self.structural_limit(next));
                     }
                     self.command_depth += 1;
                     let parsed = self.parse_script_arg(&next[1..], is_sub);
@@ -3126,10 +3178,7 @@ impl LatexCompactParser {
             // A body needs no group either, nor is it read by the operator's
             // own `parse_command`.
             if self.command_depth >= MAX_PARSE_DEPTH {
-                return Err(nom::Err::Failure(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::TooLarge,
-                )));
+                return Err(self.structural_limit(input));
             }
             self.command_depth += 1;
             let body = self.parse_element(input);
@@ -3554,10 +3603,7 @@ impl LatexCompactParser {
 
     fn parse_command<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         if self.command_depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(input));
         }
         self.command_depth += 1;
         let result = self.parse_command_inner(input);
@@ -5228,10 +5274,7 @@ impl LatexCompactParser {
     /// Parse \left delim ... \right delim — zero-allocation delimiter interning.
     fn parse_left_right<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         if self.depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(input));
         }
         self.depth += 1;
         let enclosing_fence = self.in_left_right;
@@ -6985,10 +7028,7 @@ impl LatexCompactParser {
         mut style: TextStyle,
     ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
         if self.depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(input));
         }
         self.depth += 1;
         let result = (|| {
@@ -7227,10 +7267,7 @@ impl LatexCompactParser {
         // A table and its cell are two levels of the expression, whose depth
         // is limited too; do not parse (in large frames) what it will refuse.
         if self.command_depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(input));
         }
         self.command_depth += 1;
         let result = self.parse_environment_body(input, env_name);
@@ -8035,10 +8072,7 @@ impl LatexCompactParser {
         };
         // A table and its cell, as in `parse_environment`.
         if self.command_depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                rest,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(rest));
         }
         self.command_depth += 1;
         let built = self.build_xymatrix(body);
@@ -9065,6 +9099,22 @@ impl LatexCompactParser {
             if self.check_node_limit() {
                 break;
             }
+            if !self.charge_recovery_work(input) {
+                let sid = self.arena.push_str(input);
+                ids.push(
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                );
+                diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message:
+                        "recovery work limit reached; treated the remaining input as literal text"
+                            .into(),
+                    span: None,
+                });
+                self.check_node_limit();
+                break;
+            }
             match self.parse_node_list(input) {
                 Ok(("", parsed)) => {
                     ids.extend(parsed);
@@ -9084,6 +9134,13 @@ impl LatexCompactParser {
                     }
                 },
                 Err(error) => {
+                    // Structural and arena limits are fatal in both modes.
+                    // In particular, do not turn a depth failure into another
+                    // recovery attempt from a shorter suffix.
+                    self.check_node_limit();
+                    if self.abort.is_some() {
+                        break;
+                    }
                     // A scoped declaration can fail after consuming a large
                     // prefix (for example, a deeply nested legacy-font
                     // reproducer). Resume at the parser's error cursor when

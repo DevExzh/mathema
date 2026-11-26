@@ -125,10 +125,7 @@ impl LatexCompactParser {
         nodes: &mut SmallVec<[NodeId; 8]>,
     ) -> Parsed<'a, ()> {
         if self.depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                raw,
-                nom::error::ErrorKind::TooLarge,
-            )));
+            return Err(self.structural_limit(raw));
         }
         self.depth += 1;
         let result = self.hbox_runs_inner(raw, style, box_syntax, nodes);

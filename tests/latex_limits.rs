@@ -88,3 +88,58 @@ fn nested_array_column_repetition_has_a_depth_bound() {
         );
     }
 }
+
+#[test]
+fn latex_parser_depth_limit_is_fatal_during_lenient_recovery() {
+    let input = format!("{}x{}", "{".repeat(130), "}".repeat(130));
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let config = Config::default().with_strictness(strictness);
+        let result = LatexReader::parse_compact(&input, &config);
+        assert!(
+            matches!(
+                result,
+                Err(Error::LimitExceeded {
+                    kind: LimitKind::Depth,
+                    ..
+                })
+            ),
+            "parser recursion must remain a typed fatal limit in {strictness:?}"
+        );
+    }
+}
+
+#[test]
+fn malformed_scoped_recovery_stays_within_node_budget() {
+    let input = r"\rm {\frac{a}{b}";
+    let lenient = Config::default().with_strictness(Strictness::Lenient);
+    let recovered = LatexReader::parse_compact(input, &lenient);
+    assert!(recovered.is_ok());
+    let diagnostics = &recovered.unwrap().diagnostics;
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("skipped unexpected character"))
+    );
+
+    // A retry cannot reset the arena's accounting and manufacture another
+    // recovery tree past the configured ceiling.
+    let guarded = LatexReader::parse_compact(input, &lenient.with_max_nodes(Some(13)));
+    assert!(matches!(
+        guarded,
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Nodes,
+            limit: 13
+        })
+    ));
+
+    // Repeated failed suffix scans stop at the linear recovery budget while
+    // retaining the unread source as text.
+    let budget_input = "\\rm ".repeat(70) + "{";
+    let bounded = LatexReader::parse_compact(&budget_input, &lenient).unwrap();
+    assert!(
+        bounded
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("recovery work limit reached"))
+    );
+}
