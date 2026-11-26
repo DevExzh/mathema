@@ -420,6 +420,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rendering: `to_svg_text` draws a displayed large operator at the size of the glyph
+  the other outputs draw, in its box; it was 1.6 or 2 times the text glyph,
+  over its limits and what followed.
 - LaTeX: scripts before a word (an identifier of several letters, as MathML's
   `<mmultiscripts><mi>va</mi>…`) are written on its first letter, as they are read
   back; the rewritten text changed from pass to pass.

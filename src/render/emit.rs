@@ -315,6 +315,31 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     svg
 }
 
+/// The font size and baseline of a glyph drawn as text. A client font has no
+/// variant of a displayed large operator: its glyph is scaled to the box of the
+/// variant and moved into it.
+#[inline]
+fn text_glyph_size(ch: char, font: FontId, font_size: f64, y: f64) -> (f64, f64) {
+    if font != FontId::MathDisplay {
+        return (font_size, y);
+    }
+    let face = super::fonts_registry::face(FontId::Math);
+    let Some(ink) = face
+        .glyph_index(ch)
+        .and_then(|gid| face.glyph_bounding_box(gid))
+    else {
+        return (font_size, y);
+    };
+    let upem = f64::from(face.units_per_em());
+    let (top, bottom) = (f64::from(ink.y_max) / upem, f64::from(ink.y_min) / upem);
+    let display = super::metrics::glyph_metrics_display(ch);
+    if top <= bottom {
+        return (font_size, y);
+    }
+    let scaled = font_size * (display.height + display.depth) / (top - bottom);
+    (scaled, y - display.height * font_size + top * scaled)
+}
+
 fn emit_box(
     svg: &mut String,
     layout: &LayoutBox,
@@ -330,7 +355,7 @@ fn emit_box(
             italic,
             font,
         } => {
-            let font_size = em * size;
+            let (font_size, y) = text_glyph_size(*ch, *font, em * size, y);
             if let Some((family, bold, ital_style)) = font_css(*font) {
                 // Text-face glyph: draw the base codepoint with CSS style hints.
                 svg.push_str(r#"<text x=""#);
@@ -694,7 +719,7 @@ fn emit_box_arena(
             italic,
             font,
         } => {
-            let font_size = em * size;
+            let (font_size, y) = text_glyph_size(*ch, *font, em * size, y);
             if let Some((family, bold, ital_style)) = font_css(*font) {
                 svg.push_str(r#"<text x=""#);
                 push_f3(svg, x);

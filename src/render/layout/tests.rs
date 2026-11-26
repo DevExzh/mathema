@@ -745,6 +745,19 @@ fn limits_have_the_gaps_of_the_font() {
     }
 }
 
+/// The text SVG has no variants: the text glyph is scaled into the box of the
+/// one the other outputs draw (`∑` from 1em of ink to 1.4em, `∫` to 2.222em).
+#[test]
+fn text_svg_draws_display_operators_in_their_box() {
+    for (latex, size) in [("\\displaystyle\\sum", 22.4), ("\\displaystyle\\int", 32.0)] {
+        let svg = crate::from_latex(latex).unwrap().to_svg_text().unwrap();
+        let start = svg.find("font-size=\"").unwrap() + "font-size=\"".len();
+        let end = start + svg[start..].find('"').unwrap();
+        let actual: f64 = svg[start..end].parse().unwrap();
+        assert!((actual - size).abs() < 1e-3, "{svg}");
+    }
+}
+
 /// The scripts at the side of a displayed sum are where pdfTeX puts them,
 /// though its box is that of the glyph.
 #[test]
