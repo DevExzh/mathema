@@ -42,6 +42,7 @@ impl LatexWriter {
         config: &Config,
         normalize: Option<Normalize>,
     ) -> Result<String> {
+        super::validate_compact_for_write(expr, config)?;
         let grouped = colors::grouped(expr);
         let report = LossReport::default();
         write_lowered(grouped.as_ref().unwrap_or(expr), config, report, normalize)
@@ -54,6 +55,7 @@ impl LatexWriter {
         config: &Config,
         normalize: Option<Normalize>,
     ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_for_write(expr, config)?;
         let mut report = LossReport::collecting();
         colors::report_dropped(expr, &mut report);
         let grouped = colors::grouped(expr);
@@ -65,8 +67,9 @@ impl LatexWriter {
 
 impl Writer for LatexWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
+        super::validate_heap_for_write(expr, config)?;
         let compact = CompactExpr::from_math_expr(expr)?;
-        Self::write_compact(&compact, config)
+        write_expr_validated(&compact, config, LossReport::default()).map(|(latex, _)| latex)
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
@@ -83,6 +86,15 @@ impl Writer for LatexWriter {
 }
 
 fn write_expr(
+    expr: &CompactExpr,
+    config: &Config,
+    report: LossReport,
+) -> Result<(String, LossReport)> {
+    super::validate_compact_for_write(expr, config)?;
+    write_expr_validated(expr, config, report)
+}
+
+fn write_expr_validated(
     expr: &CompactExpr,
     config: &Config,
     mut report: LossReport,
@@ -140,6 +152,7 @@ fn write_lowered(
         if let Some(normalize) = normalize {
             normalize(&mut lowered)?;
         }
+        super::validate_compact_for_write(&lowered, config)?;
         return write_lowered(&lowered, config, report, None);
     }
     let mut buf = LatexBuffer::new(

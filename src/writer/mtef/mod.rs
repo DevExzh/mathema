@@ -362,6 +362,15 @@ impl MtefWriter {
         config: &Config,
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        super::validate_compact_for_write(expr, config)?;
+        Self::write_bytes_with_diagnostics_validated(expr, config, options)
+    }
+
+    fn write_bytes_with_diagnostics_validated(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         let (mtef, diagnostics, reading) = match Self::encode(expr, config, options) {
             Ok(written) => written,
             Err(error) => return Self::write_unsized(expr, config, options, error),
@@ -535,12 +544,20 @@ impl MtefWriter {
 impl MathWriter for MtefWriter {
     /// Write the AST as MTEF 5, returned hex-encoded.
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
-        crate::ast::validate_ast_depth(expr)?;
-        Self::write_compact(&CompactExpr::from_math_expr(expr)?, config)
+        super::validate_heap_for_write(expr, config)?;
+        let compact = CompactExpr::from_math_expr(expr)?;
+        let (bytes, _) = Self::write_bytes_with_diagnostics_validated(
+            &compact,
+            config,
+            &MtefWriteOptions::default(),
+        )?;
+        Ok(hex_encode(&bytes))
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
-        Self::write_compact_with_diagnostics(expr, config).map(|(hex, _)| hex)
+        let (bytes, _) =
+            Self::write_bytes_with_diagnostics(expr, config, &MtefWriteOptions::default())?;
+        Ok(hex_encode(&bytes))
     }
 
     fn write_compact_with_diagnostics(

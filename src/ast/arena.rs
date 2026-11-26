@@ -444,6 +444,17 @@ impl AstArena {
         &self.nodes[id.index()]
     }
 
+    /// Return a node when `id` belongs to this arena.
+    ///
+    /// This is intentionally crate-private: public callers use [`node`](Self::node)
+    /// on handles they obtained from this arena, while validators at public
+    /// conversion boundaries must be able to reject a foreign or `NONE` handle
+    /// without indexing first.
+    #[inline]
+    pub(crate) fn try_node(&self, id: NodeId) -> Option<&CompactNode> {
+        id.is_some().then(|| self.nodes.get(id.index())).flatten()
+    }
+
     /// Return a mutable reference to the node identified by `id`.
     ///
     /// What is written there can be another node altogether, so the node's
@@ -794,6 +805,14 @@ impl AstArena {
         &self.children[start..end]
     }
 
+    /// Return a child span when it lies wholly within this arena.
+    #[inline]
+    pub(crate) fn try_children(&self, span: NodeSpan) -> Option<&[NodeId]> {
+        let start = span.start() as usize;
+        let end = start.checked_add(span.len() as usize)?;
+        self.children.get(start..end)
+    }
+
     /// Return the interned string identified by `id`.
     #[inline]
     pub fn str_val(&self, id: StrId) -> &str {
@@ -804,6 +823,20 @@ impl AstArena {
         let start = self.str_starts[idx] as usize;
         let end = self.str_starts[idx + 1] as usize;
         &self.strings[start..end]
+    }
+
+    /// Return an interned string when `id` belongs to this arena.
+    #[inline]
+    pub(crate) fn try_str_val(&self, id: StrId) -> Option<&str> {
+        if id == StrId::EMPTY {
+            return Some("");
+        }
+        let idx = id.index();
+        let end_idx = idx.checked_add(1)?;
+        let starts = self.str_starts.get(idx..=end_idx)?;
+        let start = *starts.first()? as usize;
+        let end = *starts.get(1)? as usize;
+        self.strings.get(start..end)
     }
 
     // ── Unsafe hot-path accessors (crate-internal; not part of the public API) ──

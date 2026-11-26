@@ -983,8 +983,18 @@ pub const MAX_AST_DEPTH: usize = 128;
 /// Call before any recursive AST traversal (writing, rendering, normalization)
 /// to prevent stack overflow on maliciously deep or programmatically-constructed trees.
 pub fn validate_ast_depth(expr: &MathExpr) -> crate::error::Result<()> {
+    validate_ast_depth_with(expr, MAX_AST_DEPTH)
+}
+
+/// Validate a heap AST against a caller's depth limit.
+///
+/// The effective limit is clamped to [`MAX_AST_DEPTH`], which keeps every
+/// recursive validation and writer traversal bounded even when a caller uses
+/// a larger configuration value. A root node is at depth zero.
+pub fn validate_ast_depth_with(expr: &MathExpr, limit: usize) -> crate::error::Result<()> {
+    let limit = limit.min(MAX_AST_DEPTH);
     for node in &expr.nodes {
-        check_node_depth(node, 0)?;
+        check_node_depth(node, 0, limit)?;
     }
     Ok(())
 }
@@ -1001,7 +1011,9 @@ pub fn validate_compact_depth(
 /// [`MAX_AST_DEPTH`]). A root node is at depth 0; a tree whose deepest node
 /// lies below `limit` fails with [`crate::Error::LimitExceeded`] and
 /// [`crate::LimitKind::Depth`]. An arena that refused a list or outgrew its
-/// indices fails with the corresponding [`crate::LimitKind`].
+/// indices fails with the corresponding [`crate::LimitKind`]. Foreign or
+/// missing arena references return an ordinary [`crate::Error`] instead of
+/// panicking while indexing.
 pub fn validate_compact_depth_with(
     arena: &arena::AstArena,
     roots: compact::NodeSpan,
@@ -1009,6 +1021,7 @@ pub fn validate_compact_depth_with(
 ) -> crate::error::Result<()> {
     arena.check_limits()?;
     let limit = limit.min(MAX_AST_DEPTH);
+    validate_compact_structure(arena, roots)?;
     for &id in arena.children(roots) {
         check_compact_depth(arena, id, 0, limit)?;
     }
@@ -1136,9 +1149,239 @@ pub(crate) fn compact_children(
     out
 }
 
-fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
-    if depth > MAX_AST_DEPTH {
-        return Err(depth_error(MAX_AST_DEPTH));
+/// Validate the arena references used by a compact expression before any
+/// writer or visitor follows them. `AstArena::node` and `children` are fast,
+/// bounds-checked accessors rather than fallible APIs; a public caller can
+/// nevertheless combine handles from different arenas or put `NONE` in a
+/// required field. Keep that malformed input an ordinary error at the public
+/// conversion boundary instead of allowing an indexing panic.
+fn validate_compact_structure(
+    arena: &arena::AstArena,
+    roots: compact::NodeSpan,
+) -> crate::error::Result<()> {
+    check_compact_span(arena, roots)?;
+    for node in arena.nodes() {
+        check_compact_node_data(arena, node)?;
+    }
+    validate_compact_acyclic(arena)?;
+    Ok(())
+}
+
+/// Detect cycles in all stored nodes, including unreachable nodes. A compact
+/// arena retains dead nodes after normalization, and a few writer lowering
+/// passes inspect those storage slots while looking for metadata. The cycle
+/// check is iterative so malformed caller-owned arenas cannot make validation
+/// itself grow the call stack.
+fn validate_compact_acyclic(arena: &arena::AstArena) -> crate::error::Result<()> {
+    let mut state = vec![0_u8; arena.node_count()];
+    for raw in 0..arena.node_count() as u32 {
+        let start = compact::NodeId::new(raw);
+        if state[start.index()] != 0 {
+            continue;
+        }
+        state[start.index()] = 1;
+        let mut stack = vec![(start, 0_usize)];
+        while let Some((id, next)) = stack.last_mut() {
+            let children = compact_children(arena, arena.node(*id));
+            if *next == children.len() {
+                state[id.index()] = 2;
+                stack.pop();
+                continue;
+            }
+            let child = children[*next];
+            *next += 1;
+            let child_state = &mut state[child.index()];
+            match *child_state {
+                0 => {
+                    *child_state = 1;
+                    stack.push((child, 0));
+                },
+                1 => return Err(invalid_compact("cyclic node reference")),
+                _ => {},
+            }
+        }
+    }
+    Ok(())
+}
+
+fn invalid_compact(message: &str) -> crate::error::Error {
+    crate::error::Error::Unsupported(format!("invalid compact AST: {message}"))
+}
+
+fn check_compact_id(
+    arena: &arena::AstArena,
+    id: compact::NodeId,
+    required: bool,
+) -> crate::error::Result<()> {
+    if id.is_none() {
+        return if required {
+            Err(invalid_compact("missing node reference"))
+        } else {
+            Ok(())
+        };
+    }
+    arena
+        .try_node(id)
+        .map(|_| ())
+        .ok_or_else(|| invalid_compact("node reference belongs to another arena"))
+}
+
+fn check_compact_span(
+    arena: &arena::AstArena,
+    span: compact::NodeSpan,
+) -> crate::error::Result<()> {
+    let children = arena
+        .try_children(span)
+        .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
+    for &id in children {
+        check_compact_id(arena, id, true)?;
+    }
+    Ok(())
+}
+
+fn check_compact_string(arena: &arena::AstArena, id: compact::StrId) -> crate::error::Result<()> {
+    arena
+        .try_str_val(id)
+        .map(|_| ())
+        .ok_or_else(|| invalid_compact("string reference belongs to another arena"))
+}
+
+fn check_compact_node_data(
+    arena: &arena::AstArena,
+    node: &compact::CompactNode,
+) -> crate::error::Result<()> {
+    use compact::CompactNode;
+
+    match *node {
+        CompactNode::Number(text) | CompactNode::Identifier(text) | CompactNode::Middle(text) => {
+            check_compact_string(arena, text)?
+        },
+        CompactNode::Operator { name, .. }
+        | CompactNode::Symbol(_, name)
+        | CompactNode::Text(_, name) => check_compact_string(arena, name)?,
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
+            check_compact_string(arena, open)?;
+            check_compact_string(arena, close)?;
+            check_compact_span(arena, content)?;
+        },
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            check_compact_span(arena, span)?;
+        },
+        CompactNode::UndefinedCommand { name, arguments } => {
+            check_compact_string(arena, name)?;
+            check_compact_span(arena, arguments)?;
+        },
+        CompactNode::Array {
+            col_aligns, cells, ..
+        } => {
+            check_compact_span(arena, col_aligns)?;
+            check_compact_span(arena, cells)?;
+        },
+        CompactNode::SpannedCell {
+            left_boundaries,
+            right_boundaries,
+            ..
+        } => {
+            check_compact_string(arena, left_boundaries)?;
+            check_compact_string(arena, right_boundaries)?;
+        },
+        CompactNode::Boxed {
+            bg_color,
+            border_color,
+            ..
+        } => {
+            check_compact_string(arena, bg_color)?;
+            check_compact_string(arena, border_color)?;
+        },
+        CompactNode::Color { color, .. } => check_compact_string(arena, color)?,
+        _ => {},
+    }
+
+    let required = |id| check_compact_id(arena, id, true);
+    let optional = |id| check_compact_id(arena, id, false);
+    match *node {
+        CompactNode::Subscript { base, sub }
+        | CompactNode::Superscript { base, sup: sub }
+        | CompactNode::Fraction {
+            num: base,
+            den: sub,
+            ..
+        } => {
+            required(base)?;
+            required(sub)?;
+        },
+        CompactNode::SubSup { base, sub, sup }
+        | CompactNode::UnderOver {
+            base,
+            under: sub,
+            over: sup,
+            ..
+        } => {
+            required(base)?;
+            required(sub)?;
+            required(sup)?;
+        },
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            required(base)?;
+            optional(pre_sub)?;
+            optional(pre_sup)?;
+        },
+        CompactNode::Overscript { base, over, .. }
+        | CompactNode::Underscript {
+            base, under: over, ..
+        } => {
+            required(base)?;
+            required(over)?;
+        },
+        CompactNode::Sqrt(inner)
+        | CompactNode::Phantom(inner, _)
+        | CompactNode::Reflect { content: inner, .. }
+        | CompactNode::Actuarial { content: inner, .. }
+        | CompactNode::Cancel { content: inner, .. }
+        | CompactNode::Scaled { content: inner, .. }
+        | CompactNode::RaiseBox { content: inner, .. }
+        | CompactNode::Color { content: inner, .. }
+        | CompactNode::MathAtom { content: inner, .. }
+        | CompactNode::StructuredOperator { content: inner, .. }
+        | CompactNode::AlignedCell { content: inner, .. } => required(inner)?,
+        CompactNode::Root { index, radicand } => {
+            required(index)?;
+            required(radicand)?;
+        },
+        CompactNode::Nary { sub, sup, body, .. } => {
+            optional(sub)?;
+            optional(sup)?;
+            required(body)?;
+        },
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
+            required(display)?;
+            required(text)?;
+            required(script)?;
+            required(script_script)?;
+        },
+        CompactNode::Boxed { content, .. } => required(content)?,
+        CompactNode::SpannedCell { content, .. } => required(content)?,
+        _ => {},
+    }
+    Ok(())
+}
+
+fn check_node_depth(node: &MathNode, depth: usize, limit: usize) -> crate::error::Result<()> {
+    if depth > limit {
+        return Err(depth_error(limit));
     }
     let d = depth + 1;
     match node {
@@ -1157,91 +1400,91 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         // directly, which no reader builds, count.
         MathNode::Attributed { content, .. } => {
             let nested = matches!(**content, MathNode::Attributed { .. });
-            check_node_depth(content, if nested { d } else { depth })
+            check_node_depth(content, if nested { d } else { depth }, limit)
         },
 
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {
-                check_node_depth(child, d)?;
+                check_node_depth(child, d, limit)?;
             }
             Ok(())
         },
         MathNode::UndefinedCommand { arguments, .. } => {
             // Each argument is a group, one level down as in the arena.
             for child in arguments.iter().flatten() {
-                check_node_depth(child, d + 1)?;
+                check_node_depth(child, d + 1, limit)?;
             }
             Ok(())
         },
         MathNode::Fenced { content, .. } => {
             for item in content {
                 if let FencedItem::Element(n) = item {
-                    check_node_depth(n, d)?;
+                    check_node_depth(n, d, limit)?;
                 }
             }
             Ok(())
         },
         MathNode::Subscript { base, sub } => {
-            check_node_depth(base, d)?;
-            check_node_depth(sub, d)
+            check_node_depth(base, d, limit)?;
+            check_node_depth(sub, d, limit)
         },
         MathNode::Superscript { base, sup } => {
-            check_node_depth(base, d)?;
-            check_node_depth(sup, d)
+            check_node_depth(base, d, limit)?;
+            check_node_depth(sup, d, limit)
         },
         MathNode::SubSup { base, sub, sup } => {
-            check_node_depth(base, d)?;
-            check_node_depth(sub, d)?;
-            check_node_depth(sup, d)
+            check_node_depth(base, d, limit)?;
+            check_node_depth(sub, d, limit)?;
+            check_node_depth(sup, d, limit)
         },
         MathNode::PreScripts {
             base,
             pre_sub,
             pre_sup,
         } => {
-            check_node_depth(base, d)?;
+            check_node_depth(base, d, limit)?;
             if let Some(s) = pre_sub {
-                check_node_depth(s, d)?;
+                check_node_depth(s, d, limit)?;
             }
             if let Some(s) = pre_sup {
-                check_node_depth(s, d)?;
+                check_node_depth(s, d, limit)?;
             }
             Ok(())
         },
         MathNode::Overscript { base, over, .. } => {
-            check_node_depth(base, d)?;
-            check_node_depth(over, d)
+            check_node_depth(base, d, limit)?;
+            check_node_depth(over, d, limit)
         },
         MathNode::Underscript { base, under, .. } => {
-            check_node_depth(base, d)?;
-            check_node_depth(under, d)
+            check_node_depth(base, d, limit)?;
+            check_node_depth(under, d, limit)
         },
         MathNode::UnderOver {
             base, under, over, ..
         } => {
-            check_node_depth(base, d)?;
-            check_node_depth(under, d)?;
-            check_node_depth(over, d)
+            check_node_depth(base, d, limit)?;
+            check_node_depth(under, d, limit)?;
+            check_node_depth(over, d, limit)
         },
         MathNode::Fraction { num, den, .. } => {
-            check_node_depth(num, d)?;
-            check_node_depth(den, d)
+            check_node_depth(num, d, limit)?;
+            check_node_depth(den, d, limit)
         },
-        MathNode::Sqrt(inner) => check_node_depth(inner, d),
+        MathNode::Sqrt(inner) => check_node_depth(inner, d, limit),
         MathNode::Root { index, radicand } => {
-            check_node_depth(index, d)?;
-            check_node_depth(radicand, d)
+            check_node_depth(index, d, limit)?;
+            check_node_depth(radicand, d, limit)
         },
         MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
-                check_node_depth(s, d)?;
+                check_node_depth(s, d, limit)?;
             }
             if let Some(s) = sup {
-                check_node_depth(s, d)?;
+                check_node_depth(s, d, limit)?;
             }
-            check_node_depth(body, d)
+            check_node_depth(body, d, limit)
         },
-        MathNode::Accent { base, .. } => check_node_depth(base, d),
+        MathNode::Accent { base, .. } => check_node_depth(base, d, limit),
         MathNode::Array { rows, .. }
         | MathNode::Matrix { rows, .. }
         | MathNode::NativeArray { rows, .. } => {
@@ -1255,36 +1498,36 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             for row in rows {
                 for cell in row {
                     for n in cell {
-                        check_node_depth(n, d)?;
+                        check_node_depth(n, d, limit)?;
                     }
                 }
             }
             Ok(())
         },
         MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
-            check_node_depth(content, d)
+            check_node_depth(content, d, limit)
         },
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
-        | MathNode::Actuarial { content: inner, .. } => check_node_depth(inner, d),
-        MathNode::Reflect { content: inner, .. } => check_node_depth(inner, d),
+        | MathNode::Actuarial { content: inner, .. } => check_node_depth(inner, d, limit),
+        MathNode::Reflect { content: inner, .. } => check_node_depth(inner, d, limit),
         MathNode::Cancel { content, .. }
         | MathNode::Scaled { content, .. }
         | MathNode::RaiseBox { content, .. }
         | MathNode::Color { content, .. }
-        | MathNode::StructuredOperator { content, .. } => check_node_depth(content, d),
+        | MathNode::StructuredOperator { content, .. } => check_node_depth(content, d, limit),
         MathNode::MathChoice {
             display,
             text,
             script,
             script_script,
         } => {
-            check_node_depth(display, d)?;
-            check_node_depth(text, d)?;
-            check_node_depth(script, d)?;
-            check_node_depth(script_script, d)
+            check_node_depth(display, d, limit)?;
+            check_node_depth(text, d, limit)?;
+            check_node_depth(script, d, limit)?;
+            check_node_depth(script_script, d, limit)
         },
-        MathNode::MathAtom { content, .. } => check_node_depth(content, d),
+        MathNode::MathAtom { content, .. } => check_node_depth(content, d, limit),
     }
 }
 

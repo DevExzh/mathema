@@ -11,6 +11,19 @@ use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 
+/// Validate a caller-supplied heap tree before a concrete writer recursively
+/// compacts or emits it. The configured limit is clamped by the AST validator
+/// to the crate-wide safe ceiling.
+pub(crate) fn validate_heap_for_write(expr: &MathExpr, config: &Config) -> Result<()> {
+    crate::ast::validate_ast_depth_with(expr, config.effective_max_depth())
+}
+
+/// Validate a caller-supplied compact tree before a concrete writer or loss
+/// diagnostic traversal follows arena references.
+pub(crate) fn validate_compact_for_write(expr: &CompactExpr, config: &Config) -> Result<()> {
+    crate::ast::validate_compact_depth_with(&expr.arena, expr.roots, config.effective_max_depth())
+}
+
 /// The contents of a table cell after an environment-provided style marker.
 fn cell_after_style<'a>(arena: &'a AstArena, cell: &'a NodeId, marker: u8) -> Option<&'a [NodeId]> {
     let (_, nodes) = arena.table_cell_parts(cell);
@@ -78,9 +91,11 @@ where
 pub trait Writer {
     fn write(expr: &MathExpr, config: &Config) -> Result<String>;
 
-    /// Write from compact arena representation. Default bridges via `to_math_expr()`.
-    /// Migrated writers override this to read directly from the arena.
+    /// Write from compact arena representation. The default validates the
+    /// arena before bridging via `to_math_expr()`; migrated writers override
+    /// this to read directly from the arena.
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
+        validate_compact_for_write(expr, config)?;
         let math_expr = expr.to_math_expr();
         Self::write(&math_expr, config)
     }

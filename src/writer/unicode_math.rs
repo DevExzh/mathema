@@ -202,11 +202,12 @@ fn write_unicode_space(out: &mut String, em: f64) {
 }
 
 impl MathWriter for UnicodeMathWriter {
-    fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        crate::ast::validate_ast_depth(expr)?;
+    fn write(expr: &MathExpr, config: &Config) -> Result<String> {
+        super::validate_heap_for_write(expr, config)?;
         // UnicodeMath has no font sizes: the compact writer looks past them.
         if crate::ast::has_attributes(expr) {
-            return Self::write_compact(&CompactExpr::from_math_expr(expr)?, _config);
+            let compact = CompactExpr::from_math_expr(expr)?;
+            return write_compact_validated(&compact);
         }
         let mut out = String::with_capacity(256);
         write_nodes_with_style(&mut out, &expr.nodes, MathStyle::from(expr.display));
@@ -217,16 +218,23 @@ impl MathWriter for UnicodeMathWriter {
         expr: &CompactExpr,
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        let out = Self::write_compact(expr, config)?;
+        super::validate_compact_for_write(expr, config)?;
+        let out = write_compact_validated(expr);
+        let out = out?;
         Ok((out, Self::compact_diagnostics(expr, config)))
     }
 
-    fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        let mut out = String::with_capacity(256);
-        let arena = &expr.arena;
-        write_nodes_c_with_style(&mut out, arena, expr.roots, MathStyle::from(expr.display));
-        Ok(out)
+    fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
+        super::validate_compact_for_write(expr, config)?;
+        write_compact_validated(expr)
     }
+}
+
+fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
+    let mut out = String::with_capacity(256);
+    let arena = &expr.arena;
+    write_nodes_c_with_style(&mut out, arena, expr.roots, MathStyle::from(expr.display));
+    Ok(out)
 }
 
 fn table_loss(arena: &AstArena, table: &CompactNode) -> Option<String> {

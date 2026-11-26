@@ -96,9 +96,11 @@ fn mathml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
 pub struct MathmlWriter;
 
 impl MathWriter for MathmlWriter {
-    fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
+    fn write(expr: &MathExpr, config: &Config) -> Result<String> {
+        super::validate_heap_for_write(expr, config)?;
         if !expr.meta.is_empty() {
-            return Self::write_compact(&CompactExpr::from_math_expr(expr)?, _config);
+            let compact = CompactExpr::from_math_expr(expr)?;
+            return write_compact_validated(&compact);
         }
         let mut writer = MathOutput::new(Writer::new(Cursor::new(Vec::with_capacity(512))));
 
@@ -116,7 +118,8 @@ impl MathWriter for MathmlWriter {
 
         write_nodes(&mut writer, &expr.nodes, expr.display.into(), false)?;
         if writer.met_attributes {
-            return Self::write_compact(&CompactExpr::from_math_expr(expr)?, _config);
+            let compact = CompactExpr::from_math_expr(expr)?;
+            return write_compact_validated(&compact);
         }
 
         writer
@@ -133,19 +136,25 @@ impl MathWriter for MathmlWriter {
         expr: &CompactExpr,
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        let out = Self::write_compact(expr, config)?;
+        super::validate_compact_for_write(expr, config)?;
+        let out = write_compact_validated(expr)?;
         let diags = super::collect_loss_diagnostics(expr, mathml_loss);
         Ok((out, diags))
     }
 
-    fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        let buf = write_math_fast(expr, expr.arena.has_size_scale());
-        // A size declaration the arena did not count.
-        if buf.missed_size {
-            return Ok(write_math_fast(expr, true).target);
-        }
-        Ok(buf.target)
+    fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
+        super::validate_compact_for_write(expr, config)?;
+        write_compact_validated(expr)
     }
+}
+
+fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
+    let buf = write_math_fast(expr, expr.arena.has_size_scale());
+    // A size declaration the arena did not count.
+    if buf.missed_size {
+        return Ok(write_math_fast(expr, true).target);
+    }
+    Ok(buf.target)
 }
 
 /// Sizes in points are seen against the size of ordinary text: say that on

@@ -103,7 +103,9 @@ pub struct OmmlWriter;
 
 impl MathWriter for OmmlWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
-        Self::write_compact(&CompactExpr::from_math_expr(expr)?, config)
+        super::validate_heap_for_write(expr, config)?;
+        let compact = CompactExpr::from_math_expr(expr)?;
+        Self::write_with_options_validated(&compact, &OmmlOptions::default()).map(|(s, _)| s)
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
@@ -124,13 +126,22 @@ impl OmmlWriter {
     ///
     /// # Errors
     ///
-    /// Fails when the expression nests deeper than [`MAX_AST_DEPTH`].
+    /// Fails when the expression nests deeper than `config.max_depth` (subject
+    /// to the crate-wide safe depth ceiling), or when its arena references are
+    /// structurally invalid.
     pub fn write_with_options(
         expr: &CompactExpr,
-        _config: &Config,
+        config: &Config,
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+        super::validate_compact_for_write(expr, config)?;
+        Self::write_with_options_validated(expr, options)
+    }
+
+    fn write_with_options_validated(
+        expr: &CompactExpr,
+        options: &OmmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
         let mut e = Emitter::new(
             &expr.arena,
             options.run_properties,
@@ -171,10 +182,12 @@ impl OmmlWriter {
     ///
     /// # Errors
     ///
-    /// Fails when an equation nests deeper than [`MAX_AST_DEPTH`].
+    /// Fails when an equation nests deeper than `config.max_depth` (subject to
+    /// the crate-wide safe depth ceiling), or when its arena references are
+    /// structurally invalid.
     pub fn write_paragraph(
         paragraph: &OmmlParagraph,
-        _config: &Config,
+        config: &Config,
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let empty = AstArena::new();
@@ -182,7 +195,7 @@ impl OmmlWriter {
         e.open_root("m:oMathPara");
         e.paragraph_props(paragraph.justification.or(options.justification));
         for eq in &paragraph.equations {
-            crate::ast::validate_compact_depth(&eq.arena, eq.roots)?;
+            super::validate_compact_for_write(eq, config)?;
             e.arena = &eq.arena;
             e.style = MathStyle::from(eq.display);
             // A paragraph is display math.
