@@ -2068,7 +2068,7 @@ fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
 /// symbol class is Open or Close. Mark it as a non-fence so a MathML reader
 /// does not mistake it for another endpoint of the enclosing row.
 fn write_literal_delimiter(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
-    let marker = crate::unicode::operators::texclass_name(kind);
+    let marker = symbol_marker(kind, text);
     write_symbol_marked(w, kind, text, marker, true)
 }
 
@@ -3831,13 +3831,7 @@ fn write_literal_delimiter_fast(
     text: &str,
 ) {
     let start = buf.len();
-    write_mo_symbol_marked_fast(
-        buf,
-        kind,
-        text,
-        crate::unicode::operators::texclass_name(kind),
-        true,
-    );
+    write_mo_symbol_marked_fast(buf, kind, text, symbol_marker(kind, text), true);
     if let Some(size) = arena.attrs(id).and_then(|attrs| attrs.size) {
         let attributes = size_attributes(size, buf.base_pt);
         buf.insert_str(start + "<mo".len(), &attributes);
