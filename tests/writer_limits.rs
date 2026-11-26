@@ -82,6 +82,65 @@ fn every_compact_writer_and_diagnostic_path_checks_depth() {
 }
 
 #[test]
+fn shared_compact_subtrees_are_checked_for_each_root_order() {
+    for nested_first in [false, true] {
+        let mut arena = AstArena::new();
+        let sid = arena.push_str("x");
+        let leaf = arena.push_node(CompactNode::Identifier(sid));
+        let inner_span = arena.push_children(&[leaf]).unwrap();
+        let inner = arena.push_node(CompactNode::Row(inner_span));
+        let outer_span = arena.push_children(&[inner]).unwrap();
+        let outer = arena.push_node(CompactNode::Row(outer_span));
+        let roots = if nested_first {
+            arena.push_children(&[outer, leaf]).unwrap()
+        } else {
+            arena.push_children(&[leaf, outer]).unwrap()
+        };
+        let compact = CompactExpr::new(arena, roots, DisplayStyle::Inline);
+        let result = MathmlWriter::write_compact(&compact, &Config::default().with_max_depth(1));
+        assert!(
+            matches!(
+                result,
+                Err(Error::LimitExceeded {
+                    kind: LimitKind::Depth,
+                    limit: 1,
+                })
+            ),
+            "root order {nested_first} bypassed shared-subtree depth: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn wide_compact_row_validation_is_linear_in_siblings() {
+    let mut arena = AstArena::new();
+    let sid = arena.push_str("x");
+    let leaves: Vec<_> = (0..2048)
+        .map(|_| arena.push_node(CompactNode::Identifier(sid)))
+        .collect();
+    let row_span = arena.push_children(&leaves).unwrap();
+    let row = arena.push_node(CompactNode::Row(row_span));
+    let roots = arena.push_children(&[row]).unwrap();
+    let compact = CompactExpr::new(arena, roots, DisplayStyle::Inline);
+    assert!(MathmlWriter::write_compact(&compact, &Config::default()).is_ok());
+}
+
+#[test]
+fn harmless_unreachable_depth_is_not_charged_to_written_roots() {
+    let mut arena = AstArena::new();
+    let sid = arena.push_str("x");
+    let mut dead = arena.push_node(CompactNode::Identifier(sid));
+    for _ in 0..256 {
+        dead = arena.push_node(CompactNode::Sqrt(dead));
+    }
+    let live = arena.push_node(CompactNode::Identifier(sid));
+    let roots = arena.push_children(&[live]).unwrap();
+    let compact = CompactExpr::new(arena, roots, DisplayStyle::Inline);
+    assert!(MathmlWriter::write_compact(&compact, &Config::default()).is_ok());
+    assert!(dead.is_some());
+}
+
+#[test]
 fn malformed_compact_handles_are_errors_not_panics() {
     let mut arena = AstArena::new();
     let root = arena.push_node(CompactNode::Sqrt(mathema::NodeId::NONE));

@@ -1167,56 +1167,121 @@ pub(crate) fn compact_children(
     out
 }
 
-/// Detect cycles in all stored nodes, including unreachable nodes. A compact
-/// arena retains dead nodes after normalization, and a few writer lowering
-/// passes inspect those storage slots while looking for metadata. The cycle
-/// check is iterative so malformed caller-owned arenas cannot make validation
-/// itself grow the call stack.
+/// Validate all stored nodes iteratively, including unreachable nodes. A
+/// compact arena retains dead nodes after normalization, and a few writer
+/// lowering passes inspect those storage slots while looking for metadata. The
+/// cycle check and subtree-height computation keep malformed caller-owned
+/// arenas off the call stack and make shared children depth-sensitive for each
+/// written root.
 fn validate_compact_acyclic_with_depth(
     arena: &arena::AstArena,
     roots: compact::NodeSpan,
     limit: usize,
 ) -> crate::error::Result<()> {
     let mut state = vec![0_u8; arena.node_count()];
+    let mut heights = vec![0_usize; arena.node_count()];
     check_compact_span(arena, roots)?;
     let roots = arena
         .try_children(roots)
         .ok_or_else(|| invalid_compact("root span is outside its arena"))?;
-    let mut starts: smallvec::SmallVec<[_; 4]> = roots.iter().copied().collect();
-    starts.extend((0..arena.node_count() as u32).map(compact::NodeId::new));
-    for start in starts {
-        if state[start.index()] != 0 {
-            continue;
+    for &root in roots {
+        visit_compact_graph(arena, root, &mut state, &mut heights, Some(limit))?;
+        if heights[root.index()] > limit {
+            return Err(depth_error(limit));
         }
-        if !start.is_some() || arena.try_node(start).is_none() {
-            return Err(invalid_compact("node reference belongs to another arena"));
+    }
+    // Dead nodes remain in arenas after normalization. Validate their handles,
+    // metadata and cycles, but do not charge their depth to the written roots.
+    for raw in 0..arena.node_count() as u32 {
+        let id = compact::NodeId::new(raw);
+        if state[id.index()] == 0 {
+            visit_compact_graph(arena, id, &mut state, &mut heights, None)?;
         }
-        check_compact_node_data(arena, arena.node(start))?;
-        state[start.index()] = 1;
-        let mut stack = vec![(start, 0_usize, 0_usize)];
-        while let Some((id, next, _)) = stack.last_mut() {
-            let children = compact_children(arena, arena.node(*id));
-            if *next == children.len() {
-                state[id.index()] = 2;
-                stack.pop();
-                continue;
-            }
-            let child = children[*next];
-            *next += 1;
-            let child_state = &mut state[child.index()];
-            match *child_state {
+    }
+    Ok(())
+}
+
+/// Visit one arena graph with an explicit child list per frame. The cached
+/// subtree height makes a previously visited shared child count again when a
+/// later root reaches it at a greater depth.
+fn visit_compact_graph(
+    arena: &arena::AstArena,
+    start: compact::NodeId,
+    state: &mut [u8],
+    heights: &mut [usize],
+    limit: Option<usize>,
+) -> crate::error::Result<()> {
+    if state[start.index()] == 2 {
+        if let Some(limit) = limit
+            && heights[start.index()] > limit
+        {
+            return Err(depth_error(limit));
+        }
+        return Ok(());
+    }
+    if state[start.index()] == 1 {
+        return Err(invalid_compact("cyclic node reference"));
+    }
+    if !start.is_some() || arena.try_node(start).is_none() {
+        return Err(invalid_compact("node reference belongs to another arena"));
+    }
+
+    struct Frame {
+        id: compact::NodeId,
+        children: smallvec::SmallVec<[compact::NodeId; 4]>,
+        next: usize,
+        depth: usize,
+    }
+
+    check_compact_node_data(arena, arena.node(start))?;
+    state[start.index()] = 1;
+    let mut stack = vec![Frame {
+        id: start,
+        children: compact_children(arena, arena.node(start)),
+        next: 0,
+        depth: 0,
+    }];
+    while let Some(frame) = stack.last_mut() {
+        if frame.next < frame.children.len() {
+            let child = frame.children[frame.next];
+            frame.next += 1;
+            let child_depth = frame.depth.saturating_add(1);
+            match state[child.index()] {
                 0 => {
-                    let depth = stack.last().expect("non-empty DFS stack").2 + 1;
-                    if depth > limit {
+                    if let Some(limit) = limit
+                        && child_depth > limit
+                    {
                         return Err(depth_error(limit));
                     }
                     check_compact_node_data(arena, arena.node(child))?;
-                    *child_state = 1;
-                    stack.push((child, 0, depth));
+                    state[child.index()] = 1;
+                    stack.push(Frame {
+                        id: child,
+                        children: compact_children(arena, arena.node(child)),
+                        next: 0,
+                        depth: child_depth,
+                    });
                 },
                 1 => return Err(invalid_compact("cyclic node reference")),
-                _ => {},
+                2 => {
+                    if let Some(limit) = limit
+                        && child_depth.saturating_add(heights[child.index()]) > limit
+                    {
+                        return Err(depth_error(limit));
+                    }
+                },
+                _ => unreachable!("compact validation state is a byte"),
             }
+        } else {
+            let height = frame
+                .children
+                .iter()
+                .map(|&child| heights[child.index()].saturating_add(1))
+                .max()
+                .unwrap_or(0);
+            heights[frame.id.index()] = height;
+            state[frame.id.index()] = 2;
+            stack.pop();
         }
     }
     Ok(())
