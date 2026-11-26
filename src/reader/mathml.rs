@@ -1371,21 +1371,16 @@ impl<'a> MathmlCompactParser<'a> {
                 .arena
                 .push_node(CompactNode::Scaled { factor, content });
         }
-        // An explicit TeX class overrides the default class of a lone glyph
-        // (listed fences and delimiters excepted); explicit zero
-        // `lspace`/`rspace` keeps a table-classed glyph ordinary, as before.
-        if let Some(marked_kind) = attrs
-            .symbol_kind
-            .filter(|_| crate::unicode::operators::mo_texclass_overrides(name, class))
-        {
+        // Listed fences use their delimiter class. A bar marked as non-fence
+        // content may carry an explicit opening or closing spacing class.
+        let marked_bar = vertical_line && attrs.non_fence;
+        if let Some(marked_kind) = attrs.symbol_kind.filter(|&kind| {
+            crate::unicode::operators::mo_texclass_overrides(name, class)
+                || marked_bar && matches!(kind, SymbolKind::Open | SymbolKind::Close)
+        }) {
             kind = marked_kind;
-        } else if class.listed.is_none() && attrs.zero_lspace && attrs.zero_rspace {
-            kind = SymbolKind::Ordinary;
-        }
-        if vertical_line
-            && attrs.non_fence
-            && attrs.fixed_literal
-            && attrs.form == FenceRole::Inferred
+        } else if class.listed.is_none() && attrs.zero_lspace && attrs.zero_rspace
+            || marked_bar && attrs.fixed_literal && attrs.form == FenceRole::Inferred
         {
             kind = SymbolKind::Ordinary;
         }
@@ -5203,6 +5198,40 @@ mod tests {
         let sized_reparsed = crate::from_mathml(&sized_compact).unwrap();
         assert_eq!(sized_reparsed.expr(), sized.expr());
         assert_eq!(sized_reparsed.to_mathml().unwrap(), sized_compact);
+    }
+
+    #[test]
+    fn directional_bars_keep_their_class_inside_and_outside_fences() {
+        let config = Config::default();
+        for (command, glyph, class) in [
+            (r"\lvert", "|", "OPEN"),
+            (r"\rvert", "|", "CLOSE"),
+            (r"\lVert", "‖", "OPEN"),
+            (r"\rVert", "‖", "CLOSE"),
+        ] {
+            let sized = format!(
+                r#"<math><mfenced><mo fence="false" mathsize="20pt" data-mjx-texclass="{class}">{glyph}</mo></mfenced></math>"#
+            );
+            for original in [
+                crate::from_latex(command).unwrap(),
+                crate::from_latex(&format!(r"\left({command}\right)")).unwrap(),
+                crate::from_latex(&format!(r"\left({command} x\right)")).unwrap(),
+                crate::from_mathml(&sized).unwrap(),
+            ] {
+                let xml = original.to_mathml().unwrap();
+                assert!(
+                    xml.contains(&format!(r#"data-mjx-texclass="{class}""#)),
+                    "{xml}"
+                );
+                assert_eq!(
+                    crate::writer::mathml::MathmlWriter::write(&original.expr(), &config).unwrap(),
+                    xml
+                );
+                let reread = crate::from_mathml(&xml).unwrap();
+                assert_eq!(reread.expr().nodes, original.expr().nodes, "{xml}");
+                assert_eq!(reread.to_mathml().unwrap(), xml);
+            }
+        }
     }
 
     #[test]

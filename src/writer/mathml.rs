@@ -1816,12 +1816,19 @@ fn write_node_in(
     }
 }
 
+fn is_directional_bar(kind: SymbolKind, text: &str) -> bool {
+    matches!(kind, SymbolKind::Open | SymbolKind::Close) && matches!(text, "|" | "‖")
+}
+
 /// The `data-mjx-texclass` a symbol's `<mo>` needs so the reader does not
 /// give it the glyph's default class: an ordinary use of an operator glyph
 /// (`\mathord{-}`, `\mathord{\lneqq}`, `\dag`), or a non-ASCII glyph used
 /// with another operator class. ASCII glyphs whose default class already
 /// matches remain unmarked (`:` and `!` keep their natural spellings).
 fn symbol_marker(kind: SymbolKind, text: &str) -> Option<&'static str> {
+    if is_directional_bar(kind, text) {
+        return crate::unicode::operators::texclass_name(kind);
+    }
     if kind == SymbolKind::Ordinary && text == "'" {
         return Some("ORD");
     }
@@ -1866,7 +1873,7 @@ fn write_symbol_marked(
 ) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(text, "|" | "‖");
-    if non_fence {
+    if non_fence || is_directional_bar(kind, text) {
         elem.push_attribute(("fence", "false"));
     } else {
         match kind {
@@ -3912,7 +3919,7 @@ fn write_mo_symbol_marked_fast(
 ) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
-    if non_fence {
+    if non_fence || is_directional_bar(kind, s) {
         buf.push_str(" fence=\"false\"");
     } else {
         match kind {
