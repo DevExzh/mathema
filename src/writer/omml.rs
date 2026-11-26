@@ -104,7 +104,7 @@ pub struct OmmlWriter;
 impl MathWriter for OmmlWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
-        let compact = CompactExpr::from_math_expr(expr)?;
+        let compact = CompactExpr::from_math_expr_after_validation(expr)?;
         Self::write_with_options_validated(&compact, &OmmlOptions::default()).map(|(s, _)| s)
     }
 
@@ -121,6 +121,32 @@ impl MathWriter for OmmlWriter {
 }
 
 impl OmmlWriter {
+    /// Fast internal bridge for an expression returned by a parser or checked
+    /// conversion result. Public option calls retain strict arena validation.
+    pub(crate) fn write_with_options_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &OmmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        Self::write_with_options_validated(expr, options)
+    }
+
+    /// Trusted compact writer used by the parse-once conversion result.
+    pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
+        Self::write_with_options_trusted(expr, config, &OmmlOptions::default()).map(|(s, _)| s)
+    }
+
+    /// Trusted diagnostic compact writer used by the parse-once conversion
+    /// result.
+    #[allow(dead_code)]
+    pub(crate) fn write_compact_with_diagnostics_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        Self::write_with_options_trusted(expr, config, &OmmlOptions::default())
+    }
+
     /// Write `expr` as OMML with the given options, returning the markup and
     /// a diagnostic for every piece of information OMML cannot hold.
     ///

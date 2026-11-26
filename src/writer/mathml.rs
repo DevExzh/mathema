@@ -99,7 +99,7 @@ impl MathWriter for MathmlWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
         if !expr.meta.is_empty() {
-            let compact = CompactExpr::from_math_expr(expr)?;
+            let compact = CompactExpr::from_math_expr_after_validation(expr)?;
             return write_compact_validated(&compact);
         }
         let mut writer = MathOutput::new(Writer::new(Cursor::new(Vec::with_capacity(512))));
@@ -118,7 +118,7 @@ impl MathWriter for MathmlWriter {
 
         write_nodes(&mut writer, &expr.nodes, expr.display.into(), false)?;
         if writer.met_attributes {
-            let compact = CompactExpr::from_math_expr(expr)?;
+            let compact = CompactExpr::from_math_expr_after_validation(expr)?;
             return write_compact_validated(&compact);
         }
 
@@ -145,6 +145,26 @@ impl MathWriter for MathmlWriter {
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
         super::validate_compact_for_write(expr, config)?;
         write_compact_validated(expr)
+    }
+}
+
+impl MathmlWriter {
+    /// Fast internal bridge for expressions returned by a parser or checked
+    /// conversion result. Public trait calls retain strict arena validation.
+    pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
+        super::validate_compact_trusted(expr, config)?;
+        write_compact_validated(expr)
+    }
+
+    /// Trusted counterpart of [`Writer::write_compact_with_diagnostics`].
+    pub(crate) fn write_compact_with_diagnostics_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        let out = write_compact_validated(expr)?;
+        let diags = super::collect_loss_diagnostics(expr, mathml_loss);
+        Ok((out, diags))
     }
 }
 

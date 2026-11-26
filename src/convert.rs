@@ -14,7 +14,6 @@ use crate::reader::mathml::MathmlReader;
 use crate::reader::mtef::{MtefInfo, MtefReader};
 use crate::reader::omml::OmmlReader;
 use crate::reader::unicode_math::UnicodeMathReader;
-use crate::writer::Writer;
 use crate::writer::latex::LatexWriter;
 use crate::writer::mathml::MathmlWriter;
 use crate::writer::mtef::{MtefWriteOptions, MtefWriter};
@@ -223,11 +222,11 @@ fn write_compact(
     config: &Config,
 ) -> Result<String> {
     match format {
-        Format::LaTeX => LatexWriter::write_compact(expr, config),
-        Format::MathML => MathmlWriter::write_compact(expr, config),
-        Format::Omml => OmmlWriter::write_compact(expr, config),
-        Format::Mtef => MtefWriter::write_compact(expr, config),
-        Format::UnicodeMath => UnicodeMathWriter::write_compact(expr, config),
+        Format::LaTeX => LatexWriter::write_compact_trusted(expr, config),
+        Format::MathML => MathmlWriter::write_compact_trusted(expr, config),
+        Format::Omml => OmmlWriter::write_compact_trusted(expr, config),
+        Format::Mtef => MtefWriter::write_compact_trusted(expr, config),
+        Format::UnicodeMath => UnicodeMathWriter::write_compact_trusted(expr, config),
         #[cfg(feature = "render")]
         Format::Svg => {
             let options = crate::render::RenderOptions::default();
@@ -310,14 +309,14 @@ impl ConvertResult {
         options: &crate::writer::omml::OmmlOptions,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
         let expr = &self.compact.expr;
-        let written = OmmlWriter::write_with_options(expr, config, options)?;
+        let written = OmmlWriter::write_with_options_trusted(expr, config, options)?;
         let plain = match options.run_properties {
             crate::writer::omml::OmmlRunProperties::WordprocessingMl => None,
             crate::writer::omml::OmmlRunProperties::DrawingMl => self.without_sizes()?,
             crate::writer::omml::OmmlRunProperties::None => self.in_pure_omml()?,
         };
         if let Some(plain) = plain {
-            let (omml, _) = OmmlWriter::write_with_options(&plain, config, options)?;
+            let (omml, _) = OmmlWriter::write_with_options_trusted(&plain, config, options)?;
             return Ok((omml, written.1));
         }
         Ok(written)
@@ -330,7 +329,7 @@ impl ConvertResult {
 
     /// Serialize the parsed expression to Presentation MathML.
     pub fn to_mathml(&self) -> Result<String> {
-        MathmlWriter::write_compact(&self.compact.expr, &self.config)
+        MathmlWriter::write_compact_trusted(&self.compact.expr, &self.config)
     }
 
     /// Serialize to LaTeX, also returning writer-side loss diagnostics: text
@@ -351,7 +350,7 @@ impl ConvertResult {
 
     /// Serialize to Presentation MathML using the given configuration.
     pub fn to_mathml_with(&self, config: &Config) -> Result<String> {
-        MathmlWriter::write_compact(&self.compact.expr, config)
+        MathmlWriter::write_compact_trusted(&self.compact.expr, config)
     }
 
     /// Serialize the parsed expression to OMML (Office MathML).
@@ -362,7 +361,7 @@ impl ConvertResult {
     /// Serialize to OMML using the given configuration.
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
         let plain = self.in_pure_omml()?;
-        OmmlWriter::write_compact(plain.as_ref().unwrap_or(&self.compact.expr), config)
+        OmmlWriter::write_compact_trusted(plain.as_ref().unwrap_or(&self.compact.expr), config)
     }
 
     /// Serialize to OMML with writer options (host run-property dialect,
@@ -387,7 +386,7 @@ impl ConvertResult {
     /// [`to_mtef_bytes`](Self::to_mtef_bytes) returns with the default
     /// [`MtefWriteOptions`].
     pub fn to_mtef(&self) -> Result<String> {
-        MtefWriter::write_compact(&self.compact.expr, &self.config)
+        MtefWriter::write_compact_trusted(&self.compact.expr, &self.config)
     }
 
     /// Serialize the parsed expression to binary MTEF.
@@ -414,7 +413,8 @@ impl ConvertResult {
     ///
     /// See [`MtefWriter::write_bytes`].
     pub fn to_mtef_bytes(&self, options: &MtefWriteOptions) -> Result<Vec<u8>> {
-        MtefWriter::write_bytes(&self.compact.expr, &self.config, options)
+        MtefWriter::write_bytes_with_diagnostics_trusted(&self.compact.expr, &self.config, options)
+            .map(|(bytes, _)| bytes)
     }
 
     /// Serialize to binary MTEF, also returning writer-side loss
@@ -424,12 +424,12 @@ impl ConvertResult {
         &self,
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
-        MtefWriter::write_bytes_with_diagnostics(&self.compact.expr, &self.config, options)
+        MtefWriter::write_bytes_with_diagnostics_trusted(&self.compact.expr, &self.config, options)
     }
 
     /// Serialize to MTEF using the given configuration.
     pub fn to_mtef_with(&self, config: &Config) -> Result<String> {
-        MtefWriter::write_compact(&self.compact.expr, config)
+        MtefWriter::write_compact_trusted(&self.compact.expr, config)
     }
 
     /// Serialize the parsed expression to UnicodeMath linear notation.
@@ -440,10 +440,13 @@ impl ConvertResult {
     /// Serialize to UnicodeMath using the given configuration.
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
         if !self.compact.expr.arena.has_attrs() {
-            return UnicodeMathWriter::write_compact(&self.compact.expr, config);
+            return UnicodeMathWriter::write_compact_trusted(&self.compact.expr, config);
         }
         let plain = self.without_sizes()?;
-        UnicodeMathWriter::write_compact(plain.as_ref().unwrap_or(&self.compact.expr), config)
+        UnicodeMathWriter::write_compact_trusted(
+            plain.as_ref().unwrap_or(&self.compact.expr),
+            config,
+        )
     }
 
     /// Serialize to Presentation MathML, also returning diagnostics for any
@@ -453,7 +456,7 @@ impl ConvertResult {
     /// warnings from parsing — this surfaces *writer-side* loss (e.g. a node
     /// kind the target cannot express). Use it when round-trip fidelity matters.
     pub fn to_mathml_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        MathmlWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+        MathmlWriter::write_compact_with_diagnostics_trusted(&self.compact.expr, &self.config)
     }
 
     /// Serialize to OMML, also returning writer-side loss diagnostics.
@@ -467,7 +470,7 @@ impl ConvertResult {
     /// this is the recommended entry point when targeting MathType.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_mtef_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        MtefWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+        MtefWriter::write_compact_with_diagnostics_trusted(&self.compact.expr, &self.config)
     }
 
     /// Serialize to UnicodeMath, also returning writer-side loss diagnostics.
@@ -733,6 +736,7 @@ pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writer::Writer;
 
     // === convert() one-liner API ===
 

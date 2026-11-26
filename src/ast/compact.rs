@@ -493,9 +493,19 @@ impl CompactExpr {
     /// # Errors
     ///
     /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+    /// [`LimitKind::Depth`](crate::LimitKind::Depth) when the heap tree is
+    /// deeper than [`crate::ast::MAX_AST_DEPTH`], or
     /// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when a node has
     /// more children than the arena can store.
     pub fn from_math_expr(expr: &MathExpr) -> crate::error::Result<Self> {
+        super::validate_ast_depth(expr)?;
+        Self::from_math_expr_after_validation(expr)
+    }
+
+    /// Build a compact expression after the caller has validated the heap
+    /// tree's depth. Concrete writers use this after applying their configured
+    /// depth limit, avoiding a second fixed-ceiling walk before compaction.
+    pub(crate) fn from_math_expr_after_validation(expr: &MathExpr) -> crate::error::Result<Self> {
         let mut arena = AstArena::new();
         let mut root_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
         for node in &expr.nodes {

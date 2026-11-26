@@ -315,6 +315,35 @@ fn size_preferences(full: Rational) -> Vec<u8> {
 }
 
 impl MtefWriter {
+    /// Fast internal bridge for an expression returned by a parser or checked
+    /// conversion result. Public byte calls retain strict arena validation.
+    pub(crate) fn write_bytes_with_diagnostics_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        Self::write_bytes_with_diagnostics_validated(expr, config, options)
+    }
+
+    /// Trusted compact writer used by the parse-once conversion result.
+    pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
+        let (bytes, _) =
+            Self::write_bytes_with_diagnostics_trusted(expr, config, &MtefWriteOptions::default())?;
+        Ok(hex_encode(&bytes))
+    }
+
+    /// Trusted diagnostic compact writer used by the parse-once conversion
+    /// result.
+    pub(crate) fn write_compact_with_diagnostics_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let (bytes, diagnostics) =
+            Self::write_bytes_with_diagnostics_trusted(expr, config, &MtefWriteOptions::default())?;
+        Ok((hex_encode(&bytes), diagnostics))
+    }
+
     /// Write `expr` as binary MTEF.
     ///
     /// ```
@@ -545,7 +574,7 @@ impl MathWriter for MtefWriter {
     /// Write the AST as MTEF 5, returned hex-encoded.
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
-        let compact = CompactExpr::from_math_expr(expr)?;
+        let compact = CompactExpr::from_math_expr_after_validation(expr)?;
         let (bytes, _) = Self::write_bytes_with_diagnostics_validated(
             &compact,
             config,

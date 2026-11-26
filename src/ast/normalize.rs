@@ -18,7 +18,7 @@ pub fn normalize_expr(expr: &mut MathExpr) {
     // those of what it holds, and what leaves its node takes them along.
     if super::has_attributes(expr)
         && super::validate_ast_depth(expr).is_ok()
-        && let Ok(mut compact) = CompactExpr::from_math_expr(expr)
+        && let Ok(mut compact) = CompactExpr::from_math_expr_after_validation(expr)
         && normalize_compact_expr(&mut compact).is_ok()
     {
         *expr = compact.to_math_expr();

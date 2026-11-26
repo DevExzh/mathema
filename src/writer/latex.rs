@@ -32,6 +32,25 @@ use escape::{
 pub struct LatexWriter;
 
 impl LatexWriter {
+    /// Fast internal bridge for an expression returned by a parser or checked
+    /// conversion result. Public trait calls retain strict arena validation.
+    pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
+        super::validate_compact_trusted(expr, config)?;
+        write_expr_validated(expr, config, LossReport::default()).map(|(latex, _)| latex)
+    }
+
+    /// Trusted diagnostic compact writer used by the parse-once conversion
+    /// result.
+    #[allow(dead_code)]
+    pub(crate) fn write_compact_with_diagnostics_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        let (latex, report) = write_expr_validated(expr, config, LossReport::collecting())?;
+        Ok((latex, report.finish()))
+    }
+
     /// Write an expression that was just read and not normalized, without the
     /// colors LaTeX cannot hold (see [`colors`]).
     ///
@@ -42,7 +61,7 @@ impl LatexWriter {
         config: &Config,
         normalize: Option<Normalize>,
     ) -> Result<String> {
-        super::validate_compact_for_write(expr, config)?;
+        super::validate_compact_trusted(expr, config)?;
         let grouped = colors::grouped(expr);
         let report = LossReport::default();
         write_lowered(grouped.as_ref().unwrap_or(expr), config, report, normalize)
@@ -55,7 +74,7 @@ impl LatexWriter {
         config: &Config,
         normalize: Option<Normalize>,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        super::validate_compact_for_write(expr, config)?;
+        super::validate_compact_trusted(expr, config)?;
         let mut report = LossReport::collecting();
         colors::report_dropped(expr, &mut report);
         let grouped = colors::grouped(expr);
@@ -68,7 +87,7 @@ impl LatexWriter {
 impl Writer for LatexWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
-        let compact = CompactExpr::from_math_expr(expr)?;
+        let compact = CompactExpr::from_math_expr_after_validation(expr)?;
         write_expr_validated(&compact, config, LossReport::default()).map(|(latex, _)| latex)
     }
 

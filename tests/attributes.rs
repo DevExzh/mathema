@@ -1,7 +1,7 @@
 //! What typesetting attributes do where nodes are read, joined, replaced and
 //! dropped. Each test states a value worked out by hand.
 
-use mathema::ast::compact::CompactExpr;
+use mathema::ast::compact::{CompactExpr, CompactNode};
 use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
 use mathema::ast::{
     ColumnAlign, FontSize, LimitStyle, NodeAttrs, Rational, SymbolKind, TextStyle, TypeSize,
@@ -401,10 +401,16 @@ fn nested_attributes_are_a_depth() {
         normalize_expr(&mut deep);
     }
     // Nor is a compact tree gone through that is too deep: its sizes stay.
-    let deep = (0..400).fold(sized(points(20, 1), id("x")), |node, _| {
-        MathNode::Sqrt(Box::new(node))
-    });
-    let mut expr = compact(vec![deep]);
+    // Build the deliberately over-limit compact chain directly: the public
+    // heap-to-compact bridge now rejects depth > MAX_AST_DEPTH before its
+    // recursive lowering starts, while normalization still needs to preserve
+    // attributes on already-built compact trees.
+    let mut expr = compact(vec![sized(points(20, 1), id("x"))]);
+    let mut node = expr.arena.children(expr.roots)[0];
+    for _ in 0..400 {
+        node = expr.arena.push_node(CompactNode::Sqrt(node));
+    }
+    expr.roots = expr.arena.push_children(&[node]).unwrap();
     let _ = normalize_compact_expr(&mut expr);
     assert!(expr.arena.has_attrs());
 }

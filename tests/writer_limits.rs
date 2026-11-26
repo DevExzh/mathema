@@ -3,7 +3,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use mathema::ast::compact::CompactExpr;
-use mathema::ast::{DisplayStyle, MathExpr, MathNode};
+use mathema::ast::{DisplayStyle, MAX_AST_DEPTH, MathExpr, MathNode};
 use mathema::error::{Config, Error, LimitKind};
 use mathema::writer::Writer;
 use mathema::writer::latex::LatexWriter;
@@ -44,6 +44,18 @@ fn every_heap_writer_checks_configured_depth_before_compacting() {
     depth_error(OmmlWriter::write(&expr, &config), 8);
     depth_error(UnicodeMathWriter::write(&expr, &config), 8);
     depth_error(MtefWriter::write(&expr, &config), 8);
+}
+
+#[test]
+fn public_heap_to_compact_bridge_checks_the_hard_depth_cap() {
+    let result = CompactExpr::from_math_expr(&deep_heap(MAX_AST_DEPTH + 1));
+    assert!(matches!(
+        result,
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Depth,
+            limit: MAX_AST_DEPTH,
+        })
+    ));
 }
 
 #[test]

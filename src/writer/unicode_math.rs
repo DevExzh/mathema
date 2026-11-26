@@ -102,6 +102,25 @@ impl UnicodeMathWriter {
         }
         diagnostics
     }
+
+    /// Fast internal bridge for an expression returned by a parser or checked
+    /// conversion result. Public trait calls retain strict arena validation.
+    pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
+        super::validate_compact_trusted(expr, config)?;
+        write_compact_validated(expr)
+    }
+
+    /// Trusted diagnostic compact writer used by the parse-once conversion
+    /// result.
+    #[allow(dead_code)]
+    pub(crate) fn write_compact_with_diagnostics_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        let out = write_compact_validated(expr)?;
+        Ok((out, Self::compact_diagnostics(expr, config)))
+    }
 }
 
 #[derive(Default)]
@@ -206,7 +225,7 @@ impl MathWriter for UnicodeMathWriter {
         super::validate_heap_for_write(expr, config)?;
         // UnicodeMath has no font sizes: the compact writer looks past them.
         if crate::ast::has_attributes(expr) {
-            let compact = CompactExpr::from_math_expr(expr)?;
+            let compact = CompactExpr::from_math_expr_after_validation(expr)?;
             return write_compact_validated(&compact);
         }
         let mut out = String::with_capacity(256);

@@ -21,6 +21,14 @@ pub(crate) fn validate_heap_for_write(expr: &MathExpr, config: &Config) -> Resul
 /// Validate a caller-supplied compact tree before a concrete writer or loss
 /// diagnostic traversal follows arena references.
 pub(crate) fn validate_compact_for_write(expr: &CompactExpr, config: &Config) -> Result<()> {
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, config.effective_max_depth())
+}
+
+/// Validate a compact tree known to come from a parser or an already checked
+/// conversion result. This follows only reachable nodes; public direct writer
+/// calls use [`validate_compact_for_write`] because their arena may have been
+/// edited or assembled from foreign handles.
+pub(crate) fn validate_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<()> {
     crate::ast::validate_compact_depth_with(&expr.arena, expr.roots, config.effective_max_depth())
 }
 
