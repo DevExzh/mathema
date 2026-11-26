@@ -245,11 +245,13 @@ fn write_compact_with_diagnostics(
     config: &Config,
 ) -> Result<(String, Vec<Diagnostic>)> {
     match format {
-        Format::LaTeX => LatexWriter::write_compact_with_diagnostics(expr, config),
-        Format::MathML => MathmlWriter::write_compact_with_diagnostics(expr, config),
-        Format::Omml => OmmlWriter::write_compact_with_diagnostics(expr, config),
-        Format::Mtef => MtefWriter::write_compact_with_diagnostics(expr, config),
-        Format::UnicodeMath => UnicodeMathWriter::write_compact_with_diagnostics(expr, config),
+        Format::LaTeX => LatexWriter::write_compact_with_diagnostics_trusted(expr, config),
+        Format::MathML => MathmlWriter::write_compact_with_diagnostics_trusted(expr, config),
+        Format::Omml => OmmlWriter::write_compact_with_diagnostics_trusted(expr, config),
+        Format::Mtef => MtefWriter::write_compact_with_diagnostics_trusted(expr, config),
+        Format::UnicodeMath => {
+            UnicodeMathWriter::write_compact_with_diagnostics_trusted(expr, config)
+        },
         #[cfg(feature = "render")]
         Format::Svg => Ok((write_compact(expr, format, config)?, Vec::new())),
         #[cfg(feature = "raster")]
