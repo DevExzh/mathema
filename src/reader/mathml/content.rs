@@ -47,6 +47,51 @@ struct Applied {
     interval: Option<NodeId>,
 }
 
+/// Precedence and associativity class for an infix Content MathML operator.
+/// The class is also used to classify a previously lowered child row, so one
+/// table controls all grouping decisions instead of each operator family
+/// carrying its own list of symbols.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InfixClass {
+    Unary,
+    Add,
+    Subtract,
+    Multiply,
+    Relation,
+    LogicOr,
+    LogicXor,
+    LogicAnd,
+    SetUnion,
+    SetDifference,
+    SetIntersect,
+    Compose,
+}
+
+impl InfixClass {
+    fn precedence(self) -> u8 {
+        match self {
+            Self::Relation => 10,
+            Self::LogicOr => 20,
+            Self::LogicXor => 25,
+            Self::LogicAnd => 30,
+            Self::SetUnion => 35,
+            Self::SetDifference => 36,
+            Self::SetIntersect => 40,
+            Self::Compose => 45,
+            Self::Add | Self::Subtract => 50,
+            Self::Multiply => 60,
+            Self::Unary => 70,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InfixSpec {
+    symbol: &'static str,
+    kind: SymbolKind,
+    class: InfixClass,
+}
+
 /// Returns `true` for element names that are Content MathML constructs handled
 /// here (so the presentation parser can delegate to us).
 pub(super) fn is_content_element(name: &str) -> bool {
@@ -331,83 +376,102 @@ impl<'a> MathmlCompactParser<'a> {
         matches!(self.arena.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
-    /// Return the top-level infix operation of a row made by one of the
-    /// Content MathML operators.  Looking at the direct children is enough:
-    /// nested applies remain one child, so their operation cannot be confused
-    /// with the operation of the enclosing apply.
-    fn row_infix(&self, id: NodeId) -> Option<&str> {
+    fn is_negative_number(&self, id: NodeId) -> bool {
+        let CompactNode::Number(sid) = *self.arena.node(id) else {
+            return false;
+        };
+        self.arena
+            .str_val(sid)
+            .trim()
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == '-' || ch == '\u{2212}')
+    }
+
+    fn symbol_class(symbol: &str, position: usize) -> Option<InfixClass> {
+        Some(match symbol {
+            "+" => InfixClass::Add,
+            "\u{2212}" | "-" if position > 0 => InfixClass::Subtract,
+            "\u{2212}" | "-" => InfixClass::Unary,
+            "\u{00D7}" | "\u{2062}" | "\u{22C5}" | "\u{2297}" => InfixClass::Multiply,
+            "=" | "\u{2260}" | "<" | ">" | "\u{2264}" | "\u{2265}" | "\u{2261}" | "\u{2248}"
+            | "\u{2192}" | "\u{2223}" | "\u{21D2}" | "\u{2208}" | "\u{2209}" | "\u{2286}"
+            | "\u{2282}" | "\u{2288}" | "\u{2284}" => InfixClass::Relation,
+            "\u{2227}" => InfixClass::LogicAnd,
+            "\u{2228}" => InfixClass::LogicOr,
+            "\u{22BB}" => InfixClass::LogicXor,
+            "\u{222A}" => InfixClass::SetUnion,
+            "\u{2216}" => InfixClass::SetDifference,
+            "\u{2229}" => InfixClass::SetIntersect,
+            "\u{2218}" => InfixClass::Compose,
+            _ => return None,
+        })
+    }
+
+    /// Return the output spelling and precedence class for an infix token.
+    fn infix_spec(token: &str) -> Option<InfixSpec> {
+        use SymbolKind::{BinaryOp, Ordinary, Relation as RelationKind};
+        let (symbol, kind) = match token {
+            "plus" => ("+", BinaryOp),
+            "minus" => ("\u{2212}", BinaryOp),
+            "vectorproduct" => ("\u{00D7}", BinaryOp),
+            "times" => ("\u{2062}", Ordinary),
+            "scalarproduct" => ("\u{22C5}", BinaryOp),
+            "outerproduct" => ("\u{2297}", BinaryOp),
+            "eq" => ("=", RelationKind),
+            "neq" => ("\u{2260}", RelationKind),
+            "lt" => ("<", RelationKind),
+            "gt" => (">", RelationKind),
+            "leq" => ("\u{2264}", RelationKind),
+            "geq" => ("\u{2265}", RelationKind),
+            "equivalent" => ("\u{2261}", RelationKind),
+            "approx" => ("\u{2248}", RelationKind),
+            "tendsto" => ("\u{2192}", RelationKind),
+            "factorof" => ("\u{2223}", RelationKind),
+            "implies" => ("\u{21D2}", RelationKind),
+            "in" => ("\u{2208}", RelationKind),
+            "notin" => ("\u{2209}", RelationKind),
+            "subset" => ("\u{2286}", RelationKind),
+            "prsubset" => ("\u{2282}", RelationKind),
+            "notsubset" => ("\u{2288}", RelationKind),
+            "notprsubset" => ("\u{2284}", RelationKind),
+            "and" => ("\u{2227}", BinaryOp),
+            "or" => ("\u{2228}", BinaryOp),
+            "xor" => ("\u{22BB}", BinaryOp),
+            "union" => ("\u{222A}", BinaryOp),
+            "intersect" => ("\u{2229}", BinaryOp),
+            "setdiff" => ("\u{2216}", BinaryOp),
+            "cartesianproduct" => ("\u{00D7}", BinaryOp),
+            "compose" => ("\u{2218}", BinaryOp),
+            _ => return None,
+        };
+        Some(InfixSpec {
+            symbol,
+            kind,
+            // Position one is the binary spelling; unary minus is handled
+            // before this table in `build_token_apply`.
+            class: Self::symbol_class(symbol, 1)?,
+        })
+    }
+
+    /// Return the top-level infix class of a row made by one of the Content
+    /// MathML operators. Looking at direct children is enough: nested applies
+    /// remain one child, so their operation cannot be confused with the
+    /// operation of the enclosing apply.
+    fn row_infix(&self, id: NodeId) -> Option<InfixClass> {
         let CompactNode::Row(span) = *self.arena.node(id) else {
             return None;
         };
-        for &child in self.arena.children(span) {
+        for (position, &child) in self.arena.children(span).iter().enumerate() {
             let CompactNode::Symbol(_, sid) = *self.arena.node(child) else {
                 continue;
             };
             let symbol = self.arena.str_val(sid);
-            if matches!(
-                symbol,
-                "+" | "\u{2212}"
-                    | "-"
-                    | "\u{00D7}"
-                    | "\u{2062}"
-                    | "\u{22C5}"
-                    | "="
-                    | "\u{2260}"
-                    | "<"
-                    | ">"
-                    | "\u{2264}"
-                    | "\u{2265}"
-                    | "\u{2261}"
-                    | "\u{2248}"
-                    | "\u{2192}"
-                    | "\u{2223}"
-                    | "\u{21D2}"
-                    | "\u{2208}"
-                    | "\u{2209}"
-                    | "\u{2286}"
-                    | "\u{2282}"
-                    | "\u{2288}"
-                    | "\u{2284}"
-                    | "\u{222A}"
-                    | "\u{2229}"
-                    | "\u{2216}"
-                    | "\u{2227}"
-                    | "\u{2228}"
-                    | "\u{22BB}"
-                    | "\u{2218}"
-            ) {
-                return Some(symbol);
+            if let Some(class) = Self::symbol_class(symbol, position) {
+                return Some(class);
             }
         }
         None
-    }
-
-    fn is_relation_node(&self, id: NodeId) -> bool {
-        matches!(
-            self.row_infix(id),
-            Some(
-                "=" | "\u{2260}"
-                    | "<"
-                    | ">"
-                    | "\u{2264}"
-                    | "\u{2265}"
-                    | "\u{2261}"
-                    | "\u{2248}"
-                    | "\u{2192}"
-                    | "\u{2223}"
-                    | "\u{21D2}"
-                    | "\u{2208}"
-                    | "\u{2209}"
-                    | "\u{2286}"
-                    | "\u{2282}"
-                    | "\u{2288}"
-                    | "\u{2284}"
-            )
-        )
-    }
-
-    fn is_additive_node(&self, id: NodeId) -> bool {
-        matches!(self.row_infix(id), Some("+" | "\u{2212}" | "-"))
     }
 
     fn is_nary_node(&self, id: NodeId) -> bool {
@@ -418,51 +482,58 @@ impl<'a> MathmlCompactParser<'a> {
     /// with a different precedence.  Existing fences are already sufficient;
     /// leaves are atoms and need no wrapper.
     fn parenthesize(&mut self, id: NodeId) -> NodeId {
-        if self.is_simple(id) || matches!(self.arena.node(id), CompactNode::Fenced { .. }) {
+        if (self.is_simple(id) && !self.is_negative_number(id))
+            || matches!(self.arena.node(id), CompactNode::Fenced { .. })
+        {
             id
         } else {
             self.c_fenced("(", ")", &[id])
         }
     }
 
-    fn wrap_plus_operand(&mut self, id: NodeId, position: usize) -> NodeId {
-        // A subtraction/relational expression used as a later summand needs
-        // grouping: `a + (b - c)`.  A first summand is already interpreted by
-        // the usual left-associative reading (`(a - b) + c`).
-        if self.is_relation_node(id) || (position > 0 && self.is_additive_node(id)) {
-            self.parenthesize(id)
-        } else {
-            id
+    fn infix_operand_needs_parentheses(
+        &self,
+        parent: InfixClass,
+        child: Option<InfixClass>,
+        position: usize,
+        id: NodeId,
+    ) -> bool {
+        let Some(child) = child else {
+            // A large operator carries its own body, but as a multiplication
+            // factor it must remain one visible operand (`(∑ …) x`).
+            return parent == InfixClass::Multiply && self.is_nary_node(id);
+        };
+        if child.precedence() < parent.precedence() {
+            return true;
+        }
+        if child.precedence() > parent.precedence() {
+            return false;
+        }
+        match parent {
+            InfixClass::Add => child == InfixClass::Subtract && position > 0,
+            InfixClass::Subtract => {
+                matches!(child, InfixClass::Add | InfixClass::Subtract) && position > 0
+            },
+            InfixClass::Relation => child == InfixClass::Relation,
+            InfixClass::SetDifference => child == InfixClass::SetDifference && position > 0,
+            // Same-class logical/set union/intersection and composition are
+            // associative at this presentation boundary.
+            _ => false,
         }
     }
 
-    fn wrap_minus_operand(&mut self, id: NodeId, position: usize) -> NodeId {
-        if position == 0 {
-            // Left-associative subtraction does not need parentheses around a
-            // left sum/difference, but relations and n-ary operators do.
-            if self.is_relation_node(id) || self.is_nary_node(id) {
-                self.parenthesize(id)
+    fn join_classified_infix(&mut self, args: &[NodeId], spec: InfixSpec) -> NodeId {
+        let mut grouped = SmallVec::<[NodeId; 8]>::new();
+        for (position, &arg) in args.iter().enumerate() {
+            let child = self.row_infix(arg);
+            let arg = if self.infix_operand_needs_parentheses(spec.class, child, position, arg) {
+                self.parenthesize(arg)
             } else {
-                id
-            }
-        } else if self.is_additive_node(id) || self.is_relation_node(id) {
-            // The right operand is non-associative: `a - (b - c)`.
-            self.parenthesize(id)
-        } else {
-            id
+                arg
+            };
+            grouped.push(arg);
         }
-    }
-
-    fn wrap_factor(&mut self, id: NodeId) -> NodeId {
-        // A sum (including a rendered n-ary sum) must remain one factor:
-        // `(a + b) c`, `\sum_i a_i x`.  Relations are similarly lower than
-        // multiplication.  Fractions, roots and powers already carry their
-        // own visual grouping.
-        if self.is_additive_node(id) || self.is_relation_node(id) || self.is_nary_node(id) {
-            self.parenthesize(id)
-        } else {
-            id
-        }
+        self.join_infix(&grouped, spec.symbol, spec.kind)
     }
 
     // ── entry point from the presentation dispatcher ───────────────────
@@ -1214,56 +1285,16 @@ impl<'a> MathmlCompactParser<'a> {
     fn build_token_apply(&mut self, token: &str, a: Applied) -> NodeId {
         use SymbolKind::*;
         let args = &a.args;
+        if token == "minus" && args.len() == 1 {
+            let m = self.c_sym("\u{2212}", SymbolKind::BinaryOp);
+            let arg = self.parenthesize(args[0]);
+            let row = [m, arg];
+            return self.c_row(&row);
+        }
+        if let Some(spec) = Self::infix_spec(token) {
+            return self.join_classified_infix(args, spec);
+        }
         match token {
-            "plus" => {
-                let mut grouped = SmallVec::<[NodeId; 8]>::new();
-                for (position, &arg) in args.iter().enumerate() {
-                    grouped.push(self.wrap_plus_operand(arg, position));
-                }
-                self.join_infix(&grouped, "+", BinaryOp)
-            },
-            "vectorproduct" => {
-                let mut grouped = SmallVec::<[NodeId; 8]>::new();
-                for &arg in args {
-                    grouped.push(self.wrap_factor(arg));
-                }
-                self.join_infix(&grouped, "\u{00D7}", BinaryOp)
-            },
-            "times" => {
-                let mut grouped = SmallVec::<[NodeId; 8]>::new();
-                for &arg in args {
-                    grouped.push(self.wrap_factor(arg));
-                }
-                self.join_infix(&grouped, "\u{2062}", Ordinary) // InvisibleTimes (zero-width)
-            },
-            "scalarproduct" => {
-                let mut grouped = SmallVec::<[NodeId; 8]>::new();
-                for &arg in args {
-                    grouped.push(self.wrap_factor(arg));
-                }
-                self.join_infix(&grouped, "\u{22C5}", BinaryOp)
-            },
-            "outerproduct" => {
-                let mut grouped = SmallVec::<[NodeId; 8]>::new();
-                for &arg in args {
-                    grouped.push(self.wrap_factor(arg));
-                }
-                self.join_infix(&grouped, "\u{2297}", BinaryOp)
-            },
-            "minus" => {
-                if args.len() == 1 {
-                    let m = self.c_sym("\u{2212}", BinaryOp);
-                    let arg = self.parenthesize(args[0]);
-                    let row = [m, arg];
-                    self.c_row(&row)
-                } else {
-                    let mut grouped = SmallVec::<[NodeId; 8]>::new();
-                    for (position, &arg) in args.iter().enumerate() {
-                        grouped.push(self.wrap_minus_operand(arg, position));
-                    }
-                    self.join_infix(&grouped, "\u{2212}", BinaryOp)
-                }
-            },
             "divide" => {
                 if args.len() >= 2 {
                     self.c_frac(args[0], args[1])
@@ -1272,10 +1303,11 @@ impl<'a> MathmlCompactParser<'a> {
                 }
             },
             "power" if args.len() >= 2 => {
-                let base = if self.is_additive_node(args[0])
-                    || self.is_relation_node(args[0])
-                    || self.is_nary_node(args[0])
-                {
+                let base_needs_group = self.row_infix(args[0]).is_some_and(|class| {
+                    class == InfixClass::Unary || class.precedence() <= InfixClass::Add.precedence()
+                }) || self.is_nary_node(args[0])
+                    || self.is_negative_number(args[0]);
+                let base = if base_needs_group {
                     self.parenthesize(args[0])
                 } else {
                     args[0]
@@ -1358,34 +1390,6 @@ impl<'a> MathmlCompactParser<'a> {
                 let row = [nabla, cross, arg];
                 self.c_row(&row)
             },
-            // Relations
-            "eq" => self.join_infix(args, "=", Relation),
-            "neq" => self.join_infix(args, "\u{2260}", Relation),
-            "lt" => self.join_infix(args, "<", Relation),
-            "gt" => self.join_infix(args, ">", Relation),
-            "leq" => self.join_infix(args, "\u{2264}", Relation),
-            "geq" => self.join_infix(args, "\u{2265}", Relation),
-            "equivalent" => self.join_infix(args, "\u{2261}", Relation),
-            "approx" => self.join_infix(args, "\u{2248}", Relation),
-            "tendsto" => self.join_infix(args, "\u{2192}", Relation),
-            "factorof" => self.join_infix(args, "\u{2223}", Relation),
-            "implies" => self.join_infix(args, "\u{21D2}", Relation),
-            // Set theory
-            "in" => self.join_infix(args, "\u{2208}", Relation),
-            "notin" => self.join_infix(args, "\u{2209}", Relation),
-            "subset" => self.join_infix(args, "\u{2286}", Relation),
-            "prsubset" => self.join_infix(args, "\u{2282}", Relation),
-            "notsubset" => self.join_infix(args, "\u{2288}", Relation),
-            "notprsubset" => self.join_infix(args, "\u{2284}", Relation),
-            "union" => self.join_infix(args, "\u{222A}", BinaryOp),
-            "intersect" => self.join_infix(args, "\u{2229}", BinaryOp),
-            "setdiff" => self.join_infix(args, "\u{2216}", BinaryOp),
-            "cartesianproduct" => self.join_infix(args, "\u{00D7}", BinaryOp),
-            "compose" => self.join_infix(args, "\u{2218}", BinaryOp),
-            // Logic
-            "and" => self.join_infix(args, "\u{2227}", BinaryOp),
-            "or" => self.join_infix(args, "\u{2228}", BinaryOp),
-            "xor" => self.join_infix(args, "\u{22BB}", BinaryOp),
             "forall" => self.quantifier("\u{2200}", a),
             "exists" => self.quantifier("\u{2203}", a),
             // Big operators
@@ -1663,7 +1667,15 @@ impl<'a> MathmlCompactParser<'a> {
                 .flatten()
                 .unwrap_or_else(|| self.c_num("1"));
             if let Some(value) = self.numeric_degree(degree) {
-                total = total.saturating_add(value);
+                let Some(sum) = total.checked_add(value) else {
+                    // Keep the authored numeric terms and render their sum
+                    // explicitly below; saturating here would silently turn
+                    // a requested order into a different derivative.
+                    numeric = false;
+                    terms.push(degree);
+                    continue;
+                };
+                total = sum;
             } else {
                 numeric = false;
             }
@@ -1721,6 +1733,12 @@ impl<'a> MathmlCompactParser<'a> {
     fn derivative(&mut self, a: Applied, partial: bool) -> NodeId {
         let f = a.args.first().copied().unwrap_or_else(|| self.empty_row());
         if a.bvars.is_empty() {
+            if a.degree.is_some_and(|id| !self.is_empty_node(id)) {
+                self.style_warning(format!(
+                    "Content MathML {} degree has no bound variable; derivative order was not represented",
+                    if partial { "partialdiff" } else { "diff" }
+                ));
+            }
             if partial {
                 return f;
             }
