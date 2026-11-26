@@ -137,7 +137,11 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
 /// Render a compact math expression directly to raster image bytes (PNG or JPEG).
 pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> Result<Vec<u8>> {
     options.validate()?;
-    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+    // Raster layout reads auxiliary compact references as it measures arrays,
+    // strings and cell-boundary metadata. Validate the complete caller-owned
+    // arena before traversal so malformed public input becomes an error rather
+    // than an out-of-bounds panic in an arena accessor.
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
     let style = if options
         .render
         .display_mode
@@ -2261,6 +2265,59 @@ mod tests {
                     other => panic!("invalid scale should be rejected: {other:?}"),
                 }
             }
+        }
+    }
+
+    #[test]
+    fn compact_raster_rejects_foreign_references() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let malformed_string = || {
+            let mut foreign = crate::ast::arena::AstArena::new();
+            let text = foreign.push_str("x");
+            let mut arena = crate::ast::arena::AstArena::new();
+            let root = arena.push_node(crate::ast::compact::CompactNode::Identifier(text));
+            let roots = arena.push_children(&[root]).unwrap();
+            CompactExpr::new(arena, roots, crate::ast::DisplayStyle::Inline)
+        };
+        let malformed_array = || {
+            let mut foreign = crate::ast::arena::AstArena::new();
+            let padding = foreign.push_node(crate::ast::compact::CompactNode::Row(
+                crate::ast::compact::NodeSpan::EMPTY,
+            ));
+            let _ = foreign.push_children(&[padding]).unwrap();
+            let column = foreign.push_node(crate::ast::compact::CompactNode::ColAlign(
+                crate::ast::ColumnAlign::Center,
+            ));
+            let columns = foreign.push_children(&[column]).unwrap();
+            let mut arena = crate::ast::arena::AstArena::new();
+            let cells = arena.push_children(&[]).unwrap();
+            let root = arena.push_node(crate::ast::compact::CompactNode::Array {
+                col_aligns: columns,
+                cells,
+                num_cols: 0,
+                arraystretch_pct: 100,
+                add_jot: false,
+                array_style: false,
+                col_seps: 0,
+                row_seps: 0,
+            });
+            let roots = arena.push_children(&[root]).unwrap();
+            CompactExpr::new(arena, roots, crate::ast::DisplayStyle::Inline)
+        };
+
+        for compact in [malformed_string(), malformed_array()] {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                render_to_image_compact(&compact, &RasterOptions::default())
+            }));
+            assert!(
+                result.is_ok(),
+                "rasterizing malformed compact input panicked"
+            );
+            assert!(
+                result.unwrap().is_err(),
+                "malformed compact input was accepted"
+            );
         }
     }
 

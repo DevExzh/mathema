@@ -168,7 +168,11 @@ fn render_compact_svg(
     emit: impl FnOnce(&arena::LayoutArena, arena::LayoutBoxId, &RenderOptions) -> String,
 ) -> Result<String> {
     options.validate()?;
-    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+    // Rendering follows auxiliary compact references (strings, column spans,
+    // boundary metadata) in addition to the reachable node graph. Validate
+    // the complete caller-owned arena before the layout traversal so malformed
+    // public inputs return an error instead of panicking in an accessor.
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
     let style = if options
         .display_mode
         .unwrap_or(expr.display == DisplayStyle::Block)
@@ -360,6 +364,68 @@ mod integration_tests {
         assert!(render_to_svg_compact_arena(&expr, &options, &mut arena).is_err());
         assert!(render_to_svg_standalone_compact_arena(&expr, &options, &mut arena).is_err());
         assert_eq!(arena.get(previous).width, 7.0);
+    }
+
+    #[test]
+    fn compact_svg_entry_points_reject_foreign_references() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        fn malformed() -> CompactExpr {
+            let mut foreign = crate::ast::arena::AstArena::new();
+            let text = foreign.push_str("x");
+            let mut arena = crate::ast::arena::AstArena::new();
+            let root = arena.push_node(crate::ast::compact::CompactNode::Identifier(text));
+            let roots = arena.push_children(&[root]).unwrap();
+            CompactExpr::new(arena, roots, crate::ast::DisplayStyle::Inline)
+        }
+
+        fn malformed_array() -> CompactExpr {
+            let mut foreign = crate::ast::arena::AstArena::new();
+            let padding = foreign.push_node(crate::ast::compact::CompactNode::Row(
+                crate::ast::compact::NodeSpan::EMPTY,
+            ));
+            let _ = foreign.push_children(&[padding]).unwrap();
+            let column = foreign.push_node(crate::ast::compact::CompactNode::ColAlign(
+                crate::ast::ColumnAlign::Center,
+            ));
+            let columns = foreign.push_children(&[column]).unwrap();
+            let mut arena = crate::ast::arena::AstArena::new();
+            let cells = arena.push_children(&[]).unwrap();
+            let root = arena.push_node(crate::ast::compact::CompactNode::Array {
+                col_aligns: columns,
+                cells,
+                num_cols: 0,
+                arraystretch_pct: 100,
+                add_jot: false,
+                array_style: false,
+                col_seps: 0,
+                row_seps: 0,
+            });
+            let roots = arena.push_children(&[root]).unwrap();
+            CompactExpr::new(arena, roots, crate::ast::DisplayStyle::Inline)
+        }
+
+        fn assert_rejected(call: impl FnOnce() -> crate::error::Result<String>) {
+            let result = catch_unwind(AssertUnwindSafe(call));
+            assert!(result.is_ok(), "rendering malformed compact input panicked");
+            assert!(
+                result.unwrap().is_err(),
+                "malformed compact input was accepted"
+            );
+        }
+
+        let options = RenderOptions::default();
+        for compact in [malformed(), malformed_array()] {
+            assert_rejected(|| render_to_svg_compact(&compact, &options));
+            assert_rejected(|| render_to_svg_standalone_compact(&compact, &options));
+
+            let mut arena = arena::LayoutArena::new();
+            assert_rejected(|| render_to_svg_compact_arena(&compact, &options, &mut arena));
+            let mut arena = arena::LayoutArena::new();
+            assert_rejected(|| {
+                render_to_svg_standalone_compact_arena(&compact, &options, &mut arena)
+            });
+        }
     }
 
     #[test]
