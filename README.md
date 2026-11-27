@@ -59,8 +59,14 @@ cargo build --release --features raster   # or just --features render for SVG on
 mathema convert -f latex -t mathml "x^2"
 echo "x^2" | mathema convert -f latex -t omml
 
+# Read a raw MTEF or Equation Native stream from a file or stdin
+mathema convert -f mtef --mtef-binary -t latex equation.bin
+cat equation.bin | mathema convert -f mtef --mtef-binary -t mathml
+
 # Keep conversion output on stdout; conversion warnings are shown on stderr
 mathema convert -f latex -t unicodemath "\\color{red}{x}"
+# Select the host dialect when writing OMML (`pure`, `word`, or `drawing`)
+mathema convert -f latex -t omml --omml-dialect word "\\color{red}{x}"
 # Add informational diagnostics too (and recover where possible)
 mathema convert --lenient --diagnostics -f latex -t unicodemath "\\color{red}{x}"
 
@@ -80,6 +86,12 @@ mathema render --format png -o out/ *.tex
 ```
 
 The `--from` / `-f` flag is optional; the format is auto-detected from file extension or content when omitted.
+MTEF file arguments are treated as UTF-8 hex text by default. Pass
+`--mtef-binary` (or its `--binary` alias) to read raw MTEF bytes, including an
+OLE `Equation Native` header. The flag implies `--from mtef`, though an
+explicit `--from` may still be used. The binary mode accepts files and stdin,
+including streams that are not valid UTF-8. File and stdin reads are bounded
+by the library's configured input-size limit before parsing starts.
 
 SVG output is **self-contained** by default: glyph outlines from Latin Modern Math are embedded as `<path>`/`<use>` elements, so the SVG renders identically everywhere (no fonts to install). It is rasterized from the same glyph outlines as the PNG/JPEG output and uses the same layout, so the two match closely (pixel-level luminance parity within ~8%, since SVG is rasterized via `resvg` and PNG/JPEG via `tiny-skia`).
 

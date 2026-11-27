@@ -206,6 +206,326 @@ fn validate_auto_detect() {
         .success();
 }
 
+#[test]
+fn convert_binary_mtef_file() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "mtef",
+            "--mtef-binary",
+            "--to",
+            "latex",
+            "tests/fixtures/mtef/v5-plus-minus.bin",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r"2k\pi\pm \frac{\pi}{2}"));
+}
+
+#[test]
+fn convert_binary_mtef_stdin_accepts_non_utf8_bytes() {
+    let bytes = std::fs::read("tests/fixtures/mtef/v5-plus-minus.bin").unwrap();
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "mtef",
+            "--mtef-binary",
+            "--to",
+            "latex",
+        ])
+        .write_stdin(bytes)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r"2k\pi\pm \frac{\pi}{2}"));
+}
+
+#[test]
+fn binary_mtef_rejects_incompatible_source_format() {
+    mathema()
+        .args([
+            "convert",
+            "--mtef-binary",
+            "--from",
+            "latex",
+            "--to",
+            "latex",
+            "tests/fixtures/mtef/v5-plus-minus.bin",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be combined"));
+}
+
+#[test]
+fn binary_mtef_implies_source_format() {
+    mathema()
+        .args([
+            "convert",
+            "--mtef-binary",
+            "--to",
+            "latex",
+            "tests/fixtures/mtef/v5-plus-minus.bin",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r"2k\pi\pm \frac{\pi}{2}"));
+}
+
+#[test]
+fn binary_mtef_rejects_inline_input() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "mtef",
+            "--mtef-binary",
+            "--to",
+            "latex",
+            "0011aabb",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file path or stdin"));
+}
+
+#[test]
+fn convert_binary_mtef_batch_writes_each_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.mtef");
+    let second = dir.path().join("second.mtef");
+    let output = dir.path().join("out");
+    let bytes = std::fs::read("tests/fixtures/mtef/v5-plus-minus.bin").unwrap();
+    std::fs::write(&first, &bytes).unwrap();
+    std::fs::write(&second, &bytes).unwrap();
+
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "mtef",
+            "--mtef-binary",
+            "--to",
+            "latex",
+            "--output",
+            output.to_str().unwrap(),
+            first.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(
+        std::fs::read_to_string(output.join("first.tex"))
+            .unwrap()
+            .contains(r"2k\pi\pm \frac{\pi}{2}")
+    );
+    assert!(
+        std::fs::read_to_string(output.join("second.tex"))
+            .unwrap()
+            .contains(r"2k\pi\pm \frac{\pi}{2}")
+    );
+}
+
+#[test]
+fn validate_binary_mtef_file() {
+    mathema()
+        .args([
+            "validate",
+            "--from",
+            "mtef",
+            "--mtef-binary",
+            "tests/fixtures/mtef/v5-plus-minus.bin",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid (Mtef)"));
+}
+
+#[test]
+fn text_file_input_is_bounded_before_parsing() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("large.tex");
+    std::fs::write(&input, vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
+
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "mathml",
+            input.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "input size 4194305 bytes exceeds configured limit of 4194304 bytes",
+        ));
+}
+
+#[test]
+fn binary_file_input_is_bounded_before_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("large.mtef");
+    std::fs::write(&input, vec![0xff; 4 * 1024 * 1024 + 1]).unwrap();
+
+    mathema()
+        .args([
+            "convert",
+            "--mtef-binary",
+            "--to",
+            "latex",
+            input.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "input size 4194305 bytes exceeds configured limit of 4194304 bytes",
+        ));
+}
+
+#[test]
+fn binary_stdin_is_bounded_before_decoding() {
+    mathema()
+        .args(["convert", "--mtef-binary", "--to", "latex"])
+        .write_stdin(vec![0xff; 4 * 1024 * 1024 + 1])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "input size 4194305 bytes exceeds configured limit of 4194304 bytes",
+        ));
+}
+
+#[test]
+fn omml_dialect_pure_reports_host_color_loss() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "omml",
+            "--omml-dialect",
+            "pure",
+            r"\color{red}{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<m:oMath"))
+        .stdout(predicate::str::contains("<w:color").not())
+        .stderr(predicate::str::contains("run color"));
+}
+
+#[test]
+fn omml_dialect_word_preserves_color_and_size() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "omml",
+            "--omml-dialect",
+            "word",
+            r"\color{red}{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"<w:color w:val="FF0000"/>"#))
+        .stderr(predicate::str::contains("warning").not());
+
+    mathema()
+        .args([
+            "convert",
+            "--mtef-binary",
+            "--from",
+            "mtef",
+            "--to",
+            "omml",
+            "--omml-dialect",
+            "word",
+            "tests/fixtures/mtef/govdocs-v5-size-points.bin",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"<w:sz w:val="24"/>"#));
+}
+
+#[test]
+fn omml_dialect_drawing_preserves_color() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "omml",
+            "--omml-dialect",
+            "drawing",
+            r"\color{red}{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"<a:srgbClr val="FF0000"/>"#))
+        .stderr(predicate::str::contains("warning").not());
+}
+
+#[test]
+fn omml_dialect_applies_to_batch_conversion() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.tex");
+    let second = dir.path().join("second.tex");
+    let output = dir.path().join("out");
+    std::fs::write(&first, r"\color{red}{x}").unwrap();
+    std::fs::write(&second, r"\color{blue}{y}").unwrap();
+
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "omml",
+            "--omml-dialect",
+            "word",
+            "--output",
+            output.to_str().unwrap(),
+            first.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(
+        std::fs::read_to_string(output.join("first.omml"))
+            .unwrap()
+            .contains("<w:color")
+    );
+    assert!(
+        std::fs::read_to_string(output.join("second.omml"))
+            .unwrap()
+            .contains("<w:color")
+    );
+}
+
+#[test]
+fn omml_dialect_rejects_non_omml_targets() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "mathml",
+            "--omml-dialect",
+            "word",
+            "x",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --to omml"));
+}
+
 #[cfg(feature = "render")]
 #[test]
 fn render_latex_to_svg() {

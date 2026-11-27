@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use mathema::Format;
 
@@ -34,6 +34,29 @@ pub enum Command {
     Render(RenderArgs),
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OmmlDialect {
+    /// Pure OMML without host run properties.
+    Pure,
+    /// OMML embedded in WordprocessingML.
+    #[value(alias = "wordprocessingml")]
+    Word,
+    /// OMML embedded in DrawingML, used by PowerPoint.
+    #[value(alias = "drawingml")]
+    Drawing,
+}
+
+impl OmmlDialect {
+    fn options(self) -> mathema::OmmlOptions {
+        let run_properties = match self {
+            Self::Pure => mathema::OmmlRunProperties::None,
+            Self::Word => mathema::OmmlRunProperties::WordprocessingMl,
+            Self::Drawing => mathema::OmmlRunProperties::DrawingMl,
+        };
+        mathema::OmmlOptions::default().with_run_properties(run_properties)
+    }
+}
+
 #[derive(Args)]
 pub struct ConvertArgs {
     /// Input format (auto-detected if omitted)
@@ -56,6 +79,14 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub diagnostics: bool,
 
+    /// Select the OMML host dialect: pure, word, or drawing.
+    #[arg(long, value_enum)]
+    omml_dialect: Option<OmmlDialect>,
+
+    /// Read input as raw binary MTEF from a file or stdin. Implies `--from mtef`.
+    #[arg(long = "mtef-binary", visible_alias = "binary")]
+    pub mtef_binary: bool,
+
     /// Input: file paths or an inline expression (reads stdin if omitted)
     pub input: Vec<String>,
 }
@@ -73,6 +104,10 @@ pub struct ValidateArgs {
     /// Also print informational diagnostics to stderr (warnings are always shown)
     #[arg(long)]
     pub diagnostics: bool,
+
+    /// Read input as raw binary MTEF from a file or stdin. Implies `--from mtef`.
+    #[arg(long = "mtef-binary", visible_alias = "binary")]
+    pub mtef_binary: bool,
 
     /// Input: file paths or an inline expression (reads stdin if omitted)
     pub input: Vec<String>,
@@ -108,6 +143,10 @@ pub struct RenderArgs {
     /// Also print informational diagnostics to stderr (warnings are always shown)
     #[arg(long)]
     pub diagnostics: bool,
+
+    /// Read input as raw binary MTEF from a file or stdin. Implies `--from mtef`.
+    #[arg(long = "mtef-binary", visible_alias = "binary")]
+    pub mtef_binary: bool,
 
     /// Input: file paths or an inline expression (reads stdin if omitted)
     pub input: Vec<String>,
@@ -175,38 +214,43 @@ pub fn run() -> Result<(), CliError> {
 fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
     let config = make_config(args.lenient);
     let inputs = resolve_inputs(args.input)?;
+    validate_mtef_binary(args.mtef_binary, args.from, &inputs)?;
+    validate_omml_dialect(args.omml_dialect, args.to)?;
     let is_batch = inputs.len() > 1;
 
     if is_batch {
         return run_convert_batch(
             inputs,
-            args.from,
-            args.to,
             args.output,
             &config,
-            args.diagnostics,
+            ConvertOptions {
+                from: args.from,
+                to: args.to,
+                include_info: args.diagnostics,
+                mtef_binary: args.mtef_binary,
+                omml_dialect: args.omml_dialect,
+            },
         );
     }
 
     // Single input
     let input = &inputs[0];
-    let (content, source_name, path) = match input {
-        Input::Stdin(s) => (s.clone(), "<stdin>".to_owned(), None),
-        Input::Inline(s) => (s.clone(), "<inline>".to_owned(), None),
-        Input::File(p) => {
-            let c = read_file(p)?;
-            (c, p.display().to_string(), Some(p.as_path()))
-        },
+    let source_name = input_source_name(input);
+    let (result, diagnostics) = if args.mtef_binary {
+        let bytes = read_binary_input(input, &config)?;
+        convert_binary_input(&bytes, args.to, &config, &source_name, args.omml_dialect)?
+    } else {
+        let (content, path) = read_text_input(input, &config)?;
+        let from = resolve_format(args.from, path.as_deref(), &content)?;
+        convert_text_input(
+            input_for_format(&content, from),
+            from,
+            args.to,
+            &config,
+            &source_name,
+            args.omml_dialect,
+        )?
     };
-
-    let from = resolve_format(args.from, path, &content)?;
-    let (result, diagnostics) = mathema::convert_with_config_and_diagnostics(
-        input_for_format(&content, from),
-        from,
-        args.to,
-        &config,
-    )
-    .map_err(|e| CliError::from_mathema(e, &content, &source_name))?;
     print_diagnostics(&source_name, &diagnostics, args.diagnostics);
 
     match &args.output {
@@ -224,11 +268,9 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
 
 fn run_convert_batch(
     inputs: Vec<Input>,
-    from: Option<Format>,
-    to: Format,
     output: Option<PathBuf>,
     config: &mathema::Config,
-    include_info: bool,
+    options: ConvertOptions,
 ) -> Result<(), CliError> {
     // If output is given, it must be a directory
     if let Some(ref out_dir) = output
@@ -251,51 +293,51 @@ fn run_convert_batch(
     let mut success_count: u64 = 0;
 
     for input in &inputs {
-        let (path, content, source_name) = match input {
-            Input::File(p) => {
-                pb.set_message(p.display().to_string());
-                match read_file(p) {
-                    Ok(c) => (Some(p.as_path()), c, p.display().to_string()),
-                    Err(e) => {
-                        failures.push((p.display().to_string(), e));
-                        pb.inc(1);
-                        continue;
-                    },
-                }
-            },
+        let path = match input {
+            Input::File(p) => p,
             _ => unreachable!("batch mode only has File inputs"),
         };
-
-        let fmt = match resolve_format(from, path, &content) {
-            Ok(f) => f,
-            Err(e) => {
-                failures.push((source_name, e));
-                pb.inc(1);
-                continue;
-            },
+        pb.set_message(path.display().to_string());
+        let source_name = path.display().to_string();
+        let conversion = if options.mtef_binary {
+            match read_binary_input(input, config) {
+                Ok(bytes) => convert_binary_input(
+                    &bytes,
+                    options.to,
+                    config,
+                    &source_name,
+                    options.omml_dialect,
+                ),
+                Err(error) => Err(error),
+            }
+        } else {
+            match read_file(path, config) {
+                Ok(content) => match resolve_format(options.from, Some(path), &content) {
+                    Ok(fmt) => convert_text_input(
+                        input_for_format(&content, fmt),
+                        fmt,
+                        options.to,
+                        config,
+                        &source_name,
+                        options.omml_dialect,
+                    ),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            }
         };
 
-        match mathema::convert_with_config_and_diagnostics(
-            input_for_format(&content, fmt),
-            fmt,
-            to,
-            config,
-        ) {
+        match conversion {
             Ok((result, diagnostics)) => {
-                print_diagnostics(&source_name, &diagnostics, include_info);
+                print_diagnostics(&source_name, &diagnostics, options.include_info);
                 let out_path = match &output {
                     Some(dir) => {
-                        let stem = path
-                            .unwrap()
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-                        dir.join(format!("{stem}.{}", format_extension(to)))
+                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                        dir.join(format!("{stem}.{}", format_extension(options.to)))
                     },
                     None => {
                         // Write next to input file with new extension
-                        let p = path.unwrap();
-                        p.with_extension(format_extension(to))
+                        path.with_extension(format_extension(options.to))
                     },
                 };
                 if let Err(e) = std::fs::write(&out_path, &result) {
@@ -308,8 +350,7 @@ fn run_convert_batch(
                 }
             },
             Err(e) => {
-                let cli_err = CliError::from_mathema(e, &content, &source_name);
-                failures.push((source_name, cli_err));
+                failures.push((source_name, e));
             },
         }
         pb.inc(1);
@@ -337,6 +378,7 @@ fn run_convert_batch(
 fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
     let config = make_config(args.lenient);
     let inputs = resolve_inputs(args.input)?;
+    validate_mtef_binary(args.mtef_binary, args.from, &inputs)?;
     let is_batch = inputs.len() > 1;
 
     let pb = if is_batch {
@@ -356,47 +398,73 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
     let mut success_count: u64 = 0;
 
     for input in &inputs {
-        let (content, source_name, path) = match input {
-            Input::Stdin(s) => (s.clone(), "<stdin>".to_owned(), None),
-            Input::Inline(s) => (s.clone(), "<inline>".to_owned(), None),
-            Input::File(p) => {
-                if let Some(ref bar) = pb {
-                    bar.set_message(p.display().to_string());
-                }
-                match read_file(p) {
-                    Ok(c) => (c, p.display().to_string(), Some(p.as_path())),
-                    Err(e) => {
-                        failures.push((p.display().to_string(), e));
-                        if let Some(ref bar) = pb {
-                            bar.inc(1);
-                        }
-                        continue;
-                    },
-                }
-            },
-        };
-
-        let from = match resolve_format(args.from, path, &content) {
-            Ok(f) => f,
-            Err(e) => {
-                failures.push((source_name, e));
-                if let Some(ref bar) = pb {
-                    bar.inc(1);
-                }
-                continue;
-            },
-        };
-
         // Parse the actual input to validate it. Do not rewrite it to the same
         // format: validation should report reader diagnostics, not losses
         // caused solely by that round trip.
-        match parse_input(
-            input_for_format(&content, from),
-            from,
-            &config,
-            &source_name,
-            args.diagnostics,
-        ) {
+        let source_name = input_source_name(input);
+        if let Input::File(path) = input
+            && let Some(ref bar) = pb
+        {
+            bar.set_message(path.display().to_string());
+        }
+        let (from, parsed) = if args.mtef_binary {
+            let bytes = match read_binary_input(input, &config) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if !is_batch {
+                        return Err(error);
+                    }
+                    failures.push((source_name, error));
+                    if let Some(ref bar) = pb {
+                        bar.inc(1);
+                    }
+                    continue;
+                },
+            };
+            (
+                Format::Mtef,
+                parse_binary_input(&bytes, &config, &source_name, args.diagnostics),
+            )
+        } else {
+            let (content, path) = match read_text_input(input, &config) {
+                Ok(value) => value,
+                Err(error) => {
+                    if !is_batch {
+                        return Err(error);
+                    }
+                    failures.push((source_name, error));
+                    if let Some(ref bar) = pb {
+                        bar.inc(1);
+                    }
+                    continue;
+                },
+            };
+            let from = match resolve_format(args.from, path.as_deref(), &content) {
+                Ok(format) => format,
+                Err(error) => {
+                    if !is_batch {
+                        return Err(error);
+                    }
+                    failures.push((source_name, error));
+                    if let Some(ref bar) = pb {
+                        bar.inc(1);
+                    }
+                    continue;
+                },
+            };
+            (
+                from,
+                parse_input(
+                    input_for_format(&content, from),
+                    from,
+                    &config,
+                    &source_name,
+                    args.diagnostics,
+                ),
+            )
+        };
+
+        match parsed {
             Ok(_) => {
                 if !is_batch {
                     println!("{source_name}: valid ({from:?})");
@@ -465,6 +533,7 @@ fn print_diagnostics(source_name: &str, diagnostics: &[mathema::Diagnostic], inc
 fn run_render(args: RenderArgs) -> Result<(), CliError> {
     let config = make_config(args.lenient);
     let inputs = resolve_inputs(args.input)?;
+    validate_mtef_binary(args.mtef_binary, args.from, &inputs)?;
     let is_batch = inputs.len() > 1;
 
     let render_opts = mathema::RenderOptions {
@@ -476,34 +545,35 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
     if is_batch {
         return run_render_batch(
             inputs,
-            args.from,
             args.format,
             args.output,
             &config,
             &render_opts,
-            args.diagnostics,
+            InputOptions {
+                from: args.from,
+                include_info: args.diagnostics,
+                mtef_binary: args.mtef_binary,
+            },
         );
     }
 
     // Single input
     let input = &inputs[0];
-    let (content, source_name, path) = match input {
-        Input::Stdin(s) => (s.clone(), "<stdin>".to_owned(), None),
-        Input::Inline(s) => (s.clone(), "<inline>".to_owned(), None),
-        Input::File(p) => {
-            let c = read_file(p)?;
-            (c, p.display().to_string(), Some(p.as_path()))
-        },
+    let source_name = input_source_name(input);
+    let conv = if args.mtef_binary {
+        let bytes = read_binary_input(input, &config)?;
+        parse_binary_input(&bytes, &config, &source_name, args.diagnostics)?
+    } else {
+        let (content, path) = read_text_input(input, &config)?;
+        let from = resolve_format(args.from, path.as_deref(), &content)?;
+        parse_input(
+            input_for_format(&content, from),
+            from,
+            &config,
+            &source_name,
+            args.diagnostics,
+        )?
     };
-
-    let from = resolve_format(args.from, path, &content)?;
-    let conv = parse_input(
-        input_for_format(&content, from),
-        from,
-        &config,
-        &source_name,
-        args.diagnostics,
-    )?;
 
     match args.format {
         Format::Svg => {
@@ -559,6 +629,17 @@ fn parse_input(
     source_name: &str,
     include_info: bool,
 ) -> Result<mathema::ConvertResult, CliError> {
+    let parsed = parse_input_result(input, from, config, source_name)?;
+    print_diagnostics(source_name, parsed.diagnostics(), include_info);
+    Ok(parsed)
+}
+
+fn parse_input_result(
+    input: &str,
+    from: Format,
+    config: &mathema::Config,
+    source_name: &str,
+) -> Result<mathema::ConvertResult, CliError> {
     let result = match from {
         Format::LaTeX => mathema::from_latex_with(input, config),
         Format::MathML => mathema::from_mathml_with(input, config),
@@ -571,9 +652,99 @@ fn parse_input(
             )));
         },
     };
-    let parsed = result.map_err(|e| CliError::from_mathema(e, input, source_name))?;
+    result.map_err(|e| CliError::from_mathema(e, input, source_name))
+}
+
+fn convert_text_input(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &mathema::Config,
+    source_name: &str,
+    omml_dialect: Option<OmmlDialect>,
+) -> Result<(String, Vec<mathema::Diagnostic>), CliError> {
+    if let Some(dialect) = omml_dialect {
+        let parsed = parse_input_result(input, from, config, source_name)?;
+        let mut diagnostics = parsed.diagnostics().to_vec();
+        let options = dialect.options();
+        let (output, writer_diagnostics) = parsed
+            .to_omml_with_options(&options)
+            .map_err(|e| CliError::from_mathema(e, input, source_name))?;
+        diagnostics.extend(writer_diagnostics);
+        return Ok((output, diagnostics));
+    }
+    mathema::convert_with_config_and_diagnostics(input, from, to, config)
+        .map_err(|e| CliError::from_mathema(e, input, source_name))
+}
+
+/// Parse raw MTEF bytes for validation or rendering.
+fn parse_binary_input(
+    input: &[u8],
+    config: &mathema::Config,
+    source_name: &str,
+    include_info: bool,
+) -> Result<mathema::ConvertResult, CliError> {
+    let parsed = mathema::from_mtef_bytes_with(input, config)
+        .map_err(|e| CliError::from_mathema(e, "", source_name))?;
     print_diagnostics(source_name, parsed.diagnostics(), include_info);
     Ok(parsed)
+}
+
+/// Convert raw MTEF bytes through the same reusable conversion result used by
+/// the library's parse-once API. Text output remains suitable for stdout and
+/// piping, while `--mtef-binary` only changes how the source is read.
+fn convert_binary_input(
+    input: &[u8],
+    to: Format,
+    config: &mathema::Config,
+    source_name: &str,
+    omml_dialect: Option<OmmlDialect>,
+) -> Result<(String, Vec<mathema::Diagnostic>), CliError> {
+    let parsed = mathema::from_mtef_bytes_with(input, config)
+        .map_err(|e| CliError::from_mathema(e, "", source_name))?;
+    let mut diagnostics = parsed.diagnostics().to_vec();
+    let (output, writer_diagnostics) = match to {
+        Format::LaTeX => parsed
+            .to_latex_with_diagnostics()
+            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        Format::MathML => parsed
+            .to_mathml_with_diagnostics()
+            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        Format::Omml => match omml_dialect {
+            Some(dialect) => parsed
+                .to_omml_with_options(&dialect.options())
+                .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+            None => parsed
+                .to_omml_with_diagnostics()
+                .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        },
+        Format::Mtef => parsed
+            .to_mtef_with_diagnostics()
+            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        Format::UnicodeMath => parsed
+            .to_unicode_math_with_diagnostics()
+            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        #[cfg(feature = "render")]
+        Format::Svg => (
+            parsed
+                .to_svg_text()
+                .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+            Vec::new(),
+        ),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => {
+            return Err(CliError::Unsupported(
+                "raster formats produce binary output; use the render subcommand".into(),
+            ));
+        },
+        _ => {
+            return Err(CliError::Unsupported(format!(
+                "{to:?} is not a text conversion target"
+            )));
+        },
+    };
+    diagnostics.extend(writer_diagnostics);
+    Ok((output, diagnostics))
 }
 
 #[cfg(feature = "raster")]
@@ -594,12 +765,11 @@ fn write_binary(bytes: &[u8], output: Option<&Path>) -> Result<(), CliError> {
 #[cfg(feature = "render")]
 fn run_render_batch(
     inputs: Vec<Input>,
-    from: Option<Format>,
     render_format: Format,
     output: Option<PathBuf>,
     config: &mathema::Config,
     render_opts: &mathema::RenderOptions,
-    include_info: bool,
+    input_options: InputOptions,
 ) -> Result<(), CliError> {
     if let Some(ref out_dir) = output
         && !out_dir.is_dir()
@@ -622,37 +792,35 @@ fn run_render_batch(
     let mut success_count: u64 = 0;
 
     for input in &inputs {
-        let (path, content, source_name) = match input {
-            Input::File(p) => {
-                pb.set_message(p.display().to_string());
-                match read_file(p) {
-                    Ok(c) => (p.as_path(), c, p.display().to_string()),
-                    Err(e) => {
-                        failures.push((p.display().to_string(), e));
-                        pb.inc(1);
-                        continue;
-                    },
-                }
-            },
+        let path = match input {
+            Input::File(p) => p,
             _ => unreachable!("batch mode only has File inputs"),
         };
-
-        let fmt = match resolve_format(from, Some(path), &content) {
-            Ok(f) => f,
-            Err(e) => {
-                failures.push((source_name, e));
-                pb.inc(1);
-                continue;
-            },
+        pb.set_message(path.display().to_string());
+        let source_name = path.display().to_string();
+        let conv = if input_options.mtef_binary {
+            match read_binary_input(input, config) {
+                Ok(bytes) => {
+                    parse_binary_input(&bytes, config, &source_name, input_options.include_info)
+                },
+                Err(error) => Err(error),
+            }
+        } else {
+            match read_file(path, config) {
+                Ok(content) => match resolve_format(input_options.from, Some(path), &content) {
+                    Ok(fmt) => parse_input(
+                        input_for_format(&content, fmt),
+                        fmt,
+                        config,
+                        &source_name,
+                        input_options.include_info,
+                    ),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            }
         };
-
-        let conv = match parse_input(
-            input_for_format(&content, fmt),
-            fmt,
-            config,
-            &source_name,
-            include_info,
-        ) {
+        let conv = match conv {
             Ok(c) => c,
             Err(e) => {
                 failures.push((source_name, e));
@@ -772,24 +940,137 @@ fn make_config(lenient: bool) -> mathema::Config {
     config
 }
 
-/// Read content from a file path.
-fn read_file(path: &Path) -> Result<String, CliError> {
-    std::fs::read_to_string(path).map_err(|e| {
+/// Read content from a file path, enforcing the configured byte limit while
+/// the file is being read.
+fn read_file(path: &Path, config: &mathema::Config) -> Result<String, CliError> {
+    let file = std::fs::File::open(path).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
             CliError::FileNotFound(path.display().to_string())
         } else {
             CliError::Io(format!("{}: {e}", path.display()))
         }
+    })?;
+    let bytes = read_limited(file, config)?;
+    String::from_utf8(bytes).map_err(|_| {
+        CliError::Io(format!(
+            "{}: stream did not contain valid UTF-8",
+            path.display()
+        ))
     })
 }
 
-/// Read content from stdin.
-fn read_stdin() -> Result<String, CliError> {
-    let mut buf = String::new();
-    io::stdin()
-        .read_to_string(&mut buf)
+/// Read a text input and retain its path for format detection and diagnostics.
+fn read_text_input(
+    input: &Input,
+    config: &mathema::Config,
+) -> Result<(String, Option<PathBuf>), CliError> {
+    match input {
+        Input::Stdin => Ok((read_stdin(config)?, None)),
+        Input::Inline(s) => Ok((s.clone(), None)),
+        Input::File(path) => Ok((read_file(path, config)?, Some(path.clone()))),
+    }
+}
+
+/// Read raw binary MTEF input from a file or stdin.
+fn read_binary_input(input: &Input, config: &mathema::Config) -> Result<Vec<u8>, CliError> {
+    match input {
+        Input::Stdin => read_stdin_bytes(config),
+        Input::File(path) => read_file_bytes(path, config),
+        Input::Inline(_) => Err(CliError::Unsupported(
+            "--mtef-binary accepts a file path or stdin, not an inline expression".into(),
+        )),
+    }
+}
+
+fn read_file_bytes(path: &Path, config: &mathema::Config) -> Result<Vec<u8>, CliError> {
+    let file = std::fs::File::open(path).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            CliError::FileNotFound(path.display().to_string())
+        } else {
+            CliError::Io(format!("{}: {e}", path.display()))
+        }
+    })?;
+    read_limited(file, config)
+}
+
+fn read_limited<R: io::Read>(reader: R, config: &mathema::Config) -> Result<Vec<u8>, CliError> {
+    let mut bytes = Vec::new();
+    if let Some(limit) = config.max_input_bytes
+        && limit < usize::MAX
+    {
+        let mut limited = reader.take((limit as u64).saturating_add(1));
+        limited
+            .read_to_end(&mut bytes)
+            .map_err(|e| CliError::Io(e.to_string()))?;
+        if bytes.len() > limit {
+            return Err(input_too_large(bytes.len(), limit));
+        }
+        return Ok(bytes);
+    }
+    let mut reader = reader;
+    reader
+        .read_to_end(&mut bytes)
         .map_err(|e| CliError::Io(e.to_string()))?;
-    Ok(buf)
+    Ok(bytes)
+}
+
+/// Read text content from stdin, enforcing the configured byte limit while it
+/// is being read.
+fn read_stdin(config: &mathema::Config) -> Result<String, CliError> {
+    let bytes = read_limited(io::stdin(), config)?;
+    String::from_utf8(bytes)
+        .map_err(|_| CliError::Io("stdin: stream did not contain valid UTF-8".into()))
+}
+
+/// Read arbitrary bytes from stdin without attempting UTF-8 decoding.
+fn read_stdin_bytes(config: &mathema::Config) -> Result<Vec<u8>, CliError> {
+    read_limited(io::stdin(), config)
+}
+
+fn input_too_large(size: usize, limit: usize) -> CliError {
+    CliError::Conversion(format!(
+        "input size {size} bytes exceeds configured limit of {limit} bytes"
+    ))
+}
+
+fn input_source_name(input: &Input) -> String {
+    match input {
+        Input::Stdin => "<stdin>".into(),
+        Input::Inline(_) => "<inline>".into(),
+        Input::File(path) => path.display().to_string(),
+    }
+}
+
+fn validate_mtef_binary(
+    enabled: bool,
+    from: Option<Format>,
+    inputs: &[Input],
+) -> Result<(), CliError> {
+    if !enabled {
+        return Ok(());
+    }
+    if let Some(from) = from
+        && from != Format::Mtef
+    {
+        return Err(CliError::Unsupported(
+            "--mtef-binary cannot be combined with a non-MTEF --from format".into(),
+        ));
+    }
+    if inputs.iter().any(|input| matches!(input, Input::Inline(_))) {
+        return Err(CliError::Unsupported(
+            "--mtef-binary accepts a file path or stdin, not an inline expression".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_omml_dialect(dialect: Option<OmmlDialect>, target: Format) -> Result<(), CliError> {
+    if dialect.is_some() && target != Format::Omml {
+        return Err(CliError::Unsupported(
+            "--omml-dialect requires --to omml".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Determine output extension for a given format.
@@ -813,15 +1094,31 @@ fn format_extension(fmt: Format) -> &'static str {
 
 /// A single input item — either an inline expression or a file path.
 enum Input {
-    Stdin(String),
+    Stdin,
     Inline(String),
     File(PathBuf),
+}
+
+#[derive(Clone, Copy)]
+struct InputOptions {
+    from: Option<Format>,
+    include_info: bool,
+    mtef_binary: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ConvertOptions {
+    from: Option<Format>,
+    to: Format,
+    include_info: bool,
+    mtef_binary: bool,
+    omml_dialect: Option<OmmlDialect>,
 }
 
 /// Resolve the `input` positional args into a list of `Input` items.
 fn resolve_inputs(input: Vec<String>) -> Result<Vec<Input>, CliError> {
     if input.is_empty() {
-        return Ok(vec![Input::Stdin(read_stdin()?)]);
+        return Ok(vec![Input::Stdin]);
     }
     if input.len() == 1 {
         let s = &input[0];
