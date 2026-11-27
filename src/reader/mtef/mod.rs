@@ -162,13 +162,18 @@ impl MtefReader {
         config.check_input_size(input)?;
         match hex_decode(input) {
             Ok(bytes) => Self::parse_bytes_with_info_located(&bytes, config),
-            Err(e) if config.strictness == Strictness::Lenient => Ok((
-                empty_result(
-                    DisplayStyle::Inline,
-                    vec![warning(format!("MTEF hex decode failed (recovered): {e}"))],
-                ),
-                None,
-            )),
+            Err(e)
+                if config.strictness == Strictness::Lenient
+                    && !matches!(&e, Error::RequestCancelled | Error::LimitExceeded { .. }) =>
+            {
+                Ok((
+                    empty_result(
+                        DisplayStyle::Inline,
+                        vec![warning(format!("MTEF hex decode failed (recovered): {e}"))],
+                    ),
+                    None,
+                ))
+            },
             Err(e) => Err(LocatedError::with_span(e, Some(Format::Mtef), None)),
         }
     }
@@ -273,17 +278,55 @@ fn empty_result(display: DisplayStyle, diagnostics: Vec<Diagnostic>) -> CompactP
     )
 }
 
+const HEX_WORK_CHUNK: usize = 4096;
+
+/// Charge one unit after each chunk of the original hex spelling. Keeping the
+/// counter in bytes, rather than decoded digits, makes runs of whitespace
+/// cancellable as well.
+fn checkpoint_hex_chunk(remaining: &mut usize) -> Result<()> {
+    if *remaining == 0 {
+        crate::error::request_checkpoint(1)?;
+        *remaining = HEX_WORK_CHUNK;
+    }
+    *remaining -= 1;
+    Ok(())
+}
+
 /// Decode a hex string to bytes, skipping whitespace.
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    let digits: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if !digits.len().is_multiple_of(2) {
+    // Count first so an odd-length input keeps the historical error precedence
+    // over invalid hex characters. This pass also charges whitespace and
+    // permits a work-limited request to stop before any output allocation.
+    let mut digits_len = 0usize;
+    let mut remaining = 0;
+    for byte in s.bytes() {
+        checkpoint_hex_chunk(&mut remaining)?;
+        if !byte.is_ascii_whitespace() {
+            digits_len += 1;
+        }
+    }
+    if !digits_len.is_multiple_of(2) {
         return Err(Error::MtefParse {
             message: "MTEF hex string has odd length".into(),
         });
     }
-    let mut out = Vec::with_capacity(digits.len() / 2);
-    for pair in digits.as_chunks::<2>().0 {
-        out.push((hex_value(pair[0])? << 4) | hex_value(pair[1])?);
+
+    // Decode directly into the result instead of retaining a second full-size
+    // digit buffer. Capacity grows only as checked input is consumed.
+    let mut out = Vec::new();
+    let mut high = None;
+    let mut remaining = 0;
+    for byte in s.bytes() {
+        checkpoint_hex_chunk(&mut remaining)?;
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        let value = hex_value(byte)?;
+        if let Some(high) = high.take() {
+            out.push((high << 4) | value);
+        } else {
+            high = Some(value);
+        }
     }
     Ok(out)
 }

@@ -1261,6 +1261,37 @@ fn hex_input_still_works() {
 }
 
 #[test]
+fn controlled_hex_scanning_charges_whitespace_and_keeps_limits_in_lenient_mode() {
+    let input = format!("{}00", " ".repeat(HEX_WORK_CHUNK));
+    let control = crate::RequestControl::with_max_work(1);
+    let result = crate::from_mtef_with_control(&input, &lenient(), &control);
+    assert!(matches!(
+        result,
+        Err(crate::Error::LimitExceeded {
+            kind: LimitKind::Work,
+            limit: 1,
+        })
+    ));
+    assert_eq!(control.work(), 1);
+
+    let control = crate::RequestControl::with_max_work(1);
+    let result = crate::convert_with_control(
+        &input,
+        crate::Format::Mtef,
+        crate::Format::MathML,
+        &lenient(),
+        &control,
+    );
+    assert!(matches!(
+        result,
+        Err(crate::Error::LimitExceeded {
+            kind: LimitKind::Work,
+            limit: 1,
+        })
+    ));
+}
+
+#[test]
 fn empty_input_is_an_empty_expression() {
     assert!(nodes(&[]).is_empty());
 }
