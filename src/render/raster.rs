@@ -79,24 +79,22 @@ pub enum ImageFormat {
     Jpeg,
 }
 
-/// Resource and output controls for one raster request.
+/// Resource limits applied before allocating a raster pixmap.
 ///
 /// The default retains the existing 8192-pixel per-side ceiling and permits
 /// the full area that those dimensions can occupy. Service hosts can lower
 /// `max_pixels` for requests that must use a smaller allocation budget.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RasterLimits {
     /// Maximum number of pixels allocated for one image.
     pub max_pixels: usize,
-    output: OutputLimits,
 }
 
 impl Default for RasterLimits {
     fn default() -> Self {
         Self {
             max_pixels: 8192usize * 8192,
-            output: OutputLimits::unlimited(),
         }
     }
 }
@@ -105,8 +103,54 @@ impl RasterLimits {
     /// Return limits with a caller-selected pixel allocation ceiling.
     #[must_use]
     pub const fn with_max_pixels(max_pixels: usize) -> Self {
+        Self { max_pixels }
+    }
+}
+
+/// Pixel, output-byte, and cancellation controls for a raster request.
+///
+/// [`RasterLimits`] remains a small copyable value for callers that only need
+/// a pixel ceiling. This type carries the optional request state required by
+/// service hosts and is accepted by the `*_with_request_limits` entry points.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RasterRequestLimits {
+    pixels: RasterLimits,
+    output: OutputLimits,
+}
+
+impl Default for RasterRequestLimits {
+    fn default() -> Self {
+        Self::from(RasterLimits::default())
+    }
+}
+
+impl From<RasterLimits> for RasterRequestLimits {
+    fn from(pixels: RasterLimits) -> Self {
         Self {
-            max_pixels,
+            pixels,
+            output: OutputLimits::unlimited(),
+        }
+    }
+}
+
+impl RasterRequestLimits {
+    /// Start a request with the default pixel ceiling.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            pixels: RasterLimits {
+                max_pixels: 8192usize * 8192,
+            },
+            output: OutputLimits::unlimited(),
+        }
+    }
+
+    /// Start a request with a caller-selected pixel ceiling.
+    #[must_use]
+    pub const fn with_max_pixels(max_pixels: usize) -> Self {
+        Self {
+            pixels: RasterLimits { max_pixels },
             output: OutputLimits::unlimited(),
         }
     }
@@ -127,7 +171,13 @@ impl RasterLimits {
         }
     }
 
-    fn output(&self) -> &OutputLimits {
+    /// Return the pixel allocation limits carried by this request.
+    #[must_use]
+    pub const fn pixels(&self) -> RasterLimits {
+        self.pixels
+    }
+
+    pub(crate) fn output(&self) -> &OutputLimits {
         &self.output
     }
 }
@@ -194,13 +244,32 @@ pub fn render_to_image_with_limits(
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<Vec<u8>> {
+    render_to_image_with_output_limits(expr, options, limits, &OutputLimits::unlimited())
+}
+
+/// Render a math expression with pixel, output-byte, and cancellation limits.
+pub fn render_to_image_with_request_limits(
+    expr: &MathExpr,
+    options: &RasterOptions,
+    limits: &RasterRequestLimits,
+) -> Result<Vec<u8>> {
+    render_to_image_with_output_limits(expr, options, &limits.pixels, limits.output())
+}
+
+fn render_to_image_with_output_limits(
+    expr: &MathExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+    output: &OutputLimits,
+) -> Result<Vec<u8>> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     if crate::ast::has_attributes(expr) {
-        return render_to_image_compact_with_limits(
+        return render_to_image_compact_with_output_limits(
             &CompactExpr::from_math_expr(expr)?,
             options,
             limits,
+            output,
         );
     }
     let style = if options.render.is_display(expr) {
@@ -209,7 +278,7 @@ pub fn render_to_image_with_limits(
         MathStyle::Text
     };
     let root = super::layout::layout_expr(expr, style, &options.render);
-    rasterize_layout(&root, options, limits)
+    rasterize_layout_with_output(&root, options, limits, output)
 }
 
 /// Render a compact math expression directly to raster image bytes (PNG or JPEG).
@@ -222,6 +291,24 @@ pub fn render_to_image_compact_with_limits(
     expr: &CompactExpr,
     options: &RasterOptions,
     limits: &RasterLimits,
+) -> Result<Vec<u8>> {
+    render_to_image_compact_with_output_limits(expr, options, limits, &OutputLimits::unlimited())
+}
+
+/// Render a compact expression with pixel, output-byte, and cancellation limits.
+pub fn render_to_image_compact_with_request_limits(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+    limits: &RasterRequestLimits,
+) -> Result<Vec<u8>> {
+    render_to_image_compact_with_output_limits(expr, options, &limits.pixels, limits.output())
+}
+
+fn render_to_image_compact_with_output_limits(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+    output: &OutputLimits,
 ) -> Result<Vec<u8>> {
     options.validate()?;
     // Raster layout reads auxiliary compact references as it measures arrays,
@@ -242,7 +329,7 @@ pub fn render_to_image_compact_with_limits(
         let builder = super::layout::LayoutBuilder::new(style, &options.render);
         layout_arena.clear();
         let root = builder.layout(layout_arena, expr);
-        rasterize_layout_arena(layout_arena, root, options, limits)
+        rasterize_layout_arena_with_output(layout_arena, root, options, limits, output)
     })
 }
 
@@ -266,13 +353,42 @@ pub fn render_to_image_with_diagnostics_and_limits(
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    render_to_image_with_diagnostics_and_output_limits(
+        expr,
+        options,
+        limits,
+        &OutputLimits::unlimited(),
+    )
+}
+
+/// Render a math expression with diagnostics and request limits.
+pub fn render_to_image_with_diagnostics_and_request_limits(
+    expr: &MathExpr,
+    options: &RasterOptions,
+    limits: &RasterRequestLimits,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    render_to_image_with_diagnostics_and_output_limits(
+        expr,
+        options,
+        &limits.pixels,
+        limits.output(),
+    )
+}
+
+fn render_to_image_with_diagnostics_and_output_limits(
+    expr: &MathExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+    output: &OutputLimits,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     if crate::ast::has_attributes(expr) {
-        return render_to_image_compact_with_diagnostics_and_limits(
+        return render_to_image_compact_with_diagnostics_and_output_limits(
             &CompactExpr::from_math_expr(expr)?,
             options,
             limits,
+            output,
         );
     }
     let style = if options.render.is_display(expr) {
@@ -282,7 +398,7 @@ pub fn render_to_image_with_diagnostics_and_limits(
     };
     let root = super::layout::layout_expr(expr, style, &options.render);
     let diagnostics = raster_diagnostics(&root, &options.render.fg_color);
-    let image = rasterize_layout(&root, options, limits)?;
+    let image = rasterize_layout_with_output(&root, options, limits, output)?;
     Ok((image, diagnostics))
 }
 
@@ -303,6 +419,34 @@ pub fn render_to_image_compact_with_diagnostics_and_limits(
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    render_to_image_compact_with_diagnostics_and_output_limits(
+        expr,
+        options,
+        limits,
+        &OutputLimits::unlimited(),
+    )
+}
+
+/// Render a compact expression with diagnostics and request limits.
+pub fn render_to_image_compact_with_diagnostics_and_request_limits(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+    limits: &RasterRequestLimits,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    render_to_image_compact_with_diagnostics_and_output_limits(
+        expr,
+        options,
+        &limits.pixels,
+        limits.output(),
+    )
+}
+
+fn render_to_image_compact_with_diagnostics_and_output_limits(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+    output: &OutputLimits,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
     options.validate()?;
     crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
     let style = if options
@@ -319,7 +463,8 @@ pub fn render_to_image_compact_with_diagnostics_and_limits(
         layout_arena.clear();
         let root = builder.layout(layout_arena, expr);
         let diagnostics = raster_diagnostics_arena(layout_arena, root, &options.render.fg_color);
-        let image = rasterize_layout_arena(layout_arena, root, options, limits)?;
+        let image =
+            rasterize_layout_arena_with_output(layout_arena, root, options, limits, output)?;
         Ok((image, diagnostics))
     })
 }
@@ -537,12 +682,22 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
     }
 }
 
+#[cfg(test)]
 fn rasterize_layout(
     root: &LayoutBox,
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<Vec<u8>> {
-    limits.output().check_bytes(0)?;
+    rasterize_layout_with_output(root, options, limits, &OutputLimits::unlimited())
+}
+
+fn rasterize_layout_with_output(
+    root: &LayoutBox,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+    output: &OutputLimits,
+) -> Result<Vec<u8>> {
+    output.check_bytes(0)?;
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
@@ -582,7 +737,7 @@ fn rasterize_layout(
         fg,
         cache: HashMap::new(),
         glyph_rgba_buf: Vec::new(),
-        output: limits.output(),
+        output,
         work: 0,
         failure: None,
     };
@@ -601,7 +756,7 @@ fn rasterize_layout(
         return Err(error);
     }
 
-    encode_image(&pixmap, options, limits.output())
+    encode_image(&pixmap, options, output)
 }
 
 /// Arena-based counterpart of [`rasterize_layout`]. Produces byte-identical
@@ -613,7 +768,17 @@ pub(crate) fn rasterize_layout_arena(
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<Vec<u8>> {
-    limits.output().check_bytes(0)?;
+    rasterize_layout_arena_with_output(arena, root, options, limits, &OutputLimits::unlimited())
+}
+
+pub(crate) fn rasterize_layout_arena_with_output(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+    output: &OutputLimits,
+) -> Result<Vec<u8>> {
+    output.check_bytes(0)?;
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
@@ -655,7 +820,7 @@ pub(crate) fn rasterize_layout_arena(
         fg,
         cache: HashMap::new(),
         glyph_rgba_buf: Vec::new(),
-        output: limits.output(),
+        output,
         work: 0,
         failure: None,
     };
@@ -675,7 +840,7 @@ pub(crate) fn rasterize_layout_arena(
         return Err(error);
     }
 
-    encode_image(&pixmap, options, limits.output())
+    encode_image(&pixmap, options, output)
 }
 
 fn check_pixmap_limits(

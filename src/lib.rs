@@ -107,8 +107,12 @@ pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHead
 pub use reader::omml::{OmmlJustification, OmmlParagraph};
 #[cfg(feature = "raster")]
 pub use render::raster::{
-    ImageFormat, RasterLimits, RasterOptions, render_to_image, render_to_image_with_diagnostics,
-    render_to_image_with_diagnostics_and_limits, render_to_image_with_limits,
+    ImageFormat, RasterLimits, RasterOptions, RasterRequestLimits, render_to_image,
+    render_to_image_compact_with_diagnostics_and_request_limits,
+    render_to_image_compact_with_request_limits, render_to_image_with_diagnostics,
+    render_to_image_with_diagnostics_and_limits,
+    render_to_image_with_diagnostics_and_request_limits, render_to_image_with_limits,
+    render_to_image_with_request_limits,
 };
 #[cfg(feature = "render")]
 pub use render::{

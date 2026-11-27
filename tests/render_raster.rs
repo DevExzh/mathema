@@ -3,7 +3,10 @@
 //!
 //! Run with: `cargo test --features raster --test render_raster`
 
-use mathema::{Format, ImageFormat, OutputLimits, RasterOptions, from_latex, render_to_svg};
+use mathema::{
+    Format, ImageFormat, OutputLimits, RasterLimits, RasterOptions, RasterRequestLimits,
+    RequestControl, from_latex, render_to_image_with_request_limits, render_to_svg,
+};
 
 #[test]
 fn latex_to_png() {
@@ -82,19 +85,53 @@ fn png_and_jpeg_output_limits_bound_the_encoder_sink() {
             ..RasterOptions::default()
         };
         let ordinary = mathema::render_to_image(&parsed.expr(), &options).unwrap();
-        let exact = mathema::RasterLimits::default()
+        let exact = RasterRequestLimits::from(RasterLimits::default())
             .with_output_limits(OutputLimits::with_max_bytes(ordinary.len()));
         assert_eq!(
-            mathema::render_to_image_with_limits(&parsed.expr(), &options, &exact).unwrap(),
+            render_to_image_with_request_limits(&parsed.expr(), &options, &exact).unwrap(),
             ordinary
         );
-        let short = mathema::RasterLimits::default()
+        let short = RasterRequestLimits::from(RasterLimits::default())
             .with_output_limits(OutputLimits::with_max_bytes(ordinary.len() - 1));
         assert!(matches!(
-            mathema::render_to_image_with_limits(&parsed.expr(), &options, &short),
+            render_to_image_with_request_limits(&parsed.expr(), &options, &short),
             Err(mathema::Error::OutputLimit { .. })
         ));
     }
+}
+
+#[test]
+fn raster_limits_keep_the_copyable_value_contract() {
+    fn assert_value_traits<T: Copy + Eq + PartialEq>() {}
+    assert_value_traits::<RasterLimits>();
+
+    let parsed = from_latex("x+y").unwrap();
+    let options = RasterOptions::default();
+    let ordinary = mathema::render_to_image(&parsed.expr(), &options).unwrap();
+    let request = RasterRequestLimits::from(RasterLimits::default())
+        .with_output_limits(OutputLimits::with_max_bytes(ordinary.len()));
+    assert_eq!(
+        parsed
+            .to_image_with_request_limits(&options, &request)
+            .unwrap(),
+        ordinary
+    );
+    let prepared = parsed.prepare_render(&options.render).unwrap();
+    assert_eq!(
+        prepared
+            .to_image_with_request_limits(&options, &request)
+            .unwrap(),
+        ordinary
+    );
+
+    let cancelled = RequestControl::new();
+    cancelled.cancel();
+    let request =
+        RasterRequestLimits::from(RasterLimits::default()).with_request_control(&cancelled);
+    assert!(matches!(
+        render_to_image_with_request_limits(&parsed.expr(), &options, &request),
+        Err(mathema::Error::RequestCancelled)
+    ));
 }
 
 #[test]

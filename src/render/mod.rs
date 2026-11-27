@@ -690,6 +690,24 @@ impl PreparedRender {
         raster::rasterize_layout_arena(&self.layout_arena, self.root, options, limits)
     }
 
+    /// Emit a raster image with pixel, output-byte, and cancellation limits.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_request_limits(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterRequestLimits,
+    ) -> Result<Vec<u8>> {
+        options.validate()?;
+        self.validate_options(&options.render)?;
+        raster::rasterize_layout_arena_with_output(
+            &self.layout_arena,
+            self.root,
+            options,
+            &limits.pixels(),
+            limits.output(),
+        )
+    }
+
     /// Emit a raster image and report missing glyphs and unsupported colors.
     #[cfg(feature = "raster")]
     pub fn to_image_with_diagnostics(
@@ -729,6 +747,30 @@ impl PreparedRender {
             &options.render.fg_color,
         );
         let image = raster::rasterize_layout_arena(&self.layout_arena, self.root, options, limits)?;
+        Ok((image, diagnostics))
+    }
+
+    /// Emit a raster image with diagnostics and request limits.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_diagnostics_and_request_limits(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterRequestLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        options.validate()?;
+        self.validate_options(&options.render)?;
+        let diagnostics = raster::raster_diagnostics_arena(
+            &self.layout_arena,
+            self.root,
+            &options.render.fg_color,
+        );
+        let image = raster::rasterize_layout_arena_with_output(
+            &self.layout_arena,
+            self.root,
+            options,
+            &limits.pixels(),
+            limits.output(),
+        )?;
         Ok((image, diagnostics))
     }
 

@@ -1272,6 +1272,21 @@ impl ConvertResult {
         )
     }
 
+    /// Render a bounded raster image with pixel, output-byte, and cancellation
+    /// limits.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_request_limits(
+        &self,
+        options: &crate::render::raster::RasterOptions,
+        limits: &crate::render::raster::RasterRequestLimits,
+    ) -> Result<Vec<u8>> {
+        crate::render::raster::render_to_image_compact_with_request_limits(
+            self.output_expr()?,
+            options,
+            limits,
+        )
+    }
+
     /// Render a bounded raster image and report glyph or paint substitutions.
     #[cfg(feature = "raster")]
     pub fn to_image_with_diagnostics_and_limits(
@@ -1280,6 +1295,20 @@ impl ConvertResult {
         limits: &crate::render::raster::RasterLimits,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         crate::render::raster::render_to_image_compact_with_diagnostics_and_limits(
+            self.output_expr()?,
+            options,
+            limits,
+        )
+    }
+
+    /// Render a bounded raster image with diagnostics and request limits.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_diagnostics_and_request_limits(
+        &self,
+        options: &crate::render::raster::RasterOptions,
+        limits: &crate::render::raster::RasterRequestLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        crate::render::raster::render_to_image_compact_with_diagnostics_and_request_limits(
             self.output_expr()?,
             options,
             limits,
