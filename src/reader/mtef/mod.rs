@@ -162,18 +162,13 @@ impl MtefReader {
         config.check_input_size(input)?;
         match hex_decode(input) {
             Ok(bytes) => Self::parse_bytes_with_info_located(&bytes, config),
-            Err(e)
-                if config.strictness == Strictness::Lenient
-                    && !matches!(&e, Error::RequestCancelled | Error::LimitExceeded { .. }) =>
-            {
-                Ok((
-                    empty_result(
-                        DisplayStyle::Inline,
-                        vec![warning(format!("MTEF hex decode failed (recovered): {e}"))],
-                    ),
-                    None,
-                ))
-            },
+            Err(e @ Error::MtefParse { .. }) if config.strictness == Strictness::Lenient => Ok((
+                empty_result(
+                    DisplayStyle::Inline,
+                    vec![warning(format!("MTEF hex decode failed (recovered): {e}"))],
+                ),
+                None,
+            )),
             Err(e) => Err(LocatedError::with_span(e, Some(Format::Mtef), None)),
         }
     }
@@ -280,29 +275,18 @@ fn empty_result(display: DisplayStyle, diagnostics: Vec<Diagnostic>) -> CompactP
 
 const HEX_WORK_CHUNK: usize = 4096;
 
-/// Charge one unit after each chunk of the original hex spelling. Keeping the
-/// counter in bytes, rather than decoded digits, makes runs of whitespace
-/// cancellable as well.
-fn checkpoint_hex_chunk(remaining: &mut usize) -> Result<()> {
-    if *remaining == 0 {
-        crate::error::request_checkpoint(1)?;
-        *remaining = HEX_WORK_CHUNK;
-    }
-    *remaining -= 1;
-    Ok(())
-}
-
 /// Decode a hex string to bytes, skipping whitespace.
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     // Count first so an odd-length input keeps the historical error precedence
     // over invalid hex characters. This pass also charges whitespace and
     // permits a work-limited request to stop before any output allocation.
     let mut digits_len = 0usize;
-    let mut remaining = 0;
-    for byte in s.bytes() {
-        checkpoint_hex_chunk(&mut remaining)?;
-        if !byte.is_ascii_whitespace() {
-            digits_len += 1;
+    for chunk in s.as_bytes().chunks(HEX_WORK_CHUNK) {
+        crate::error::request_checkpoint(1)?;
+        for &byte in chunk {
+            if !byte.is_ascii_whitespace() {
+                digits_len += 1;
+            }
         }
     }
     if !digits_len.is_multiple_of(2) {
@@ -315,17 +299,18 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     // digit buffer. Capacity grows only as checked input is consumed.
     let mut out = Vec::new();
     let mut high = None;
-    let mut remaining = 0;
-    for byte in s.bytes() {
-        checkpoint_hex_chunk(&mut remaining)?;
-        if byte.is_ascii_whitespace() {
-            continue;
-        }
-        let value = hex_value(byte)?;
-        if let Some(high) = high.take() {
-            out.push((high << 4) | value);
-        } else {
-            high = Some(value);
+    for chunk in s.as_bytes().chunks(HEX_WORK_CHUNK) {
+        crate::error::request_checkpoint(1)?;
+        for &byte in chunk {
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            let value = hex_value(byte)?;
+            if let Some(high) = high.take() {
+                out.push((high << 4) | value);
+            } else {
+                high = Some(value);
+            }
         }
     }
     Ok(out)
