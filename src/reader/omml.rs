@@ -345,8 +345,9 @@ struct HostRunProps {
     bold: bool,
     italic: bool,
     color: Option<[u8; 3]>,
-    /// `w:sz`, in half points.
-    size: Option<u16>,
+    /// A host run size in hundredths of a point. Word's `w:sz` is converted
+    /// from half points and DrawingML's `a:rPr@sz` is already in this unit.
+    size: Option<u32>,
 }
 
 impl HostRunProps {
@@ -373,11 +374,11 @@ struct RunSizes {
 
 #[derive(Default)]
 struct SizedRuns {
-    sized: Vec<(NodeId, MathStyle, u16)>,
+    sized: Vec<(NodeId, MathStyle, u32)>,
     /// Nodes that took the place of others, by those.
     replaced: Vec<(NodeId, NodeId)>,
     /// The signs of n-ary objects and accents.
-    signs: Vec<(NodeId, MathStyle, u16)>,
+    signs: Vec<(NodeId, MathStyle, u32)>,
 }
 
 impl RunSizes {
@@ -393,7 +394,7 @@ impl RunSizes {
 
     /// Give the runs their sizes, and return the size of ordinary text.
     ///
-    /// The application scales the runs of scripts: what `w:sz` gives is the
+    /// The application scales the runs of scripts: a host run size gives the
     /// size that a run would have outside of them.
     #[inline]
     fn apply(self, arena: &mut AstArena) -> Option<Rational> {
@@ -405,7 +406,7 @@ impl SizedRuns {
     #[cold]
     #[inline(never)]
     fn apply(self, unsized_runs: bool, arena: &mut AstArena) -> Option<Rational> {
-        let mut counts = std::collections::BTreeMap::<u16, usize>::new();
+        let mut counts = std::collections::BTreeMap::<u32, usize>::new();
         for &(_, _, size) in &self.sized {
             *counts.entry(size).or_default() += 1;
         }
@@ -418,9 +419,18 @@ impl SizedRuns {
             })
             .flatten()
             .map(|(size, _)| size);
-        let points = |style: MathStyle, size: u16| {
-            let per_mille = [1000, 700, 500][style.size_class().min(2)];
-            FontSize::Points(Rational::new(i32::from(size) * per_mille, 2000))
+        let points = |style: MathStyle, size: u32| {
+            // Keep the reduced numerator within Rational's i32 field. The
+            // unreduced product would overflow for Word's valid maximum
+            // `w:sz=65535` (3,276,750 hundredths of a point).
+            let (multiplier, denominator) = match style.size_class().min(2) {
+                0 => (1, 100),  // 1000 / 1000
+                1 => (7, 1000), // 700 / 1000
+                _ => (1, 200),  // 500 / 1000
+            };
+            let common = gcd(size, denominator);
+            let numerator = (size / common) * multiplier;
+            FontSize::Points(Rational::new(numerator as i32, denominator / common))
         };
         for (id, style, size) in self.signs {
             if Some(size) != base {
@@ -444,7 +454,7 @@ impl SizedRuns {
             }
             arena.add_attrs(id, &NodeAttrs::with_size(points(style, size)));
         }
-        base.map(|size| Rational::new(size.into(), 2))
+        base.map(|size| Rational::new(size.min(i32::MAX as u32) as i32, 100))
     }
 }
 
@@ -881,7 +891,7 @@ impl<'i> Parser<'i> {
 
     /// The `w:sz` of an `m:ctrlPr`, the formatting of an object's own sign.
     /// Word writes one into every object; what else it says is not kept.
-    fn control_size(&mut self) -> Result<Option<u16>> {
+    fn control_size(&mut self) -> Result<Option<u32>> {
         let mut size = None;
         while let Some(child) = self.next_child("m:ctrlPr")? {
             if child.ns != Ns::Wml || child.local() != "rPr" {
@@ -890,7 +900,11 @@ impl<'i> Parser<'i> {
             }
             while let Some(child) = self.next_child("w:rPr")? {
                 if child.ns == Ns::Wml && child.local() == "sz" {
-                    size = self.attr(&child, "val")?.as_deref().and_then(half_points);
+                    size = self
+                        .attr(&child, "val")?
+                        .as_deref()
+                        .and_then(half_points)
+                        .map(|size| u32::from(size) * 50);
                 }
                 self.skip()?;
             }
@@ -1557,7 +1571,7 @@ impl<'i> Parser<'i> {
                     host.size = match val.as_deref() {
                         None => None,
                         Some(val) => match half_points(val) {
-                            Some(size) => Some(size),
+                            Some(size) => Some(u32::from(size) * 50),
                             // A valid number that is no size.
                             None if val.bytes().all(|b| b.is_ascii_digit()) => {
                                 self.info(format!("the run size {val:?} was dropped"));
@@ -1593,11 +1607,18 @@ impl<'i> Parser<'i> {
         let xsd_bool = |v: Option<String>| matches!(v.as_deref(), Some("1" | "true"));
         host.bold = xsd_bool(self.attr(el, "b")?);
         host.italic = xsd_bool(self.attr(el, "i")?);
+        host.size = match self.attr(el, "sz")?.as_deref() {
+            None => None,
+            Some(value) => match drawing_points(value) {
+                Some(size) => Some(size),
+                None => self.bad_value(el, value, None)?,
+            },
+        };
         let mut dropped: SmallVec<[String; 4]> = SmallVec::new();
         for attr in el.start.attributes() {
             let attr = attr.map_err(|e| self.xml_err(e))?;
             let key = attr.key.into_inner();
-            if !matches!(key, "b" | "i") && !key.starts_with("xmlns") {
+            if !matches!(key, "b" | "i" | "sz") && !key.starts_with("xmlns") {
                 dropped.push(key.to_owned());
             }
         }
@@ -1783,7 +1804,7 @@ impl<'i> Parser<'i> {
     /// Join the letters that start the run read into `ids`, in size `size`, to
     /// those that end `out`: the name of a function may be in several runs
     /// (`er` and `f`).
-    fn join_name(&mut self, size: Option<u16>, ids: &mut Ids, out: &mut Ids) -> Result<()> {
+    fn join_name(&mut self, size: Option<u32>, ids: &mut Ids, out: &mut Ids) -> Result<()> {
         let (Some(&last), Some(&first)) = (out.last(), ids.first()) else {
             return Ok(());
         };
@@ -3004,10 +3025,26 @@ fn half_points(value: &str) -> Option<u16> {
     (size >= 1.0 && size <= f64::from(u16::MAX)).then_some(size as u16)
 }
 
+/// DrawingML `ST_TextFontSize`: hundredths of a point, from 1 through 4000
+/// points (`a:rPr/@sz`).
+fn drawing_points(value: &str) -> Option<u32> {
+    let size = value.parse::<u32>().ok()?;
+    (100..=400_000).contains(&size).then_some(size)
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    a.max(1)
+}
+
 /// The style of the argument `name` of an object set in `style`, as far as
-/// the sizes of its runs go: `w:sz` is the size outside of scripts. The writer
-/// uses the same function, so that a size is read as it is written whatever
-/// the styles of the AST are.
+/// the sizes of its runs go: a host run size is the size outside of scripts.
+/// The writer uses the same function, so that a size is read as it is written
+/// whatever the styles of the AST are.
 pub(crate) fn argument_style(style: MathStyle, name: &str) -> MathStyle {
     match name {
         "m:sub" | "m:lim" => style.sub(),

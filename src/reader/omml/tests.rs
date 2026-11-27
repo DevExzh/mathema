@@ -1240,7 +1240,7 @@ fn host_run_properties_without_an_ast_home_are_reported() {
         r#"<m:oMath {NS} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><m:r><w:rPr><w:vanish/><w:highlight w:val="yellow"/></w:rPr><m:t>x</m:t></m:r><m:r><a:rPr sz="2400" i="1"><a:latin typeface="Cambria Math"/></a:rPr><m:t>y</m:t></m:r></m:oMath>"#
     );
     let result = OmmlReader::parse(&input, &Config::default()).unwrap();
-    for name in ["<w:vanish>", "<w:highlight>", "a:rPr@sz", "<a:latin>"] {
+    for name in ["<w:vanish>", "<w:highlight>", "<a:latin>"] {
         assert!(
             result
                 .diagnostics
@@ -1250,6 +1250,20 @@ fn host_run_properties_without_an_ast_home_are_reported() {
             result.diagnostics
         );
     }
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("a:rPr@sz")),
+        "DrawingML run sizes are represented in the AST: {:?}",
+        result.diagnostics
+    );
+    let compact = OmmlReader::parse_compact(&input, &Config::default()).unwrap();
+    let y = compact.expr.arena.children(compact.expr.roots)[1];
+    assert_eq!(
+        compact.expr.arena.attrs(y).and_then(|attrs| attrs.size),
+        Some(FontSize::Points(Rational::new(24, 1)))
+    );
 }
 
 #[test]

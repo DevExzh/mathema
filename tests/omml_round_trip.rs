@@ -698,6 +698,86 @@ fn drawing_dialect_is_schema_shaped_without_its_run_properties() {
     }
 }
 
+#[test]
+fn drawing_dialect_omits_forbidden_matrix_column_justification() {
+    let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    let result = mathema::from_latex(r"\begin{array}{lr}a&b\\c&d\end{array}").unwrap();
+    let (out, diagnostics) = result.to_omml_with_options(&options).unwrap();
+    assert!(out.contains("<m:mcs>"), "{out}");
+    assert!(!out.contains("m:mcJc"), "{out}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| { d.message.contains("DrawingML") && d.message.contains("matrix columns") }),
+        "{diagnostics:?}"
+    );
+
+    let centred = mathema::from_latex(r"\begin{pmatrix}a&b\\c&d\end{pmatrix}").unwrap();
+    let (out, diagnostics) = centred.to_omml_with_options(&options).unwrap();
+    assert!(!out.contains("m:mcJc"), "{out}");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.message.contains("matrix columns")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn drawing_dialect_preserves_font_sizes_in_a_run_property() {
+    let result =
+        mathema::from_mathml(r#"<math mathsize="18pt"><mi>x</mi><mi mathsize="9pt">y</mi></math>"#)
+            .unwrap();
+    let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    let (out, diagnostics) = result.to_omml_with_options(&options).unwrap();
+    assert!(out.contains(r#"<a:rPr sz="1800"/>"#), "{out}");
+    assert!(out.contains(r#"<a:rPr sz="900"/>"#), "{out}");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let round_trip = mathema::from_omml(&out).unwrap();
+    assert_eq!(round_trip.expr(), result.expr(), "{out}");
+}
+
+#[test]
+fn drawing_dialect_reads_and_writes_fractional_point_sizes() {
+    let source = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><m:r><a:rPr sz="1250"/><m:t>x</m:t></m:r></m:oMath>"#;
+    let result = mathema::from_omml(source).unwrap();
+    let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    let (out, diagnostics) = result.to_omml_with_options(&options).unwrap();
+    assert!(out.contains(r#"<a:rPr sz="1250"/>"#), "{out}");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn omml_host_size_limits_round_trip_without_arithmetic_overflow() {
+    let word = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><m:r><w:rPr><w:sz w:val="65535"/></w:rPr><m:t>x</m:t></m:r><m:r><m:t>y</m:t></m:r></m:oMath>"#;
+    let result = mathema::from_omml(word).unwrap();
+    assert!(
+        result
+            .to_mathml()
+            .unwrap()
+            .contains(r#"mathsize="32767.5pt""#),
+        "{:?}",
+        result.to_mathml()
+    );
+    let word_full = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><m:r><w:rPr><w:sz w:val="65535"/></w:rPr><m:t>x</m:t></m:r><m:r><w:rPr><w:sz w:val="65535"/></w:rPr><m:t>y</m:t></m:r></m:oMath>"#;
+    let full = mathema::from_omml(word_full).unwrap();
+    let word_options =
+        OmmlOptions::default().with_run_properties(OmmlRunProperties::WordprocessingMl);
+    let (word_out, word_diagnostics) = full.to_omml_with_options(&word_options).unwrap();
+    assert!(word_out.contains(r#"<w:sz w:val="65535"/>"#), "{word_out}");
+    assert!(word_diagnostics.is_empty(), "{word_diagnostics:?}");
+
+    let drawing_full = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><m:r><a:rPr sz="400000"/><m:t>x</m:t></m:r><m:r><a:rPr sz="400000"/><m:t>y</m:t></m:r></m:oMath>"#;
+    let result = mathema::from_omml(drawing_full).unwrap();
+    let drawing_options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    let (drawing_out, drawing_diagnostics) = result.to_omml_with_options(&drawing_options).unwrap();
+    assert!(
+        drawing_out.contains(r#"<a:rPr sz="400000"/>"#),
+        "{drawing_out}"
+    );
+    assert!(drawing_diagnostics.is_empty(), "{drawing_diagnostics:?}");
+}
+
 // ── Optional XSD validation ─────────────────────────────────────────────
 
 /// Validate writer output with `xmllint --schema` against the OMML schema

@@ -313,8 +313,8 @@ impl ConvertResult {
         let expr = &self.compact.expr;
         let written = OmmlWriter::write_with_options_trusted(expr, config, options)?;
         let plain = match options.run_properties {
-            crate::writer::omml::OmmlRunProperties::WordprocessingMl => None,
-            crate::writer::omml::OmmlRunProperties::DrawingMl => self.without_sizes()?,
+            crate::writer::omml::OmmlRunProperties::WordprocessingMl
+            | crate::writer::omml::OmmlRunProperties::DrawingMl => None,
             crate::writer::omml::OmmlRunProperties::None => self.in_pure_omml()?,
         };
         if let Some(plain) = plain {

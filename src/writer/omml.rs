@@ -28,6 +28,8 @@ use crate::writer::Writer as MathWriter;
 const MATH_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 const WML_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const DML_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const DML_SIZE_MIN: u32 = 100;
+const DML_SIZE_MAX: u32 = 400_000;
 
 /// The host document's run-property dialect, used for formatting that OMML
 /// stores outside `m:rPr` (ECMA-376 Part 1, §22.1.2.91: a math run may carry
@@ -241,10 +243,21 @@ impl OmmlWriter {
     }
 }
 
-fn dropped_sizes() -> Diagnostic {
+fn dropped_sizes_for(host: OmmlRunProperties) -> Diagnostic {
+    let message = match host {
+        OmmlRunProperties::None => {
+            "font sizes need host run properties (OmmlRunProperties::WordprocessingMl or DrawingMl) and were dropped"
+        },
+        OmmlRunProperties::WordprocessingMl => {
+            "font sizes were dropped from an OMML construct that has no size property"
+        },
+        OmmlRunProperties::DrawingMl => {
+            "DrawingML has no host property for this OMML control glyph size and it was dropped"
+        },
+    };
     Diagnostic {
         kind: DiagnosticKind::Info,
-        message: "font sizes need OmmlRunProperties::WordprocessingMl and were dropped".to_owned(),
+        message: message.to_owned(),
         span: None,
     }
 }
@@ -339,9 +352,9 @@ struct Emitter<'a> {
     host: OmmlRunProperties,
     /// The size of ordinary text in points.
     base_pt: f64,
-    /// The size of the runs being written, in half points, outside of
-    /// scripts.
-    run_size: Option<u16>,
+    /// A host run size in hundredths of a point. Word's `w:sz` is emitted in
+    /// half points from this canonical unit.
+    run_size: Option<u32>,
     style: MathStyle,
     /// Whether the equation has sizes.
     sized: bool,
@@ -366,7 +379,7 @@ struct NameRun {
     plain: bool,
     sty: Option<&'static str>,
     scr: Option<&'static str>,
-    size: Option<u16>,
+    size: Option<u32>,
 }
 
 impl<'a> Emitter<'a> {
@@ -567,7 +580,11 @@ impl<'a> Emitter<'a> {
             return;
         }
         self.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
-        self.sized = expr.arena.has_attrs() && self.host == OmmlRunProperties::WordprocessingMl;
+        self.sized = expr.arena.has_attrs()
+            && matches!(
+                self.host,
+                OmmlRunProperties::WordprocessingMl | OmmlRunProperties::DrawingMl
+            );
         if expr.arena.has_attrs() && !self.sized {
             self.drop_size();
         }
@@ -576,8 +593,20 @@ impl<'a> Emitter<'a> {
             .meta
             .as_deref()
             .is_some_and(|meta| meta.base().is_some());
-        self.run_size = (known && self.host == OmmlRunProperties::WordprocessingMl)
-            .then(|| (self.base_pt * 2.0).round().clamp(1.0, f64::from(u16::MAX)) as u16);
+        self.run_size = (known
+            && matches!(
+                self.host,
+                OmmlRunProperties::WordprocessingMl | OmmlRunProperties::DrawingMl
+            ))
+        .then(|| {
+            let size = (self.base_pt * 100.0).round();
+            match self.host {
+                OmmlRunProperties::DrawingMl => {
+                    size.clamp(f64::from(DML_SIZE_MIN), f64::from(DML_SIZE_MAX)) as u32
+                },
+                _ => size.clamp(1.0, f64::from(u32::MAX)) as u32,
+            }
+        });
     }
 
     /// The size of an object's own sign.
@@ -590,12 +619,13 @@ impl<'a> Emitter<'a> {
     #[cold]
     fn sized_control(&mut self, id: NodeId) {
         let own = self.arena.attrs(id).and_then(|attrs| attrs.glyph_size);
-        let Some(size) = own.map(|size| self.half_points(size)).or(self.run_size) else {
+        let Some(size) = own.map(|size| self.hundredths(size)).or(self.run_size) else {
             return;
         };
         if self.host == OmmlRunProperties::WordprocessingMl {
             self.buf.push_str(&format!(
-                "<m:ctrlPr><w:rPr><w:sz w:val=\"{size}\"/></w:rPr></m:ctrlPr>"
+                "<m:ctrlPr><w:rPr><w:sz w:val=\"{}\"/></w:rPr></m:ctrlPr>",
+                Self::word_half_points(size).min(u32::from(u16::MAX))
             ));
         } else {
             self.drop_size();
@@ -603,7 +633,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn drop_size(&mut self) {
-        let loss = dropped_sizes();
+        let loss = dropped_sizes_for(self.host);
         if self.seen.insert(loss.message.clone()) {
             self.diags.push(loss);
         }
@@ -616,15 +646,25 @@ impl<'a> Emitter<'a> {
 
     /// The run size that gives the node its font size where it is.
     #[cold]
-    fn size_of(&self, id: NodeId) -> Option<u16> {
-        Some(self.half_points(self.arena.attrs(id)?.size?))
+    fn size_of(&self, id: NodeId) -> Option<u32> {
+        Some(self.hundredths(self.arena.attrs(id)?.size?))
     }
 
-    /// The run size that is `size` where it is written.
-    fn half_points(&self, size: FontSize) -> u16 {
+    /// The run size in hundredths of a point where it is written.
+    fn hundredths(&self, size: FontSize) -> u32 {
         let level = [1.0, 0.7, 0.5][self.host_style.size_class().min(2)];
-        let half_points = size.scale(self.base_pt) * self.base_pt / level * 2.0;
-        half_points.round().clamp(1.0, f64::from(u16::MAX)) as u16
+        let points = size.scale(self.base_pt) * self.base_pt / level;
+        let size = (points * 100.0).round();
+        match self.host {
+            OmmlRunProperties::DrawingMl => {
+                size.clamp(f64::from(DML_SIZE_MIN), f64::from(DML_SIZE_MAX)) as u32
+            },
+            _ => size.clamp(1.0, f64::from(u32::MAX)) as u32,
+        }
+    }
+
+    fn word_half_points(size: u32) -> u32 {
+        (size.saturating_add(25) / 50).max(1)
     }
 
     fn host_props(&mut self, host: Host) {
@@ -664,23 +704,23 @@ impl<'a> Emitter<'a> {
                         .push_str(&format!("<w:color w:val=\"{r:02X}{g:02X}{b:02X}\"/>"));
                 }
                 if let Some(size) = self.run_size {
-                    self.buf.push_str(&format!("<w:sz w:val=\"{size}\"/>"));
+                    self.buf.push_str(&format!(
+                        "<w:sz w:val=\"{}\"/>",
+                        Self::word_half_points(size).min(u32::from(u16::MAX))
+                    ));
                 }
                 self.close("w:rPr");
             },
             OmmlRunProperties::DrawingMl => {
-                if self.run_size.is_some() {
-                    self.drop_size();
-                    if !host.bold && !host.italic && host.color.is_none() {
-                        return;
-                    }
-                }
                 self.buf.push_str("<a:rPr");
                 if host.bold {
                     self.buf.push_str(" b=\"1\"");
                 }
                 if host.italic {
                     self.buf.push_str(" i=\"1\"");
+                }
+                if let Some(size) = self.run_size {
+                    self.buf.push_str(&format!(" sz=\"{size}\""));
                 }
                 match host.color {
                     Some([r, g, b]) => self.buf.push_str(&format!(
@@ -1639,7 +1679,19 @@ impl<'a> Emitter<'a> {
                 self.open("m:mc");
                 self.open("m:mcPr");
                 self.val("m:count", &count.to_string());
-                self.val("m:mcJc", column_align_val(aligns[i]));
+                if self.host == OmmlRunProperties::DrawingMl {
+                    // DrawingML reuses the OMML matrix model but forbids
+                    // `mcJc` in `mcPr` (MS-ODRAWXML §2.2.5).  Center is the
+                    // default, so it needs no replacement.  PowerPoint and
+                    // Excel do not support non-centred array columns.
+                    if aligns[i] != ColumnAlign::Center {
+                        self.loss(
+                            "DrawingML does not support non-centred matrix columns; column alignment was dropped",
+                        );
+                    }
+                } else {
+                    self.val("m:mcJc", column_align_val(aligns[i]));
+                }
                 self.close("m:mcPr");
                 self.close("m:mc");
                 i += count;
