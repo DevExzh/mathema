@@ -166,6 +166,10 @@ struct MathmlCompactParser<'a> {
     size_runs: SmallVec<[NodeId; 2]>,
     /// Messages [`Self::style_warning`] reported.
     style_warnings: HashSet<String>,
+    /// The first element whose body reached EOF without its matching end tag.
+    unclosed_element: Option<String>,
+    /// Non-whitespace content encountered before a complete `<math>` root.
+    leading_document_issue: Option<String>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -225,6 +229,8 @@ impl<'a> MathmlCompactParser<'a> {
             lenient: false,
             size_runs: SmallVec::new(),
             style_warnings: HashSet::new(),
+            unclosed_element: None,
+            leading_document_issue: None,
         })
     }
 
@@ -234,7 +240,30 @@ impl<'a> MathmlCompactParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => break (e, false),
                 Ok(Event::Empty(e)) => break (e, true),
-                Ok(Event::Eof) => return Ok(SmallVec::new()),
+                Ok(Event::Eof) => {
+                    if self.leading_document_issue.is_some() {
+                        self.finish_document("math")?;
+                    }
+                    return Ok(SmallVec::new());
+                },
+                Ok(Event::CData(_)) => {
+                    self.leading_document_issue.get_or_insert_with(|| {
+                        "MathML CDATA appeared outside the root element".into()
+                    });
+                },
+                Ok(Event::Text(text)) if !text.as_ref().trim().is_empty() => {
+                    self.leading_document_issue.get_or_insert_with(|| {
+                        "MathML character data appeared before the root element".into()
+                    });
+                },
+                Ok(Event::GeneralRef(reference))
+                    if !crate::unicode::resolve_entity(reference.as_ref())
+                        .is_some_and(|text| text.trim().is_empty()) =>
+                {
+                    self.leading_document_issue.get_or_insert_with(|| {
+                        "MathML character data appeared before the root element".into()
+                    });
+                },
                 Ok(_) => continue,
                 Err(e) => {
                     return Err(Error::MathmlParse {
@@ -266,6 +295,7 @@ impl<'a> MathmlCompactParser<'a> {
                 self.style_display = display == DisplayStyle::Block;
             }
             if empty {
+                self.finish_document("math")?;
                 return Ok(SmallVec::new());
             }
             if let Some((_, text_size)) = size {
@@ -275,6 +305,7 @@ impl<'a> MathmlCompactParser<'a> {
             if let Some((Some(scale), _)) = size {
                 nodes.insert(0, self.arena.push_node(CompactNode::SizeScale(scale)));
             }
+            self.finish_document("math")?;
             return Ok(nodes);
         }
         let id = if empty {
@@ -284,7 +315,80 @@ impl<'a> MathmlCompactParser<'a> {
         };
         let mut nodes = smallvec::smallvec![id];
         nodes.extend(self.collect_remaining()?);
+        self.finish_document(name)?;
         Ok(nodes)
+    }
+
+    /// Enforce complete `<math>` documents while retaining the existing
+    /// fragment behavior for inputs whose first root is a presentation token.
+    fn finish_document(&mut self, root_tag: &str) -> Result<()> {
+        if root_tag == "math"
+            && let Some(message) = self.leading_document_issue.take()
+        {
+            if !self.lenient {
+                return Err(Error::MathmlParse { message });
+            }
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message: format!("{message}; recovered as a MathML fragment"),
+                span: None,
+            });
+        }
+        if let Some(tag) = self.unclosed_element.take() {
+            let message = format!("MathML element <{tag}> is not closed");
+            if !self.lenient {
+                return Err(Error::MathmlParse { message });
+            }
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message: format!("{message}; recovered at end of input"),
+                span: None,
+            });
+        }
+        if root_tag != "math" {
+            return Ok(());
+        }
+        loop {
+            let event = self.reader_read_event()?;
+            let trailing = match event {
+                Event::Eof => return Ok(()),
+                Event::Start(element) => Some(format!(
+                    "MathML document has a second root element <{}>",
+                    element.local_name().into_inner()
+                )),
+                Event::Empty(element) => Some(format!(
+                    "MathML document has a second root element <{} />",
+                    element.local_name().into_inner()
+                )),
+                Event::End(element) => Some(format!(
+                    "MathML document has an unexpected closing element </{}>",
+                    element.local_name().into_inner()
+                )),
+                Event::CData(_) => Some("MathML CDATA appeared outside the root element".into()),
+                Event::Decl(_) => Some("XML declaration appeared after the MathML root".into()),
+                Event::DocType(_) => Some("DOCTYPE appeared after the MathML root".into()),
+                Event::Comment(_) | Event::PI(_) => None,
+                event => character_data(event)
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|_| "MathML document has trailing character data".to_owned()),
+            };
+            let Some(message) = trailing else { continue };
+            if !self.lenient {
+                return Err(Error::MathmlParse { message });
+            }
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message: format!("{message}; trailing input was ignored"),
+                span: None,
+            });
+            return Ok(());
+        }
+    }
+
+    fn note_unclosed(&mut self, tag: &str) {
+        if self.unclosed_element.is_none() {
+            self.unclosed_element = Some(tag.to_owned());
+        }
     }
 
     fn collect_remaining(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
@@ -528,7 +632,10 @@ impl<'a> MathmlCompactParser<'a> {
                         return Err(table_length_error());
                     },
                     Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
-                    Ok(Event::Eof) => break,
+                    Ok(Event::Eof) => {
+                        self.note_unclosed(parent_tag);
+                        break;
+                    },
                     Err(e) => {
                         return Err(Error::MathmlParse {
                             message: format!("XML error in <{parent_tag}>: {e}"),
@@ -589,7 +696,10 @@ impl<'a> MathmlCompactParser<'a> {
                         break;
                     }
                 },
-                Ok(Event::Eof) => break,
+                Ok(Event::Eof) => {
+                    self.note_unclosed(parent_tag);
+                    break;
+                },
                 Err(e) => {
                     return Err(Error::MathmlParse {
                         message: format!("XML error in <{parent_tag}>: {e}"),
@@ -728,7 +838,10 @@ impl<'a> MathmlCompactParser<'a> {
                         break;
                     }
                 },
-                Event::Eof => break,
+                Event::Eof => {
+                    self.note_unclosed(tag);
+                    break;
+                },
                 _ => {},
             }
         }
@@ -1831,11 +1944,19 @@ impl<'a> MathmlCompactParser<'a> {
                         text_mode,
                     }))
                 } else if full_box || !has_stroke {
-                    let empty = self.arena.push_str("");
+                    let (background, border) = menclose_colors(start);
+                    let bg_color = background
+                        .as_deref()
+                        .map(|color| self.arena.push_str(color))
+                        .unwrap_or_else(|| self.arena.push_str(""));
+                    let border_color = border
+                        .as_deref()
+                        .map(|color| self.arena.push_str(color))
+                        .unwrap_or_else(|| self.arena.push_str(""));
                     Ok(self.arena.push_node(CompactNode::Boxed {
                         content: id,
-                        bg_color: empty,
-                        border_color: empty,
+                        bg_color,
+                        border_color,
                     }))
                 } else {
                     Ok(id)
@@ -2047,7 +2168,10 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             let part = match self.reader_read_event()? {
                 Event::End(e) if e.local_name().into_inner() == tag_name => break,
-                Event::Eof => break,
+                Event::Eof => {
+                    self.note_unclosed(tag_name);
+                    break;
+                },
                 Event::Empty(e) if e.local_name().into_inner() == "mglyph" => {
                     get_attr(&e, "alt").map(Cow::Owned)
                 },
@@ -2371,7 +2495,10 @@ impl<'a> MathmlCompactParser<'a> {
                     table.row_lengths.push(length);
                 },
                 Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
-                Ok(Event::Eof) => break,
+                Ok(Event::Eof) => {
+                    self.note_unclosed(parent_tag);
+                    break;
+                },
                 Err(error) => {
                     return Err(Error::MathmlParse {
                         message: format!("XML error: {error}"),
@@ -2467,7 +2594,10 @@ impl<'a> MathmlCompactParser<'a> {
                         }
                     },
                     Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
-                    Ok(Event::Eof) => break,
+                    Ok(Event::Eof) => {
+                        self.note_unclosed(parent_tag);
+                        break;
+                    },
                     Err(error) => {
                         return Err(Error::MathmlParse {
                             message: format!("XML error: {error}"),
@@ -2788,7 +2918,10 @@ impl<'a> MathmlCompactParser<'a> {
                         nested -= 1;
                     }
                 },
-                Ok(Event::Eof) => break,
+                Ok(Event::Eof) => {
+                    self.note_unclosed(tag_name);
+                    break;
+                },
                 Err(e) => {
                     return Err(Error::MathmlParse {
                         message: format!("XML error in <{tag_name}>: {e}"),
@@ -2865,7 +2998,10 @@ impl<'a> MathmlCompactParser<'a> {
                         break;
                     }
                 },
-                Ok(Event::Eof) => break,
+                Ok(Event::Eof) => {
+                    self.note_unclosed(parent_tag);
+                    break;
+                },
                 Err(e) => {
                     return Err(Error::MathmlParse {
                         message: format!("XML error in <{parent_tag}>: {e}"),
@@ -2993,6 +3129,33 @@ fn has_horizontal_reflection(style: &str) -> bool {
             });
     }
     reflected
+}
+
+/// Read a CSS declaration from an element's inline `style` attribute. The
+/// MathML writer uses `border-color` and `background-color` on `menclose` for
+/// the two colors carried by a boxed AST node. Keep the authored value so the
+/// next MathML write can reproduce it without resolving CSS names or hex
+/// spellings.
+fn style_property(style: &str, wanted: &str) -> Option<String> {
+    let mut result = None;
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if property.trim().eq_ignore_ascii_case(wanted) && !value.is_empty() {
+            result = Some(value.to_owned());
+        }
+    }
+    result
+}
+
+fn menclose_colors(start: &quick_xml::events::BytesStart<'_>) -> (Option<String>, Option<String>) {
+    let style = get_attr(start, "style").unwrap_or_default();
+    let background = style_property(&style, "background-color")
+        .or_else(|| get_attr(start, "mathbackground").filter(|value| !value.trim().is_empty()));
+    let border = style_property(&style, "border-color");
+    (background, border)
 }
 
 #[derive(Default)]
@@ -6328,6 +6491,109 @@ mod tests {
                 content: Box::new(MathNode::Identifier("x".into())),
             }
         );
+    }
+
+    #[test]
+    fn menclose_box_colors_survive_mathml_round_trip() {
+        let input = r#"<math><menclose notation="box" style="border-color: #0000ff; background-color: #ff0000"><mi>x</mi></menclose></math>"#;
+        let node = parse_one(input);
+        assert_eq!(
+            node,
+            MathNode::Boxed {
+                content: Box::new(MathNode::Identifier("x".into())),
+                bg_color: Some("#ff0000".into()),
+                border_color: Some("#0000ff".into()),
+            }
+        );
+        let output = crate::from_mathml(input).unwrap().to_mathml().unwrap();
+        assert!(output.contains("border-color: #0000ff"), "{output}");
+        assert!(output.contains("background-color: #ff0000"), "{output}");
+        assert_eq!(
+            crate::from_mathml(&output).unwrap().to_mathml().unwrap(),
+            output
+        );
+    }
+
+    #[test]
+    fn menclose_inline_style_wins_and_last_declaration_wins() {
+        let input = r#"<math><menclose notation="box" mathbackground="green" style="background-color: blue; background-color: red; border-color: black; border-color: white"><mi>x</mi></menclose></math>"#;
+        assert_eq!(
+            parse_one(input),
+            MathNode::Boxed {
+                content: Box::new(MathNode::Identifier("x".into())),
+                bg_color: Some("red".into()),
+                border_color: Some("white".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn strict_mathml_requires_a_closed_root_and_single_document() {
+        let strict = Config::default().with_strictness(Strictness::Strict);
+        for input in [
+            "<math><mi>x</mi>",
+            "<math><mi>x</mi></math><math><mi>y</mi></math>",
+        ] {
+            let error = MathmlReader::parse(input, &strict).unwrap_err();
+            assert!(
+                matches!(error, Error::MathmlParse { .. }),
+                "unexpected error for {input}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lenient_mathml_reports_document_recovery_and_fragments_remain_supported() {
+        let lenient = Config::default().with_strictness(Strictness::Lenient);
+        let recovered = MathmlReader::parse("<math><mi>x</mi>", &lenient).unwrap();
+        assert_eq!(recovered.expr.nodes, vec![MathNode::Identifier("x".into())]);
+        assert!(
+            recovered
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("not closed"))
+        );
+
+        let recovered =
+            MathmlReader::parse("<math><mi>x</mi></math><math><mi>y</mi></math>", &lenient)
+                .unwrap();
+        assert_eq!(recovered.expr.nodes, vec![MathNode::Identifier("x".into())]);
+        assert!(
+            recovered
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("second root"))
+        );
+
+        let fragment = MathmlReader::parse("<mi>x</mi><mi>y</mi>", &Config::default()).unwrap();
+        assert_eq!(
+            fragment.expr.nodes,
+            vec![
+                MathNode::Identifier("x".into()),
+                MathNode::Identifier("y".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn strict_mathml_allows_xml_epilog_comments_pi_and_whitespace_only() {
+        let strict = Config::default().with_strictness(Strictness::Strict);
+        let valid =
+            "<?xml version=\"1.0\"?><math><mi>x</mi></math><!-- comment --><?pi test?> \n\t";
+        assert!(MathmlReader::parse(valid, &strict).is_ok());
+
+        for input in [
+            "<math><mi>x</mi></math><![CDATA[tail]]>",
+            "<math><mi>x</mi></math>tail",
+            "<math><mi>x</mi></math><?xml version=\"1.0\"?>",
+            "<math><mi>x</mi></math><!DOCTYPE math>",
+            "prefix<math><mi>x</mi></math>",
+        ] {
+            assert!(
+                MathmlReader::parse(input, &strict).is_err(),
+                "accepted forbidden document boundary: {input}"
+            );
+        }
     }
 
     // ── Named-entity resolution ────────────────────────────────────────
