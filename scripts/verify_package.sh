@@ -1,97 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Package verification deliberately inspects the archive Cargo produced. This
-# catches a missing notice or embedded font even when the source tree has it.
-package_target="${CARGO_TARGET_DIR:-target}"
-package_listing="$(mktemp)"
-package_output="$(mktemp)"
-archive_listing="$(mktemp)"
-package_extract="$(mktemp -d "${TMPDIR:-/tmp}/mathema-package.XXXXXX")"
-trap 'rm -f "$package_listing" "$package_output" "$archive_listing"; rm -rf "$package_extract"' EXIT
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/mathema-package.XXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
+if ! cargo package --locked >"$scratch/package.log" 2>&1; then
+    cat "$scratch/package.log" >&2
+    exit 1
+fi
+if grep -E 'warning: ignoring (example|benchmark)' "$scratch/package.log" >&2; then
+    exit 1
+fi
+cargo metadata --locked --no-deps --format-version 1 >"$scratch/metadata.json"
+python3 - "$scratch" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tarfile
 
-read -r package_name package_version < <(
-    cargo metadata --locked --no-deps --format-version 1 |
-        python3 -c 'import json, sys; package = json.load(sys.stdin)["packages"][0]; print(package["name"], package["version"])'
+scratch = Path(sys.argv[1]).resolve()
+meta = json.loads((scratch / "metadata.json").read_text())
+manifest = Path("Cargo.toml").resolve()
+package = next(p for p in meta["packages"] if Path(p["manifest_path"]) == manifest)
+prefix = f"{package['name']}-{package['version']}"
+target = Path(meta["target_directory"])
+archive = target / "package" / (prefix + ".crate")
+notices = (
+    "LICENSE", "LICENSE-UNICODE", "LICENSE-LATIN-MODERN.txt",
+    "LICENSE-LATIN-MODERN-MATH.txt", "LICENSE-LPPL-1.3c.txt",
+    "MANIFEST-Latin-Modern.txt", "MANIFEST-Latin-Modern-Math.txt", "NOTICE-FONTS.txt",
 )
-package_prefix="$package_name-$package_version"
+with tarfile.open(archive) as crate:
+    def contents(name):
+        member = crate.extractfile(f"{prefix}/{name}")
+        if member is None:
+            sys.exit(f"Missing file in {archive}: {name}")
+        return member.read()
 
-cargo package --locked --allow-dirty >"$package_output" 2>&1
-if grep -E 'warning: ignoring (example|benchmark)' "$package_output" >/dev/null; then
-    cat "$package_output" >&2
-    echo "cargo package ignored a manifest-declared target" >&2
-    exit 1
-fi
+    for path in notices:
+        if contents(path) != Path(path).read_bytes():
+            sys.exit(f"Packaged notice differs from source: {path}")
+    sums = dict((path, digest) for digest, path in re.findall(
+        r"^\s*([0-9a-f]{64})\s+(src/render/fonts/\S+\.otf)$",
+        contents("NOTICE-FONTS.txt").decode(), re.MULTILINE))
+    source_fonts = {p.as_posix() for p in Path("src/render/fonts").glob("*.otf")}
+    archive_fonts = {p.removeprefix(prefix + "/") for p in crate.getnames() if p.endswith(".otf")}
+    if not source_fonts or set(sums) != source_fonts or archive_fonts != source_fonts:
+        sys.exit("Embedded fonts, archived fonts and NOTICE-FONTS.txt disagree")
+    for path, expected in sums.items():
+        if hashlib.sha256(contents(path)).hexdigest() != expected:
+            sys.exit(f"Packaged font hash differs from NOTICE-FONTS.txt: {path}")
 
-cargo package --locked --allow-dirty --list >"$package_listing"
-package_archive="$package_target/package/$package_prefix.crate"
-if [[ ! -f "$package_archive" ]]; then
-    echo "cargo package did not produce $package_archive" >&2
-    exit 1
-fi
-
-tar -tzf "$package_archive" >"$archive_listing"
-
-for path in \
-    LICENSE \
-    LICENSE-UNICODE \
-    LICENSE-LATIN-MODERN.txt \
-    LICENSE-LATIN-MODERN-MATH.txt \
-    LICENSE-LPPL-1.3c.txt \
-    MANIFEST-Latin-Modern.txt \
-    MANIFEST-Latin-Modern-Math.txt \
-    NOTICE-FONTS.txt; do
-    grep -Fx "$path" "$package_listing" >/dev/null || {
-        echo "package is missing $path" >&2
-        exit 1
-    }
-    grep -Fx "$package_prefix/$path" "$archive_listing" >/dev/null || {
-        echo "archive is missing $path" >&2
-        exit 1
-    }
-done
-
-font_paths=(
-    src/render/fonts/LatinModernMath-Regular.otf
-    src/render/fonts/lmmono10-italic.otf
-    src/render/fonts/lmmono10-regular.otf
-    src/render/fonts/lmmonolt10-bold.otf
-    src/render/fonts/lmmonolt10-boldoblique.otf
-    src/render/fonts/lmroman10-bold.otf
-    src/render/fonts/lmroman10-bolditalic.otf
-    src/render/fonts/lmroman10-italic.otf
-    src/render/fonts/lmroman10-regular.otf
-    src/render/fonts/lmsans10-bold.otf
-    src/render/fonts/lmsans10-boldoblique.otf
-    src/render/fonts/lmsans10-oblique.otf
-    src/render/fonts/lmsans10-regular.otf
-)
-for font_path in "${font_paths[@]}"; do
-    member="$package_prefix/$font_path"
-    grep -Fx "$member" "$archive_listing" >/dev/null || {
-        echo "archive is missing $font_path" >&2
-        exit 1
-    }
-    expected_hash="$(tar -xOf "$package_archive" "$package_prefix/NOTICE-FONTS.txt" |
-        awk -v path="$font_path" '$2 == path { print $1; exit }')"
-    actual_hash="$(tar -xOf "$package_archive" "$member" | sha256sum | awk '{print $1}')"
-    if [[ -z "$expected_hash" || "$actual_hash" != "$expected_hash" ]]; then
-        echo "font hash mismatch for $font_path" >&2
-        echo "expected: $expected_hash" >&2
-        echo "actual:   $actual_hash" >&2
-        exit 1
-    fi
-done
-
-font_count="$(grep -E '\.otf$' "$archive_listing" | wc -l)"
-if [[ "$font_count" -ne 13 ]]; then
-    echo "package contains $font_count OTF files, expected 13" >&2
-    exit 1
-fi
-
-tar -xzf "$package_archive" -C "$package_extract"
-package_manifest="$package_extract/$package_prefix/Cargo.toml"
-CARGO_TARGET_DIR="$package_target/package-target" \
-    cargo check --locked --all-features --examples --benches --manifest-path "$package_manifest"
-
-echo "verified $package_archive with $font_count embedded OTF files, required notices, and compilable examples/benches"
+subprocess.run(["tar", "-xzf", archive, "-C", scratch], check=True)
+subprocess.run(["cargo", "check", "--locked", "--all-features", "--examples", "--benches"],
+               cwd=scratch / prefix, env={**os.environ, "CARGO_TARGET_DIR": str(target / "package-target")},
+               check=True)
+print(f"Verified {archive} with its notices, {len(sums)} fonts, examples and benchmarks")
+PY

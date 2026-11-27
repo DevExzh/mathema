@@ -272,11 +272,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Run representative Criterion sample
-        run: >-
-          cargo bench --locked --bench benchmark -- --noplot
-          --warm-up-time 1 --measurement-time 2 --sample-size 20
-          --save-baseline ci
+      - name: Sample conversion routes, readers and layout
+        run: |
+          cargo bench --locked --features render --bench benchmark -- 'convert_result_routes|reader_shapes' \
+            --noplot --warm-up-time 1 --measurement-time 2 --sample-size 20 --save-baseline ci
+          cargo bench --locked --features render --bench layout -- layout_depth_and_shape \
+            --noplot --warm-up-time 1 --measurement-time 2 --sample-size 20 --save-baseline ci
+          rustc -vV > target/criterion/toolchain.txt
+          lscpu > target/criterion/cpu.txt
       - name: Upload Criterion trend artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
