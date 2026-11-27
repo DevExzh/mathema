@@ -25,6 +25,7 @@ impl MathReader for MathmlReader {
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         config.check_input_size(input)?;
         let trimmed = input.trim();
+        let source_lead = input.len() - input.trim_start().len();
         if trimmed.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(
                 AstArena::new(),
@@ -32,8 +33,13 @@ impl MathReader for MathmlReader {
                 config.display,
             )));
         }
-        let parser_result =
-            MathmlCompactParser::new_with_node_limit(trimmed, config.display, config.max_nodes);
+        let parser_result = MathmlCompactParser::new_with_node_limit(
+            trimmed,
+            config.display,
+            config.max_nodes,
+            config.source_ranges,
+            source_lead,
+        );
         let mut parser = match parser_result {
             Ok(mut p) => {
                 p.lenient = config.strictness == Strictness::Lenient;
@@ -122,6 +128,12 @@ enum ScriptChildMode {
 struct MathmlCompactParser<'a> {
     reader: Reader<&'a [u8]>,
     arena: AstArena,
+    /// Byte offset of the XML event most recently read from the source.
+    event_start: usize,
+    /// Bytes removed before the trimmed XML fragment.
+    source_lead: usize,
+    /// Whether to retain source byte ranges for element-backed nodes.
+    source_ranges: bool,
     display: Option<DisplayStyle>,
     depth: u32,
     movable_limit_operators: HashMap<NodeId, bool>,
@@ -186,13 +198,15 @@ enum FenceRole {
 impl<'a> MathmlCompactParser<'a> {
     #[cfg(test)]
     fn new(input: &'a str, display: DisplayStyle) -> Result<Self> {
-        Self::new_with_node_limit(input, display, None)
+        Self::new_with_node_limit(input, display, None, false, 0)
     }
 
     fn new_with_node_limit(
         input: &'a str,
         display: DisplayStyle,
         max_nodes: Option<usize>,
+        source_ranges: bool,
+        source_lead: usize,
     ) -> Result<Self> {
         let mut reader = Reader::from_str(input);
         // Keep token text bytes intact so token-level MathML whitespace can be
@@ -210,6 +224,9 @@ impl<'a> MathmlCompactParser<'a> {
                 input.len() / 4,
                 max_nodes,
             ),
+            event_start: 0,
+            source_lead,
+            source_ranges,
             display: None,
             depth: 0,
             movable_limit_operators: HashMap::new(),
@@ -237,7 +254,7 @@ impl<'a> MathmlCompactParser<'a> {
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let (element, empty) = loop {
             self.arena.check_limits()?;
-            match self.reader.read_event() {
+            match self.reader_read_event() {
                 Ok(Event::Start(e)) => break (e, false),
                 Ok(Event::Empty(e)) => break (e, true),
                 Ok(Event::Eof) => {
@@ -613,7 +630,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             self.arena.check_limits()?;
-            let event = self.reader.read_event();
+            let event = self.reader_read_event();
             if nodes.len() >= max_children {
                 match &event {
                     Ok(Event::Start(_) | Event::Empty(_)) => {
@@ -805,6 +822,7 @@ impl<'a> MathmlCompactParser<'a> {
     /// Shared by the Content MathML lowering in the `content` submodule.
     fn reader_read_event(&mut self) -> Result<Event<'a>> {
         self.arena.check_limits()?;
+        self.event_start = self.reader.buffer_position() as usize;
         self.reader.read_event().map_err(|e| Error::MathmlParse {
             message: format!("XML error: {e}"),
         })
@@ -1593,6 +1611,26 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
+        let source_start = self.event_start + self.source_lead;
+        let result = self.parse_element_by_name_inner(name, start);
+        if self.source_ranges
+            && let Ok(id) = &result
+        {
+            let source_end = self.reader.buffer_position() as usize + self.source_lead;
+            if source_start < source_end {
+                self.arena
+                    .set_source_range(*id, crate::error::Span::new(source_start, source_end));
+            }
+            return Ok(*id);
+        }
+        result
+    }
+
+    fn parse_element_by_name_inner(
+        &mut self,
+        name: &str,
+        start: &quick_xml::events::BytesStart<'_>,
+    ) -> Result<NodeId> {
         // Elements without attributes, most of them, stop at the length.
         if start.len() != name.len()
             && name != "mo"
@@ -2113,6 +2151,26 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
+        let source_start = self.event_start + self.source_lead;
+        let result = self.parse_empty_element_inner(name, start);
+        if self.source_ranges
+            && let Ok(id) = &result
+        {
+            let source_end = self.reader.buffer_position() as usize + self.source_lead;
+            if source_start < source_end {
+                self.arena
+                    .set_source_range(*id, crate::error::Span::new(source_start, source_end));
+            }
+            return Ok(*id);
+        }
+        result
+    }
+
+    fn parse_empty_element_inner(
+        &mut self,
+        name: &str,
+        start: &quick_xml::events::BytesStart<'_>,
+    ) -> Result<NodeId> {
         if name != "mo"
             && start.attributes_raw().contains('z')
             && let Some(mathsize) = element_mathsize(name, start)
@@ -2463,7 +2521,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut table = MathmlTable::default();
         loop {
             self.arena.check_limits()?;
-            let event = self.reader.read_event();
+            let event = self.reader_read_event();
             let empty = matches!(event, Ok(Event::Empty(_)));
             match event {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
@@ -2521,7 +2579,7 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             self.arena.check_limits()?;
             let index = table.cells.len() - start;
-            let event = self.reader.read_event();
+            let event = self.reader_read_event();
             if index >= max_columns {
                 // At the rectangular limit only whitespace or the end of the
                 // row can follow. Check the borrowed token before interning it.
@@ -2904,7 +2962,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut nested = 0usize;
         loop {
             self.arena.check_limits()?;
-            match self.reader.read_event() {
+            match self.reader_read_event() {
                 Ok(Event::Start(e)) => {
                     if e.local_name().into_inner() == tag_name {
                         nested += 1;
@@ -2951,7 +3009,7 @@ impl<'a> MathmlCompactParser<'a> {
 
         loop {
             self.arena.check_limits()?;
-            match self.reader.read_event() {
+            match self.reader_read_event() {
                 Ok(Event::Start(e)) => {
                     let name = e.local_name().into_inner();
                     if name == "mprescripts" {

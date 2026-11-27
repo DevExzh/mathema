@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::attrs::NodeAttrs;
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use super::{ColumnAlign, MatrixKind, SpaceBasis, SpanBoundary};
+use crate::error::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Provenance {
@@ -111,6 +112,10 @@ pub struct AstArena {
     node_overflow: bool,
     /// Sparse provenance for explicitly typed spaces and parsed table forms.
     provenance: ProvenanceStore,
+    /// Optional source byte ranges for parsed nodes. This remains unallocated
+    /// unless a reader is configured to retain source provenance.
+    #[allow(clippy::box_collection)]
+    source_ranges: Option<Box<HashMap<NodeId, Span>>>,
     /// Typesetting attributes of the nodes that have any.
     attrs: Option<Box<AttrStore>>,
     children: Vec<NodeId>,
@@ -140,6 +145,7 @@ impl AstArena {
             node_limit: usize::MAX,
             node_overflow: false,
             provenance: ProvenanceStore::default(),
+            source_ranges: None,
             attrs: None,
             children: Vec::new(),
             strings: String::new(),
@@ -162,6 +168,7 @@ impl AstArena {
             node_limit: usize::MAX,
             node_overflow: false,
             provenance: ProvenanceStore::default(),
+            source_ranges: None,
             attrs: None,
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
@@ -470,6 +477,9 @@ impl AstArena {
                 self.attrs = None;
             }
         }
+        if let Some(ranges) = &mut self.source_ranges {
+            ranges.remove(&id);
+        }
         self.node_mut_in_place(id)
     }
 
@@ -523,13 +533,25 @@ impl AstArena {
             }
             self.add_attrs(destination, &merged);
         }
-        if matches!(self.provenance, ProvenanceStore::Empty) {
-            return;
+        if !matches!(self.provenance, ProvenanceStore::Empty) {
+            if let Some(provenance) = self.provenance.get(source) {
+                self.provenance.insert(destination, provenance);
+            } else {
+                self.provenance.remove(destination);
+            }
         }
-        if let Some(provenance) = self.provenance.get(source) {
-            self.provenance.insert(destination, provenance);
-        } else {
-            self.provenance.remove(destination);
+        if self.source_ranges.is_some() {
+            if let Some(span) = self
+                .source_ranges
+                .as_ref()
+                .and_then(|ranges| ranges.get(&source).copied())
+            {
+                self.source_ranges
+                    .get_or_insert_with(Default::default)
+                    .insert(destination, span);
+            } else if let Some(ranges) = &mut self.source_ranges {
+                ranges.remove(&destination);
+            }
         }
     }
 
@@ -621,6 +643,28 @@ impl AstArena {
             && let Some(provenance) = self.provenance.get(from)
         {
             self.provenance.insert(to, provenance);
+        }
+    }
+
+    /// Attach a source byte range to a node while a reader is constructing it.
+    /// Empty ranges are ignored because they do not identify authored input.
+    pub(crate) fn set_source_range(&mut self, id: NodeId, span: Span) {
+        if span.start < span.end {
+            self.source_ranges
+                .get_or_insert_with(Default::default)
+                .insert(id, span);
+        }
+    }
+
+    /// Return the source byte range retained for a parsed node, if any.
+    #[must_use]
+    pub fn source_range(&self, id: NodeId) -> Option<Span> {
+        self.source_ranges.as_ref()?.get(&id).copied()
+    }
+
+    pub(crate) fn clear_source_range(&mut self, id: NodeId) {
+        if let Some(ranges) = &mut self.source_ranges {
+            ranges.remove(&id);
         }
     }
 
@@ -936,6 +980,9 @@ impl AstArena {
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<CompactNode>()
             + self.provenance.heap_bytes()
+            + self.source_ranges.as_ref().map_or(0, |ranges| {
+                size_of::<HashMap<NodeId, Span>>() + ranges.capacity() * size_of::<(NodeId, Span)>()
+            })
             + self.attrs.as_ref().map_or(0, |attrs| {
                 size_of::<HashMap<NodeId, NodeAttrs>>()
                     + attrs.0.capacity() * size_of::<(NodeId, NodeAttrs)>()
@@ -965,13 +1012,34 @@ impl AstArena {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::{Error, LimitKind};
+    use crate::error::{Error, LimitKind, Span};
 
     fn small_arena(limit: usize) -> AstArena {
         AstArena {
             entry_limit: limit,
             ..AstArena::new()
         }
+    }
+
+    #[test]
+    fn replacement_carries_source_range_provenance() {
+        let mut arena = AstArena::new();
+        let source = arena.push_node(CompactNode::Identifier(StrId::EMPTY));
+        let destination = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        arena.set_source_range(source, Span::new(2, 5));
+        arena.replace_from(destination, source);
+        assert_eq!(arena.source_range(destination), Some(Span::new(2, 5)));
+    }
+
+    #[test]
+    fn structural_mutation_clears_range_but_in_place_edit_preserves_it() {
+        let mut arena = AstArena::new();
+        let id = arena.push_node(CompactNode::Identifier(StrId::EMPTY));
+        arena.set_source_range(id, Span::new(0, 1));
+        let _ = arena.try_node_mut_in_place(id);
+        assert_eq!(arena.source_range(id), Some(Span::new(0, 1)));
+        let _ = arena.node_mut(id);
+        assert_eq!(arena.source_range(id), None);
     }
 
     #[test]

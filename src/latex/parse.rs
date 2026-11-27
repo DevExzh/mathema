@@ -1968,7 +1968,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             ),
             Err(failure) => return Err(expansion_error(failure)),
         };
-    let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
+    let mut parser = LatexCompactParser::with_capacity(
+        processed.len(),
+        config.max_nodes,
+        config.source_ranges && std::ptr::eq(processed.as_ptr(), trimmed.as_ptr()),
+    );
     parser.source = (input.as_ptr() as usize, input.len());
     parser.open_text(&processed);
     parser.lenient = config.strictness == Strictness::Lenient;
@@ -2222,6 +2226,9 @@ pub(crate) struct LatexCompactParser {
     grouped_operator: Option<(NodeId, NodeId)>,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
+    /// Whether to retain conservative ranges for nodes made from source
+    /// slices. Rewritten macro text deliberately receives no range.
+    source_ranges: bool,
     /// The most recently built n-ary node whose body was synthesized at a
     /// grammar boundary rather than read from an authored token. `\sideset`
     /// consults this immediately after parsing its operator so it does not
@@ -2260,7 +2267,7 @@ impl LatexCompactParser {
     ///
     /// Heuristic: a typical LaTeX formula produces roughly 1 node per 3 input bytes,
     /// with similar proportions for children and strings.
-    fn with_capacity(input_len: usize, max_nodes: Option<usize>) -> Self {
+    fn with_capacity(input_len: usize, max_nodes: Option<usize>, source_ranges: bool) -> Self {
         let est_nodes = input_len / 3 + 4;
         let est_nodes = max_nodes.map_or(est_nodes, |limit| est_nodes.min(limit));
         let est_children = est_nodes;
@@ -2289,6 +2296,7 @@ impl LatexCompactParser {
             command_depth: 0,
             grouped_operator: None,
             arrays_built: 0,
+            source_ranges,
             last_implicit_nary: None,
             undefined_commands: None,
             single_token: None,
@@ -2760,8 +2768,10 @@ impl LatexCompactParser {
                 let (r, _) = ws(rest)?;
                 rest = r;
             }
+            let element_input = rest;
             match self.parse_element(rest) {
                 Ok((r, id)) => {
+                    self.record_element_range(element_input, r, id);
                     self.push_element(&mut ids, id);
                     self.ensure_node_budget(r)?;
                     rest = r;
@@ -2963,6 +2973,16 @@ impl LatexCompactParser {
             )));
         }
         Ok((rest, scripted))
+    }
+
+    #[inline]
+    fn record_element_range(&mut self, input: &str, rest: &str, id: NodeId) {
+        if self.source_ranges
+            && let Some(start) = self.source_span_of(input).map(|span| span.start)
+            && let Some(end) = self.source_span_of(rest).map(|span| span.start)
+        {
+            self.arena.set_source_range(id, Span::new(start, end));
+        }
     }
 
     /// Parse one KaTeX-compatible Unicode script run. KaTeX stops a run when
@@ -3280,6 +3300,7 @@ impl LatexCompactParser {
             let body = self.parse_element(input);
             self.command_depth -= 1;
             let (rest, body) = body?;
+            self.record_element_range(input, rest, body);
             (rest, self.nary_body(body))
         };
         // A declaration scoping the rest of the list (`\sum \bf a \over b`,
@@ -5530,7 +5551,9 @@ impl LatexCompactParser {
                     nom::error::ErrorKind::Tag,
                 )));
             }
+            let element_input = rest;
             let (r, id) = self.parse_element(rest)?;
+            self.record_element_range(element_input, r, id);
             ids.push(id);
             rest = r;
             color = self.take_color_at_middle(rest);
@@ -5620,8 +5643,12 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
 
         // The operator (parsed as a full element so it keeps its \limits/body).
+        let element_input = input;
         let (input, op_id) = match self.parse_element(input) {
-            Ok(v) => v,
+            Ok((rest, id)) => {
+                self.record_element_range(element_input, rest, id);
+                (rest, id)
+            },
             Err(_) => (input, {
                 self.check_node_limit();
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
@@ -6376,7 +6403,12 @@ impl LatexCompactParser {
             // parse_element (not parse_command) consumes the scripts and body
             // of an n-ary operator.
             Err(nom::Err::Error(_)) if input.starts_with('\\') => {
-                return self.parse_element(input);
+                let element_input = input;
+                let result = self.parse_element(input);
+                if let Ok((rest, id)) = result {
+                    self.record_element_range(element_input, rest, id);
+                }
+                return result;
             },
             Err(err) => return Err(err),
         };
@@ -6464,8 +6496,10 @@ impl LatexCompactParser {
             {
                 break;
             }
+            let element_input = rest;
             match self.parse_element(rest) {
                 Ok((r, id)) => {
+                    self.record_element_range(element_input, r, id);
                     self.push_element(&mut ids, id);
                     rest = r;
                 },
@@ -7250,7 +7284,9 @@ impl LatexCompactParser {
                     continue;
                 }
                 let previous_arrays = self.arrays_built;
+                let element_input = rest;
                 let (after, id) = self.parse_element(rest)?;
+                self.record_element_range(element_input, after, id);
                 if previous_arrays != self.arrays_built {
                     self.flush_font_run(style, &mut run, &mut ids);
                     ids.push(self.font_argument_with_table(style, id));
@@ -9296,7 +9332,11 @@ impl LatexCompactParser {
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             return self.parse_scripts(input, base);
         }
-        self.parse_element(input)
+        let result = self.parse_element(input);
+        if let Ok((rest, id)) = result {
+            self.record_element_range(input, rest, id);
+        }
+        result
     }
 
     // -----------------------------------------------------------------------
@@ -9422,7 +9462,7 @@ mod tests {
     #[test]
     fn node_limit_stops_array_materialization_at_the_next_node() {
         let input = r"\begin{matrix}a&b\\c&d\end{matrix}";
-        let mut parser = LatexCompactParser::with_capacity(input.len(), Some(2));
+        let mut parser = LatexCompactParser::with_capacity(input.len(), Some(2), false);
         let result = parser.parse_node_list(input);
 
         assert!(matches!(result, Err(nom::Err::Failure(_))));
@@ -9447,7 +9487,7 @@ mod tests {
             (r"\begin{numcases}{f(x)=}x&x>0\\-x&x\le0\end{numcases}", 5),
         ];
         for (input, expected_nodes) in cases {
-            let mut parser = LatexCompactParser::with_capacity(input.len(), Some(4));
+            let mut parser = LatexCompactParser::with_capacity(input.len(), Some(4), false);
             let result = parser.parse_node_list(input);
             assert!(matches!(result, Err(nom::Err::Failure(_))));
             assert!(matches!(
@@ -9466,7 +9506,7 @@ mod tests {
         let too_large = r"\multicolumn{999999999999999999999}{c}{unused}";
         let past_column = r"a&\multicolumn{2}{r}{unused}";
         for (src, expected_strings) in [(too_large, 0), (past_column, 1)] {
-            let mut parser = LatexCompactParser::with_capacity(src.len(), None);
+            let mut parser = LatexCompactParser::with_capacity(src.len(), None, false);
             assert!(matches!(
                 parser.parse_table_row(src, 2, &mut 0),
                 Err(nom::Err::Failure(_))
@@ -9480,7 +9520,7 @@ mod tests {
             ));
             assert_eq!(parser.arena.string_count(), expected_strings);
         }
-        let mut parser = LatexCompactParser::with_capacity(32, None);
+        let mut parser = LatexCompactParser::with_capacity(32, None, false);
         let mut width = 0;
         assert!(
             parser
@@ -9490,7 +9530,7 @@ mod tests {
         assert_eq!(width, 2);
         // The first row fixes the stride. Reject an extra row before parsing
         // its content or materializing any of the rectangle's empty slots.
-        let mut parser = LatexCompactParser::with_capacity(96, None);
+        let mut parser = LatexCompactParser::with_capacity(96, None, false);
         assert!(matches!(
             parser.parse_table_body(r"\multicolumn{65535}{c}{x}\\unused"),
             Err(nom::Err::Failure(_))

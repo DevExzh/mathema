@@ -167,7 +167,9 @@ impl MathReader for OmmlReader {
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         config.check_input_size(input)?;
-        let mut parser = Parser::new(strip_bom(input), config, false);
+        let stripped = strip_bom(input);
+        let source_lead = input.len() - stripped.len();
+        let mut parser = Parser::new(stripped, config, false, source_lead);
         match parser.parse_document() {
             Ok(doc) => {
                 let display = if doc.paragraph {
@@ -216,7 +218,9 @@ impl OmmlReader {
     /// XML error yields an empty paragraph with a warning.
     pub fn parse_paragraph(input: &str, config: &Config) -> Result<OmmlParagraph> {
         config.check_input_size(input)?;
-        let mut parser = Parser::new(strip_bom(input), config, true);
+        let stripped = strip_bom(input);
+        let source_lead = input.len() - stripped.len();
+        let mut parser = Parser::new(stripped, config, true, source_lead);
         match parser.parse_document() {
             Ok(doc) => {
                 let display = if doc.paragraph {
@@ -274,6 +278,8 @@ enum Ns {
 struct Elem<'i> {
     ns: Ns,
     start: BytesStart<'i>,
+    /// Byte offset of the opening event in the caller's original input.
+    source_start: usize,
 }
 
 impl Elem<'_> {
@@ -564,6 +570,9 @@ struct Parser<'i> {
     style: MathStyle,
     reader: NsReader<&'i [u8]>,
     arena: AstArena,
+    source_lead: usize,
+    source_ranges: bool,
+    event_start: usize,
     strict: bool,
     split_arenas: bool,
     /// Maximum nodes for the complete parse, including all paragraph
@@ -640,7 +649,7 @@ fn classify_ns(res: &ResolveResult<'_>, prefix: Option<&str>) -> Ns {
 }
 
 impl<'i> Parser<'i> {
-    fn new(input: &'i str, config: &Config, split_arenas: bool) -> Self {
+    fn new(input: &'i str, config: &Config, split_arenas: bool, source_lead: usize) -> Self {
         let mut reader = NsReader::from_str(input);
         let cfg = reader.config_mut();
         cfg.trim_text(false);
@@ -653,6 +662,9 @@ impl<'i> Parser<'i> {
             style: config.display.into(),
             reader,
             arena: AstArena::with_node_limit(config.max_nodes),
+            source_lead,
+            source_ranges: config.source_ranges,
+            event_start: 0,
             strict: config.strictness == Strictness::Strict,
             split_arenas,
             max_nodes: config.max_nodes,
@@ -725,6 +737,7 @@ impl<'i> Parser<'i> {
     fn next_item(&mut self) -> Result<Item<'i>> {
         self.arena.check_limits()?;
         loop {
+            self.event_start = self.reader.buffer_position() as usize;
             let read = self.reader.read_resolved_event();
             let (ns, event) = match read {
                 Ok((res, event)) => {
@@ -762,7 +775,11 @@ impl<'i> Parser<'i> {
                             start.name().into_inner()
                         ))?;
                     }
-                    return Ok(Item::Start(Elem { ns, start }));
+                    return Ok(Item::Start(Elem {
+                        ns,
+                        start,
+                        source_start: self.event_start + self.source_lead,
+                    }));
                 },
                 Event::End(_) => {
                     self.depth = self.depth.saturating_sub(1);
@@ -1378,6 +1395,12 @@ impl<'i> Parser<'i> {
                     eq.ids = ids;
                 }
                 self.end_equation(doc);
+            } else if child.ns == Ns::Wml && child.local() == "sdt" {
+                // Word may place a content control directly around an
+                // equation inside an `m:oMathPara`. Preserve each descendant
+                // equation as its own arena while traversing the wrapper.
+                let mut fragment = false;
+                self.sdt_top(doc, &mut fragment)?;
             } else {
                 self.unknown(&child, "m:oMathPara")?;
             }
@@ -1435,6 +1458,25 @@ impl<'i> Parser<'i> {
     /// Parse one element of `EG_OMathElements` (the math objects and the
     /// WordprocessingML paragraph content allowed among them).
     fn math_element(&mut self, el: Elem<'i>, parent: &'static str, out: &mut Ids) -> Result<()> {
+        let source_start = el.source_start;
+        let before = out.len();
+        let result = self.math_element_inner(el, parent, out);
+        if self.source_ranges && result.is_ok() && before < out.len() {
+            let source_end = self.reader.buffer_position() as usize + self.source_lead;
+            for &id in &out[before..] {
+                self.arena
+                    .set_source_range(id, crate::error::Span::new(source_start, source_end));
+            }
+        }
+        result
+    }
+
+    fn math_element_inner(
+        &mut self,
+        el: Elem<'i>,
+        parent: &'static str,
+        out: &mut Ids,
+    ) -> Result<()> {
         match el.ns {
             Ns::Math => {
                 let id = match el.local() {

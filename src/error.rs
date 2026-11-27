@@ -380,6 +380,9 @@ pub struct Config {
     /// Which LaTeX consumer profile the writer targets (default:
     /// [`LatexProfile::KaTeX`]).
     pub latex_profile: LatexProfile,
+    /// Retain conservative source byte ranges on compact nodes for editing
+    /// clients. Disabled by default to keep ordinary parsing allocation-free.
+    pub source_ranges: bool,
 }
 
 impl Default for Config {
@@ -393,6 +396,7 @@ impl Default for Config {
             undefined_commands: UndefinedCommands::Escape,
             typesetting: TypesettingPolicy::Semantic,
             latex_profile: LatexProfile::KaTeX,
+            source_ranges: false,
         }
     }
 }
@@ -454,6 +458,13 @@ impl Config {
     #[must_use]
     pub fn with_latex_profile(mut self, latex_profile: LatexProfile) -> Self {
         self.latex_profile = latex_profile;
+        self
+    }
+
+    /// Retain source byte ranges on compact nodes produced by readers.
+    #[must_use]
+    pub fn with_source_ranges(mut self, source_ranges: bool) -> Self {
+        self.source_ranges = source_ranges;
         self
     }
 

@@ -1408,6 +1408,23 @@ enum MergeKind {
     Identifier,
 }
 
+/// Return one covering span for a merged run when every contributing node has
+/// an ordered source range. A missing or contradictory range makes the result
+/// ambiguous, so the destination range is cleared instead of retaining the
+/// first token's misleading partial span.
+fn merged_source_range(arena: &AstArena, ids: &[NodeId]) -> Option<crate::error::Span> {
+    let first = arena.source_range(*ids.first()?)?;
+    let mut end = first.end;
+    for &id in &ids[1..] {
+        let span = arena.source_range(id)?;
+        if span.start < end {
+            return None;
+        }
+        end = span.end;
+    }
+    Some(crate::error::Span::new(first.start, end))
+}
+
 /// Merge each run of adjacent nodes that `key` gives the same kind into the
 /// run's first node, interning the run's string once.
 fn merge_runs(
@@ -1450,6 +1467,7 @@ fn merge_runs(
             end += 1;
         }
         if end - i > 1 {
+            let source_range = merged_source_range(arena, &ids[i..end]);
             let mut combined = String::from(arena.str_val(first_sid));
             for &id in &ids[i + 1..end] {
                 if let Some((_, sid)) = key(arena, *arena.node(id)) {
@@ -1462,6 +1480,11 @@ fn merge_runs(
                 MergeKind::Number => CompactNode::Number(sid),
                 MergeKind::Identifier => CompactNode::Identifier(sid),
             };
+            if let Some(span) = source_range {
+                arena.set_source_range(first, span);
+            } else {
+                arena.clear_source_range(first);
+            }
         }
         out.push(first);
         i = end;
@@ -2244,6 +2267,9 @@ pub(crate) fn make_script_with_base(
 mod tests {
     use super::*;
     use crate::ast::compact::CompactExpr;
+    use crate::error::Config;
+    use crate::reader::Reader;
+    use crate::reader::mathml::MathmlReader;
 
     /// On either way of normalizing.
     #[test]
@@ -2490,6 +2516,33 @@ mod tests {
             MathNode::Text(TextStyle::Normal, "hello".into()),
             MathNode::Text(TextStyle::Normal, " world".into()),
         ]));
+    }
+
+    #[test]
+    fn merged_source_ranges_cover_all_mathml_runs() {
+        let source = "<math><mn>1</mn><mn>2</mn></math>";
+        let mut expr =
+            MathmlReader::parse_compact(source, &Config::default().with_source_ranges(true))
+                .unwrap()
+                .expr;
+        let roots = expr.arena.children(expr.roots).to_vec();
+        assert_eq!(
+            roots
+                .iter()
+                .filter_map(|&id| expr.arena.source_range(id))
+                .collect::<Vec<_>>(),
+            [
+                crate::error::Span::new(6, 16),
+                crate::error::Span::new(16, 26)
+            ]
+        );
+        normalize_compact_expr(&mut expr).unwrap();
+        let merged = expr.arena.children(expr.roots);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            expr.arena.source_range(merged[0]),
+            Some(crate::error::Span::new(6, 26))
+        );
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::ast::{
     AccentPosition, ColumnAlign, FontSize, LimitStyle, NodeAttrs, Rational, StrokeKind, SymbolKind,
     TextStyle, TypeSize,
 };
+use crate::error::Span;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 
 // Record types (MTEFv3.md "Tag byte structure", MTEFv5.md "Record types").
@@ -96,6 +97,8 @@ pub(super) struct Glyph {
     pub(super) embells: SmallVec<[(u8, usize); 1]>,
     /// Offset of the CHAR record, for diagnostics.
     pub(super) offset: u32,
+    /// Exclusive offset after the CHAR record, for optional provenance.
+    pub(super) end: u32,
     /// The COLOR_DEF index the character is drawn in; `None` for black.
     pub(super) color: Option<u16>,
     /// The size the character is drawn in.
@@ -298,6 +301,7 @@ pub(super) struct Decoder<'a> {
     strict: bool,
     max_depth: usize,
     max_nodes: Option<usize>,
+    source_ranges: bool,
     depth: usize,
     /// Height of every node in the arena, indexed by node id.
     heights: Vec<u8>,
@@ -377,6 +381,7 @@ impl<'a> Decoder<'a> {
             strict: config.strictness == Strictness::Strict,
             max_depth: config.effective_max_depth(),
             max_nodes: config.max_nodes,
+            source_ranges: config.source_ranges,
             depth: 0,
             heights: Vec::new(),
             arena: AstArena::with_capacity(data.len().min(1 << 16) / 2, 0, 0),
@@ -489,6 +494,14 @@ impl<'a> Decoder<'a> {
         }
         self.heights.push(height);
         Ok(self.arena.push_node(node))
+    }
+
+    #[inline]
+    fn set_source_range(&mut self, id: NodeId, start: u32, end: u32) {
+        if self.source_ranges && start < end {
+            self.arena
+                .set_source_range(id, Span::new(start as usize, end as usize));
+        }
     }
 
     /// Store a node's children, refusing more than a node can hold.
@@ -1250,6 +1263,7 @@ impl<'a> Decoder<'a> {
             alphabet,
             embells,
             offset: u32::try_from(start).unwrap_or(u32::MAX),
+            end: u32::try_from(self.pos).unwrap_or(u32::MAX),
             color: self.color,
             size: self.size,
         })
@@ -2382,6 +2396,7 @@ impl<'a> Decoder<'a> {
                         },
                         _ => self.glyph_node(&glyph, class)?,
                     };
+                    self.set_source_range(id, glyph.offset, glyph.end);
                     self.set_color(id, glyph.color);
                     self.set_size(id, size);
                     self.emit(&mut out, &mut pending, id)?;
@@ -3727,7 +3742,7 @@ impl<'a> Decoder<'a> {
 
     fn glyph_node(&mut self, glyph: &Glyph, class: Class) -> Result<NodeId> {
         let ch = glyph.ch;
-        match class {
+        let id = match class {
             Class::Text(style) => self.char_node(ch, |s| CompactNode::Text(style, s)),
             Class::Function => {
                 let id = self.char_node(ch, |s| CompactNode::Operator {
@@ -3767,7 +3782,9 @@ impl<'a> Decoder<'a> {
                 self.node(CompactNode::Space(width))
             },
             Class::Marker => self.empty_row(),
-        }
+        }?;
+        self.set_source_range(id, glyph.offset, glyph.end);
+        Ok(id)
     }
 
     /// Apply one embellishment (MTEFv5.md "EMBELL record"; MTEF 3 defines

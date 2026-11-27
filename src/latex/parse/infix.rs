@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn a_full_arena_makes_no_marker() {
-        let mut parser = LatexCompactParser::with_capacity(0, None);
+        let mut parser = LatexCompactParser::with_capacity(0, None, false);
         parser.arena = AstArena::with_entry_limit(4);
         let existing: Vec<NodeId> = (0..4)
             .map(|_| parser.arena.push_node(CompactNode::Newline))

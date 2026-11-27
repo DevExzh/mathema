@@ -825,6 +825,10 @@ pub fn from_mtef(input: &str) -> Result<ConvertResult> {
 }
 
 /// Parse hex-encoded MTEF with custom configuration. See [`from_mtef`].
+/// When source ranges are enabled, ranges use decoded MTEF byte offsets. They
+/// do not index the hexadecimal spelling or its whitespace; use
+/// [`from_mtef_bytes_with`] when edit clients need
+/// coordinates in the original binary buffer.
 pub fn from_mtef_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let (compact, info) = MtefReader::parse_hex_with_info(input, config)?;
     finish_mtef(compact, info, config)

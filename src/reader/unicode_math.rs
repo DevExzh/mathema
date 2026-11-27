@@ -224,6 +224,8 @@ struct CompactParser {
     max_depth: u32,
     /// [`Config::max_nodes`].
     max_nodes: Option<usize>,
+    /// Whether to retain conservative ranges for source-backed nodes.
+    source_ranges: bool,
     /// The error that aborted the parse, if any.
     abort: Option<Error>,
     /// Per byte offset: 0 when the atom or bracket group there is not known
@@ -304,6 +306,7 @@ impl CompactParser {
                 .unwrap_or(u32::MAX)
                 .min(250),
             max_nodes: config.max_nodes,
+            source_ranges: config.source_ranges,
             abort: None,
             failed: Vec::new(),
             dead_walk: Vec::new(),
@@ -511,6 +514,21 @@ impl CompactParser {
     }
 
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let source_start = self.offset(input) + self.lead;
+        let result = self.parse_element_inner(input);
+        if self.source_ranges
+            && let Ok((rest, id)) = &result
+        {
+            let source_end = self.offset(rest) + self.lead;
+            if source_start < source_end {
+                self.arena
+                    .set_source_range(*id, crate::error::Span::new(source_start, source_end));
+            }
+        }
+        result
+    }
+
+    fn parse_element_inner<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let baseless_ok = std::mem::take(&mut self.baseless_ok);
         self.enter(input)?;
         let result = self.parse_operand(input, baseless_ok);

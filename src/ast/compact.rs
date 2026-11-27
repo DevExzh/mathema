@@ -483,6 +483,19 @@ impl CompactExpr {
         }
     }
 
+    /// Return the original source byte range for a compact node when the
+    /// reader was configured with [`Config::with_source_ranges`](crate::Config::with_source_ranges).
+    /// LaTeX and UnicodeMath retain ranges for nodes made directly from
+    /// caller-owned source slices. MathML ranges cover the raw XML event,
+    /// including namespace prefixes and attributes. MTEF ranges cover the
+    /// decoded record bytes, including an Equation Native header when present.
+    /// Macro-expanded LaTeX text and synthesized normalization nodes return
+    /// `None` because no stable authored slice exists.
+    #[must_use]
+    pub fn source_range(&self, id: NodeId) -> Option<crate::error::Span> {
+        self.arena.source_range(id)
+    }
+
     /// Record the size of ordinary text in points, if it is known.
     pub(crate) fn set_base_size(&mut self, points: Option<Rational>) {
         if points.is_some_and(|points| points.den > 0 && points.num > 0) {
