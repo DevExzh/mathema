@@ -9,6 +9,58 @@ fn unicode_math(input: &str) -> String {
     convert(input, Format::UnicodeMath, Format::UnicodeMath).unwrap()
 }
 
+#[test]
+fn nary_fraction_boundaries_keep_empty_and_scripted_operators_scoped() {
+    let scripted_nary = r#"\frac{{\sum _{1}^{xxxx}}_{x}}{x}xx"#;
+    let scripted_unicode = convert(scripted_nary, Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert_eq!(scripted_unicode, "〖∑_1^xxxx _x〗/x xx");
+    let scripted_back = convert(&scripted_unicode, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(
+        scripted_back.contains("<mfrac><msub><munderover>"),
+        "{scripted_back}"
+    );
+
+    let large_op_numerator = r#"<math><mfrac><mo>⋃</mo><msub><mrow><mo form="prefix">∂</mo><msub><mo>∞</mo><mi>x</mi></msub></mrow><mi>x</mi></msub></mfrac><mi>x</mi></math>"#;
+    let large_op_unicode =
+        convert(large_op_numerator, Format::MathML, Format::UnicodeMath).unwrap();
+    assert_eq!(large_op_unicode, "(⋃)/〖∂∞_x〗_x x");
+    let large_op_back = convert(&large_op_unicode, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(
+        large_op_back.contains("<mfrac><mo>⋃</mo>"),
+        "{large_op_back}"
+    );
+
+    let simple_nary = r#"<math><mfrac><mo>⨁</mo><mi>x</mi></mfrac></math>"#;
+    let simple_unicode = convert(simple_nary, Format::MathML, Format::UnicodeMath).unwrap();
+    assert_eq!(simple_unicode, "(⨁)/x");
+    let simple_back = convert(&simple_unicode, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(
+        simple_back.contains("<mfrac><mo>⨁</mo><mi>x</mi>"),
+        "{simple_back}"
+    );
+
+    let barless = r#"<math><mfrac linethickness="0"><mo>∮</mo><mi>x</mi></mfrac></math>"#;
+    let barless_unicode = convert(barless, Format::MathML, Format::UnicodeMath).unwrap();
+    assert_eq!(barless_unicode, "(∮)¦x");
+    let barless_back = convert(&barless_unicode, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(
+        barless_back.contains("<mfrac linethickness=\"0\"><mo>∮</mo>"),
+        "{barless_back}"
+    );
+
+    let neighboring_fractions = r#"<math><msub><mrow><mfrac><mrow><mi>x</mi><mi>x</mi><mi>x</mi></mrow><mo>∑</mo></mfrac><mfrac><mrow><mi>x</mi><mi>x</mi><mi>x</mi></mrow><mi>x</mi></mfrac></mrow><mi>x</mi></msub><mi>x</mi></math>"#;
+    let neighboring_unicode =
+        convert(neighboring_fractions, Format::MathML, Format::UnicodeMath).unwrap();
+    assert_eq!(neighboring_unicode, "〖(xxx)/(∑) (xxx)/x〗_x x");
+    let neighboring_back =
+        convert(&neighboring_unicode, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(
+        neighboring_back.contains("<mrow><mfrac>")
+            && neighboring_back.matches("<mfrac>").count() == 2,
+        "{neighboring_back}"
+    );
+}
+
 fn mathml_body(input: &str, from: Format) -> String {
     let mathml = convert(input, from, Format::MathML).unwrap();
     let start = mathml.find('>').unwrap() + 1;

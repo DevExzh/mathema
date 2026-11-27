@@ -2307,6 +2307,38 @@ fn ends_in_fence_c(arena: &AstArena, id: NodeId) -> bool {
     }
 }
 
+/// Whether a script is attached to an empty n-ary operator. The operator's
+/// own scripts are unambiguous, but a following fraction bar would otherwise
+/// be taken as part of its n-aryand.
+fn is_scripted_empty_nary(node: &MathNode, style: MathStyle) -> bool {
+    let base = match select_mathchoice(node, style) {
+        MathNode::Subscript { base, .. }
+        | MathNode::Superscript { base, .. }
+        | MathNode::SubSup { base, .. } => base,
+        _ => return false,
+    };
+    matches!(
+        select_mathchoice(base, style),
+        MathNode::Nary { body, .. }
+            if matches!(&**body, MathNode::Row(children) if children.is_empty())
+    )
+}
+
+/// Compact counterpart of [`is_scripted_empty_nary`].
+fn is_scripted_empty_nary_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    let base = match *arena.node(select_mathchoice_c(arena, id, style)) {
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. } => base,
+        _ => return false,
+    };
+    matches!(
+        *arena.node(select_mathchoice_c(arena, base, style)),
+        CompactNode::Nary { body, .. }
+            if matches!(*arena.node(body), CompactNode::Row(span) if span.is_empty())
+    )
+}
+
 /// Write a fraction operand. The reader drops parentheses around one
 /// (UTN #28 section 2.1), so a compound operand is parenthesized and so is a
 /// parenthesized one (`((a+b))/c` keeps its parentheses); an operand that
@@ -2329,10 +2361,19 @@ fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push(')');
         },
+        // An empty n-ary operator with scripts needs an invisible group as a
+        // whole fraction operand (`〖∑_i〗/x`). Without it the slash becomes
+        // part of the n-aryand and the operator absorbs the denominator.
+        node if is_scripted_empty_nary(node, style) => {
+            out.push('〖');
+            write_node(out, node, style);
+            out.push('〗');
+        },
         // An operator alone is not an operand (`(+)/2`), and an n-ary
         // operator would take the fraction as its n-aryand (`(∑ a)/b`).
         // A closing fence would take the run from its opening one.
         node if matches!(node, MathNode::Nary { .. })
+            || operand_edge(node) == OperandEdge::NaryOperator
             || operand_edge(node) == OperandEdge::Break
             || ends_in_fence(node) =>
         {
@@ -4387,10 +4428,17 @@ fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: M
             write_node_c(out, arena, id, style);
             out.push(')');
         },
+        // Compact counterpart of the heap path above.
+        _ if is_scripted_empty_nary_c(arena, id, style) => {
+            out.push('〖');
+            write_node_c(out, arena, id, style);
+            out.push('〗');
+        },
         // An operator alone is not an operand (`(+)/2`), and an n-ary
         // operator would take the fraction as its n-aryand (`(∑ a)/b`).
         // A closing fence would take the run from its opening one.
         _ if matches!(*arena.node(id), CompactNode::Nary { .. })
+            || operand_edge_c(arena, id) == OperandEdge::NaryOperator
             || operand_edge_c(arena, id) == OperandEdge::Break
             || ends_in_fence_c(arena, id) =>
         {
