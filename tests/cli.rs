@@ -8,24 +8,6 @@ fn mathema() -> Command {
 }
 
 #[test]
-fn latex_output_profile_requires_a_latex_target() {
-    mathema()
-        .args([
-            "convert",
-            "-f",
-            "latex",
-            "-t",
-            "mathml",
-            "--latex-profile",
-            "pdflatex",
-            "x",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--to latex"));
-}
-
-#[test]
 fn convert_inline_latex_to_mathml() {
     mathema()
         .args(["convert", "--from", "latex", "--to", "mathml", "x^2"])
@@ -35,7 +17,54 @@ fn convert_inline_latex_to_mathml() {
 }
 
 #[test]
-fn convert_latex_profile_selects_pdf_latex_box_spelling() {
+fn convert_mathml_standard_profile_removes_private_attributes() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "mathml",
+            "--mathml-profile",
+            "standard",
+            r"\color{red}{x}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<math"))
+        .stdout(predicate::str::contains("data-").not());
+}
+
+#[test]
+fn convert_mathml_round_trip_profile_matches_default_output() {
+    let default_output = mathema()
+        .args(["convert", "--from", "latex", "--to", "mathml", "x^2"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let explicit_output = mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "mathml",
+            "--mathml-profile",
+            "round-trip",
+            "x^2",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(default_output, explicit_output);
+}
+
+#[test]
+fn mathml_profile_rejects_an_incompatible_target() {
     mathema()
         .args([
             "convert",
@@ -43,14 +72,61 @@ fn convert_latex_profile_selects_pdf_latex_box_spelling() {
             "latex",
             "--to",
             "latex",
-            "--latex-profile",
-            "pdflatex",
-            r"\colorbox{#f00}{x^2}",
+            "--mathml-profile",
+            "standard",
+            "x",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --to mathml"));
+}
+
+#[test]
+fn mathml_standard_profile_applies_to_binary_mtef() {
+    mathema()
+        .args([
+            "convert",
+            "--mtef-binary",
+            "--to",
+            "mathml",
+            "--mathml-profile",
+            "standard",
+            "tests/fixtures/mtef/v5-plus-minus.bin",
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains(r"\colorbox[HTML]{ff0000}"))
-        .stdout(predicate::str::contains(r"\ensuremath"));
+        .stdout(predicate::str::contains("<math"))
+        .stdout(predicate::str::contains("data-").not());
+}
+
+#[test]
+fn mathml_standard_profile_applies_to_batch_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out");
+    let first = dir.path().join("first.tex");
+    let second = dir.path().join("second.tex");
+    std::fs::write(&first, "x^2").unwrap();
+    std::fs::write(&second, "\\frac{1}{2}").unwrap();
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "mathml",
+            "--mathml-profile",
+            "standard",
+            "--output",
+            output.to_str().unwrap(),
+            first.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    for name in ["first.mml", "second.mml"] {
+        let text = std::fs::read_to_string(output.join(name)).unwrap();
+        assert!(!text.contains("data-"), "{name}: {text}");
+    }
 }
 
 #[test]
@@ -605,6 +681,46 @@ fn render_latex_to_svg() {
 
 #[cfg(feature = "render")]
 #[test]
+fn render_svg_backend_can_select_text_explicitly() {
+    mathema()
+        .args(["render", "--from", "latex", "--svg-mode", "text", "x^2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<text"));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn convert_svg_uses_standalone_outlines_by_default() {
+    mathema()
+        .args(["convert", "--from", "latex", "--to", "svg", "x^2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<path"))
+        .stdout(predicate::str::contains("<use"));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn convert_svg_can_select_text_backend() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "svg",
+            "--svg-mode",
+            "text",
+            "x^2",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<text"));
+}
+
+#[cfg(feature = "render")]
+#[test]
 fn render_reports_recovery_on_stderr() {
     mathema()
         .args(["render", "--lenient", "-f", "latex", r"\frac{1"])
@@ -839,4 +955,41 @@ fn no_subcommand_shows_help() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn convert_latex_profile_selects_pdf_latex_box_spelling() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "latex",
+            "--latex-profile",
+            "pdflatex",
+            r"\colorbox{#f00}{x^2}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r"\colorbox[HTML]{ff0000}"))
+        .stdout(predicate::str::contains(r"\ensuremath"));
+}
+
+#[test]
+fn latex_output_profile_requires_a_latex_target() {
+    mathema()
+        .args([
+            "convert",
+            "-f",
+            "latex",
+            "-t",
+            "mathml",
+            "--latex-profile",
+            "pdflatex",
+            "x",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--to latex"));
 }

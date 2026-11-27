@@ -78,7 +78,13 @@ pub use convert::{
     ConvertResult, convert, convert_with, convert_with_config_and_diagnostics,
     convert_with_diagnostics, from_latex, from_latex_with, from_mathml, from_mathml_with,
     from_mtef, from_mtef_bytes, from_mtef_bytes_with, from_mtef_with, from_omml, from_omml_with,
-    from_unicode_math, from_unicode_math_with,
+    from_unicode_math, from_unicode_math_with, write_compact_expr,
+    write_compact_expr_with_diagnostics, write_expr, write_expr_with_diagnostics,
+};
+#[cfg(feature = "render")]
+pub use convert::{
+    convert_with_config_and_svg_options, convert_with_config_and_svg_options_and_diagnostics,
+    convert_with_svg_options, convert_with_svg_options_and_diagnostics,
 };
 pub use error::{
     Config, Diagnostic, DiagnosticKind, Error, Format, LatexProfile, LimitKind, ParseResult,
@@ -88,12 +94,16 @@ pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHead
 pub use reader::omml::{OmmlJustification, OmmlParagraph};
 #[cfg(feature = "raster")]
 pub use render::raster::{
-    ImageFormat, RasterOptions, render_to_image, render_to_image_with_diagnostics,
+    ImageFormat, RasterLimits, RasterOptions, render_to_image, render_to_image_with_diagnostics,
+    render_to_image_with_diagnostics_and_limits, render_to_image_with_limits,
 };
 #[cfg(feature = "render")]
 pub use render::{
-    PreparedRender, RenderGeometry, RenderOptions, prepare_render, prepare_render_compact,
-    render_to_svg, render_to_svg_with_diagnostics,
+    PreparedRender, RenderGeometry, RenderOptions, SvgLimits, SvgMode, SvgOptions, prepare_render,
+    prepare_render_compact, render_to_svg, render_to_svg_compact_with_options,
+    render_to_svg_text_compact_with_options, render_to_svg_text_with_options,
+    render_to_svg_with_diagnostics, render_to_svg_with_options,
+    render_to_svg_with_options_and_limits,
 };
 #[cfg(feature = "render")]
 pub use render::{

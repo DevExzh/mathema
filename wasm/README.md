@@ -28,7 +28,7 @@ is installed.
 ## Usage
 
 ```javascript
-import wasmInit, { init, convert, MathemaConverter } from './pkg/mathema.js';
+import wasmInit, { init, convert, convertSvg, MathemaConverter } from './pkg/mathema.js';
 
 // Initialize WASM module
 await wasmInit();
@@ -36,6 +36,8 @@ init(); // Set up panic hook for better error messages
 
 // Simple conversion
 const mathml = convert('x^2', 'latex', 'mathml');
+const svg = convertSvg('x^2', 'latex');
+const textSvg = convertSvg('x^2', 'latex', true);
 
 // Builder pattern (parse once, write many)
 const conv = new MathemaConverter('latex');
@@ -50,6 +52,15 @@ console.log(JSON.stringify(ast, null, 2));
 
 // Async parsing (for Promise composition; parsing still runs on this thread)
 const asyncResult = await conv.parseAsync(largeFormula);
+
+// Standalone SVG is the default. Use options for metadata and compositing.
+const labelledSvg = asyncResult.toSvgWithOptions(
+  16,
+  false,
+  'Equation',
+  'A labelled equation',
+  'equation_1_',
+);
 
 // Native diagnostic objects, including source byte spans when available.
 const diagnostics = result.diagnosticsStructured();
@@ -91,3 +102,7 @@ The same checks can be run locally with `node` after a build:
 node wasm/check-generated-types.mjs web/src/lib/wasm/mathema.d.ts
 node wasm/smoke.mjs web/src/lib/wasm
 ```
+
+toSvg() returns standalone embedded-outline SVG. toSvgText() explicitly
+selects the client-font text backend. toSvgWithOptions() accepts optional
+font size, display mode, title, ARIA label, and an XML-safe ID prefix.

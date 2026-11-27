@@ -77,6 +77,34 @@ pub enum ImageFormat {
     Jpeg,
 }
 
+/// Resource limits applied before allocating a raster pixmap.
+///
+/// The default retains the existing 8192-pixel per-side ceiling and permits
+/// the full area that those dimensions can occupy. Service hosts can lower
+/// `max_pixels` for requests that must use a smaller allocation budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RasterLimits {
+    /// Maximum number of pixels allocated for one image.
+    pub max_pixels: usize,
+}
+
+impl Default for RasterLimits {
+    fn default() -> Self {
+        Self {
+            max_pixels: 8192usize * 8192,
+        }
+    }
+}
+
+impl RasterLimits {
+    /// Return limits with a caller-selected pixel allocation ceiling.
+    #[must_use]
+    pub const fn with_max_pixels(max_pixels: usize) -> Self {
+        Self { max_pixels }
+    }
+}
+
 /// Options for rasterized image output.
 #[derive(Debug, Clone)]
 pub struct RasterOptions {
@@ -130,10 +158,23 @@ impl RasterOptions {
 
 /// Render a math expression directly to raster image bytes (PNG or JPEG).
 pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u8>> {
+    render_to_image_with_limits(expr, options, &RasterLimits::default())
+}
+
+/// Render a math expression while enforcing a caller-selected pixel budget.
+pub fn render_to_image_with_limits(
+    expr: &MathExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+) -> Result<Vec<u8>> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     if crate::ast::has_attributes(expr) {
-        return render_to_image_compact(&CompactExpr::from_math_expr(expr)?, options);
+        return render_to_image_compact_with_limits(
+            &CompactExpr::from_math_expr(expr)?,
+            options,
+            limits,
+        );
     }
     let style = if options.render.is_display(expr) {
         MathStyle::Display
@@ -141,11 +182,20 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
         MathStyle::Text
     };
     let root = super::layout::layout_expr(expr, style, &options.render);
-    rasterize_layout(&root, options)
+    rasterize_layout(&root, options, limits)
 }
 
 /// Render a compact math expression directly to raster image bytes (PNG or JPEG).
 pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> Result<Vec<u8>> {
+    render_to_image_compact_with_limits(expr, options, &RasterLimits::default())
+}
+
+/// Render a compact expression while enforcing a caller-selected pixel budget.
+pub fn render_to_image_compact_with_limits(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+) -> Result<Vec<u8>> {
     options.validate()?;
     // Raster layout reads auxiliary compact references as it measures arrays,
     // strings and cell-boundary metadata. Validate the complete caller-owned
@@ -165,7 +215,7 @@ pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> R
         let builder = super::layout::LayoutBuilder::new(style, &options.render);
         layout_arena.clear();
         let root = builder.layout(layout_arena, expr);
-        rasterize_layout_arena(layout_arena, root, options)
+        rasterize_layout_arena(layout_arena, root, options, limits)
     })
 }
 
@@ -180,12 +230,22 @@ pub fn render_to_image_with_diagnostics(
     expr: &MathExpr,
     options: &RasterOptions,
 ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    render_to_image_with_diagnostics_and_limits(expr, options, &RasterLimits::default())
+}
+
+/// Render a math expression with diagnostics and a caller-selected pixel budget.
+pub fn render_to_image_with_diagnostics_and_limits(
+    expr: &MathExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     if crate::ast::has_attributes(expr) {
-        return render_to_image_compact_with_diagnostics(
+        return render_to_image_compact_with_diagnostics_and_limits(
             &CompactExpr::from_math_expr(expr)?,
             options,
+            limits,
         );
     }
     let style = if options.render.is_display(expr) {
@@ -195,7 +255,7 @@ pub fn render_to_image_with_diagnostics(
     };
     let root = super::layout::layout_expr(expr, style, &options.render);
     let diagnostics = raster_diagnostics(&root, &options.render.fg_color);
-    let image = rasterize_layout(&root, options)?;
+    let image = rasterize_layout(&root, options, limits)?;
     Ok((image, diagnostics))
 }
 
@@ -206,6 +266,15 @@ pub fn render_to_image_with_diagnostics(
 pub fn render_to_image_compact_with_diagnostics(
     expr: &CompactExpr,
     options: &RasterOptions,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    render_to_image_compact_with_diagnostics_and_limits(expr, options, &RasterLimits::default())
+}
+
+/// Render a compact expression with diagnostics and a caller-selected pixel budget.
+pub fn render_to_image_compact_with_diagnostics_and_limits(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+    limits: &RasterLimits,
 ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
     options.validate()?;
     crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
@@ -223,7 +292,7 @@ pub fn render_to_image_compact_with_diagnostics(
         layout_arena.clear();
         let root = builder.layout(layout_arena, expr);
         let diagnostics = raster_diagnostics_arena(layout_arena, root, &options.render.fg_color);
-        let image = rasterize_layout_arena(layout_arena, root, options)?;
+        let image = rasterize_layout_arena(layout_arena, root, options, limits)?;
         Ok((image, diagnostics))
     })
 }
@@ -410,7 +479,11 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
     }
 }
 
-fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>> {
+fn rasterize_layout(
+    root: &LayoutBox,
+    options: &RasterOptions,
+    limits: &RasterLimits,
+) -> Result<Vec<u8>> {
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
@@ -427,13 +500,7 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
         .ceil()
         .max(1.0) as u32;
 
-    if width > MAX_PIXMAP_DIMENSION || height > MAX_PIXMAP_DIMENSION {
-        return Err(crate::error::Error::Render {
-            message: format!(
-                "image dimensions {width}x{height} exceed maximum of {MAX_PIXMAP_DIMENSION}x{MAX_PIXMAP_DIMENSION}"
-            ),
-        });
-    }
+    check_pixmap_limits(width, height, MAX_PIXMAP_DIMENSION, limits)?;
 
     let mut pixmap = Pixmap::new(width, height).ok_or_else(|| crate::error::Error::Render {
         message: format!("failed to create {width}x{height} pixmap"),
@@ -479,6 +546,7 @@ pub(crate) fn rasterize_layout_arena(
     arena: &LayoutArena,
     root: LayoutBoxId,
     options: &RasterOptions,
+    limits: &RasterLimits,
 ) -> Result<Vec<u8>> {
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
@@ -498,13 +566,7 @@ pub(crate) fn rasterize_layout_arena(
         .ceil()
         .max(1.0) as u32;
 
-    if width > MAX_PIXMAP_DIMENSION || height > MAX_PIXMAP_DIMENSION {
-        return Err(crate::error::Error::Render {
-            message: format!(
-                "image dimensions {width}x{height} exceed maximum of {MAX_PIXMAP_DIMENSION}x{MAX_PIXMAP_DIMENSION}"
-            ),
-        });
-    }
+    check_pixmap_limits(width, height, MAX_PIXMAP_DIMENSION, limits)?;
 
     let mut pixmap = Pixmap::new(width, height).ok_or_else(|| crate::error::Error::Render {
         message: format!("failed to create {width}x{height} pixmap"),
@@ -542,6 +604,40 @@ pub(crate) fn rasterize_layout_arena(
     );
 
     encode_image(&pixmap, options)
+}
+
+fn check_pixmap_limits(
+    width: u32,
+    height: u32,
+    max_dimension: u32,
+    limits: &RasterLimits,
+) -> Result<()> {
+    if width > max_dimension || height > max_dimension {
+        return Err(crate::error::Error::Render {
+            message: format!(
+                "image dimensions {width}x{height} exceed maximum of {max_dimension}x{max_dimension}"
+            ),
+        });
+    }
+    let pixels = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or_else(|| crate::error::Error::Render {
+            message: "image pixel count overflowed the platform size limit".into(),
+        })?;
+    if pixels > limits.max_pixels {
+        return Err(crate::error::Error::Render {
+            message: format!(
+                "image pixel count {pixels} exceeds configured maximum of {}",
+                limits.max_pixels
+            ),
+        });
+    }
+    Ok(())
 }
 
 struct RasterCtx {
@@ -2504,7 +2600,7 @@ mod tests {
         };
         let heap_root =
             crate::render::layout::layout_expr(&compact.expr.to_math_expr(), style, &opts.render);
-        let heap_png = rasterize_layout(&heap_root, &opts).unwrap();
+        let heap_png = rasterize_layout(&heap_root, &opts, &RasterLimits::default()).unwrap();
 
         // NEW arena PNG.
         let arena_png = render_to_image_compact(&compact.expr, &opts).unwrap();

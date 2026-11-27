@@ -74,6 +74,24 @@ impl OmmlDialect {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MathmlProfileArg {
+    /// Presentation MathML with private round-trip attributes retained.
+    RoundTrip,
+    /// Schema-oriented Presentation MathML without private metadata.
+    Standard,
+}
+
+impl MathmlProfileArg {
+    fn options(self) -> mathema::MathmlOptions {
+        let profile = match self {
+            Self::RoundTrip => mathema::MathmlProfile::RoundTrip,
+            Self::Standard => mathema::MathmlProfile::Standard,
+        };
+        mathema::MathmlOptions::default().with_profile(profile)
+    }
+}
+
 #[derive(Args)]
 pub struct ConvertArgs {
     /// Input format (auto-detected if omitted)
@@ -83,6 +101,11 @@ pub struct ConvertArgs {
     /// Output format (required)
     #[arg(short, long, value_parser = parse_format)]
     pub to: Format,
+
+    /// SVG backend when the output format is SVG.
+    #[cfg(feature = "render")]
+    #[arg(long, default_value = "standalone", value_parser = parse_svg_mode)]
+    pub svg_mode: SvgMode,
 
     /// Output file or directory (stdout if omitted)
     #[arg(short, long)]
@@ -103,6 +126,10 @@ pub struct ConvertArgs {
     /// Select the emitted LaTeX consumer profile.
     #[arg(long, value_enum)]
     latex_profile: Option<LatexOutputProfile>,
+
+    /// Select the MathML output profile: round-trip or standard.
+    #[arg(long, value_enum)]
+    mathml_profile: Option<MathmlProfileArg>,
 
     /// Read input as raw binary MTEF from a file or stdin. Implies `--from mtef`.
     #[arg(long = "mtef-binary", visible_alias = "binary")]
@@ -145,6 +172,10 @@ pub struct RenderArgs {
     #[arg(long, default_value = "svg", value_parser = parse_render_format)]
     pub format: Format,
 
+    /// SVG backend: embedded outlines (default) or client-font text.
+    #[arg(long, default_value = "standalone", value_parser = parse_svg_mode)]
+    pub svg_mode: SvgMode,
+
     /// Font size in pixels
     #[arg(long, default_value = "16")]
     pub font_size: f64,
@@ -152,6 +183,18 @@ pub struct RenderArgs {
     /// Foreground color (default: currentColor)
     #[arg(long, default_value = "currentColor")]
     pub color: String,
+
+    /// Accessible SVG title.
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Accessible SVG label.
+    #[arg(long = "aria-label")]
+    pub aria_label: Option<String>,
+
+    /// Prefix generated SVG IDs for document composition.
+    #[arg(long)]
+    pub id_prefix: Option<String>,
 
     /// Output file or directory (stdout if omitted)
     #[arg(short, long)]
@@ -173,20 +216,12 @@ pub struct RenderArgs {
     pub input: Vec<String>,
 }
 
+#[cfg(feature = "render")]
+type SvgMode = mathema::SvgMode;
+
 fn parse_format(s: &str) -> Result<Format, String> {
-    match s.to_lowercase().as_str() {
-        "latex" | "tex" => Ok(Format::LaTeX),
-        "mathml" | "mml" => Ok(Format::MathML),
-        "omml" => Ok(Format::Omml),
-        "mtef" => Ok(Format::Mtef),
-        "unicodemath" | "unicode-math" | "um" => Ok(Format::UnicodeMath),
-        #[cfg(feature = "render")]
-        "svg" => Ok(Format::Svg),
-        #[cfg(feature = "raster")]
-        "png" => Ok(Format::Png),
-        #[cfg(feature = "raster")]
-        "jpeg" | "jpg" => Ok(Format::Jpeg),
-        _ => Err(format!(
+    s.parse().map_err(|_| {
+        format!(
             "unknown format '{s}'. Expected: latex, mathml, omml, mtef, unicodemath{}{}",
             if cfg!(feature = "render") {
                 ", svg"
@@ -198,26 +233,37 @@ fn parse_format(s: &str) -> Result<Format, String> {
             } else {
                 ""
             },
-        )),
-    }
+        )
+    })
 }
 
 #[cfg(feature = "render")]
 fn parse_render_format(s: &str) -> Result<Format, String> {
-    match s.to_lowercase().as_str() {
-        "svg" => Ok(Format::Svg),
-        #[cfg(feature = "raster")]
-        "png" => Ok(Format::Png),
-        #[cfg(feature = "raster")]
-        "jpeg" | "jpg" => Ok(Format::Jpeg),
-        _ => Err(format!(
+    let format = s.parse::<Format>().map_err(|_| {
+        format!(
             "unknown render format '{s}'. Expected: svg{}",
             if cfg!(feature = "raster") {
                 ", png, jpeg"
             } else {
                 ""
             },
-        )),
+        )
+    })?;
+    match format {
+        #[cfg(feature = "render")]
+        Format::Svg => Ok(format),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Ok(format),
+        _ => Err(format!("'{s}' is not a render output format")),
+    }
+}
+
+#[cfg(feature = "render")]
+fn parse_svg_mode(s: &str) -> Result<SvgMode, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "standalone" | "embedded" | "outline" | "outlines" => Ok(mathema::SvgMode::Standalone),
+        "text" => Ok(mathema::SvgMode::Text),
+        _ => Err("unknown SVG mode. Expected: standalone or text".into()),
     }
 }
 
@@ -245,6 +291,9 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
     let inputs = resolve_inputs(args.input)?;
     validate_mtef_binary(args.mtef_binary, args.from, &inputs)?;
     validate_omml_dialect(args.omml_dialect, args.to)?;
+    validate_mathml_profile(args.mathml_profile, args.to)?;
+    #[cfg(feature = "render")]
+    validate_svg_mode(args.svg_mode, args.to)?;
     let is_batch = inputs.len() > 1;
 
     if is_batch {
@@ -258,6 +307,9 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
                 include_info: args.diagnostics,
                 mtef_binary: args.mtef_binary,
                 omml_dialect: args.omml_dialect,
+                mathml_profile: args.mathml_profile,
+                #[cfg(feature = "render")]
+                svg_mode: args.svg_mode,
             },
         );
     }
@@ -267,7 +319,18 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
     let source_name = input_source_name(input);
     let (result, diagnostics) = if args.mtef_binary {
         let bytes = read_binary_input(input, &config)?;
-        convert_binary_input(&bytes, args.to, &config, &source_name, args.omml_dialect)?
+        convert_binary_input(
+            &bytes,
+            args.to,
+            &config,
+            &source_name,
+            ConversionOutputOptions {
+                omml_dialect: args.omml_dialect,
+                mathml_profile: args.mathml_profile,
+                #[cfg(feature = "render")]
+                svg_mode: args.svg_mode,
+            },
+        )?
     } else {
         let (content, path) = read_text_input(input, &config)?;
         let from = resolve_format(args.from, path.as_deref(), &content)?;
@@ -277,7 +340,12 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
             args.to,
             &config,
             &source_name,
-            args.omml_dialect,
+            ConversionOutputOptions {
+                omml_dialect: args.omml_dialect,
+                mathml_profile: args.mathml_profile,
+                #[cfg(feature = "render")]
+                svg_mode: args.svg_mode,
+            },
         )?
     };
     print_diagnostics(&source_name, &diagnostics, args.diagnostics);
@@ -335,7 +403,7 @@ fn run_convert_batch(
                     options.to,
                     config,
                     &source_name,
-                    options.omml_dialect,
+                    options.output_options(),
                 ),
                 Err(error) => Err(error),
             }
@@ -348,7 +416,7 @@ fn run_convert_batch(
                         options.to,
                         config,
                         &source_name,
-                        options.omml_dialect,
+                        options.output_options(),
                     ),
                     Err(error) => Err(error),
                 },
@@ -570,6 +638,18 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
         fg_color: args.color.clone(),
         ..mathema::RenderOptions::default()
     };
+    let mut svg_opts = mathema::SvgOptions::new(render_opts.clone()).with_mode(args.svg_mode);
+    if let Some(title) = args.title {
+        svg_opts = svg_opts.with_title(title);
+    }
+    if let Some(label) = args.aria_label {
+        svg_opts = svg_opts.with_aria_label(label);
+    }
+    if let Some(prefix) = args.id_prefix {
+        svg_opts = svg_opts
+            .with_id_prefix(prefix)
+            .map_err(|e| CliError::Render(e.to_string()))?;
+    }
 
     if is_batch {
         return run_render_batch(
@@ -577,7 +657,8 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
             args.format,
             args.output,
             &config,
-            &render_opts,
+            &svg_opts,
+            args.svg_mode,
             InputOptions {
                 from: args.from,
                 include_info: args.diagnostics,
@@ -606,14 +687,25 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
 
     match args.format {
         Format::Svg => {
-            let svg = if args.diagnostics {
+            let svg = if args.svg_mode == SvgMode::Text {
+                if args.diagnostics {
+                    let (svg, diagnostics) = conv
+                        .to_svg_text_with_svg_options_and_diagnostics(&svg_opts)
+                        .map_err(|e| CliError::Render(e.to_string()))?;
+                    print_diagnostics(&source_name, &diagnostics, true);
+                    svg
+                } else {
+                    conv.to_svg_text_with_svg_options(&svg_opts)
+                        .map_err(|e| CliError::Render(e.to_string()))?
+                }
+            } else if args.diagnostics {
                 let (svg, diagnostics) = conv
-                    .to_svg_with_options_and_diagnostics(&render_opts)
+                    .to_svg_with_svg_options_and_diagnostics(&svg_opts)
                     .map_err(|e| CliError::Render(e.to_string()))?;
                 print_diagnostics(&source_name, &diagnostics, true);
                 svg
             } else {
-                conv.to_svg_with(&render_opts)
+                conv.to_svg_with_svg_options(&svg_opts)
                     .map_err(|e| CliError::Render(e.to_string()))?
             };
             match &args.output {
@@ -711,15 +803,35 @@ fn convert_text_input(
     to: Format,
     config: &mathema::Config,
     source_name: &str,
-    omml_dialect: Option<OmmlDialect>,
+    output_options: ConversionOutputOptions,
 ) -> Result<(String, Vec<mathema::Diagnostic>), CliError> {
-    if let Some(dialect) = omml_dialect {
+    if let Some(profile) = output_options.mathml_profile {
+        let parsed = parse_input_result(input, from, config, source_name)?;
+        let mut diagnostics = parsed.diagnostics().to_vec();
+        let (output, writer_diagnostics) = parsed
+            .to_mathml_with_options_and_diagnostics(&profile.options())
+            .map_err(|e| CliError::from_mathema(e, input, source_name))?;
+        diagnostics.extend(writer_diagnostics);
+        return Ok((output, diagnostics));
+    }
+    if let Some(dialect) = output_options.omml_dialect {
         let parsed = parse_input_result(input, from, config, source_name)?;
         let mut diagnostics = parsed.diagnostics().to_vec();
         let options = dialect.options();
         let (output, writer_diagnostics) = parsed
             .to_omml_with_options(&options)
             .map_err(|e| CliError::from_mathema(e, input, source_name))?;
+        diagnostics.extend(writer_diagnostics);
+        return Ok((output, diagnostics));
+    }
+    #[cfg(feature = "render")]
+    if to == Format::Svg && output_options.svg_mode == SvgMode::Text {
+        let parsed = parse_input_result(input, from, config, source_name)?;
+        let diagnostics = parsed.diagnostics().to_vec();
+        let (output, writer_diagnostics) = parsed
+            .to_svg_text_with_diagnostics()
+            .map_err(|e| CliError::from_mathema(e, input, source_name))?;
+        let mut diagnostics = diagnostics;
         diagnostics.extend(writer_diagnostics);
         return Ok((output, diagnostics));
     }
@@ -748,7 +860,7 @@ fn convert_binary_input(
     to: Format,
     config: &mathema::Config,
     source_name: &str,
-    omml_dialect: Option<OmmlDialect>,
+    output_options: ConversionOutputOptions,
 ) -> Result<(String, Vec<mathema::Diagnostic>), CliError> {
     let parsed = mathema::from_mtef_bytes_with(input, config)
         .map_err(|e| CliError::from_mathema(e, "", source_name))?;
@@ -757,10 +869,15 @@ fn convert_binary_input(
         Format::LaTeX => parsed
             .to_latex_with_diagnostics()
             .map_err(|e| CliError::from_mathema(e, "", source_name))?,
-        Format::MathML => parsed
-            .to_mathml_with_diagnostics()
-            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
-        Format::Omml => match omml_dialect {
+        Format::MathML => match output_options.mathml_profile {
+            Some(profile) => parsed
+                .to_mathml_with_options_and_diagnostics(&profile.options())
+                .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+            None => parsed
+                .to_mathml_with_diagnostics()
+                .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        },
+        Format::Omml => match output_options.omml_dialect {
             Some(dialect) => parsed
                 .to_omml_with_options(&dialect.options())
                 .map_err(|e| CliError::from_mathema(e, "", source_name))?,
@@ -775,9 +892,22 @@ fn convert_binary_input(
             .to_unicode_math_with_diagnostics()
             .map_err(|e| CliError::from_mathema(e, "", source_name))?,
         #[cfg(feature = "render")]
-        Format::Svg => parsed
-            .to_svg_text_with_diagnostics()
-            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
+        Format::Svg => {
+            #[cfg(feature = "render")]
+            if output_options.svg_mode == SvgMode::Text {
+                parsed
+                    .to_svg_text_with_diagnostics()
+                    .map_err(|e| CliError::from_mathema(e, "", source_name))?
+            } else {
+                parsed
+                    .to_svg_with_diagnostics()
+                    .map_err(|e| CliError::from_mathema(e, "", source_name))?
+            }
+            #[cfg(not(feature = "render"))]
+            {
+                unreachable!("SVG output requires the render feature")
+            }
+        },
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => {
             return Err(CliError::Unsupported(
@@ -815,7 +945,8 @@ fn run_render_batch(
     render_format: Format,
     output: Option<PathBuf>,
     config: &mathema::Config,
-    render_opts: &mathema::RenderOptions,
+    svg_opts: &mathema::SvgOptions,
+    svg_mode: SvgMode,
     input_options: InputOptions,
 ) -> Result<(), CliError> {
     if let Some(ref out_dir) = output
@@ -886,15 +1017,27 @@ fn run_render_batch(
 
         let rendered = match render_format {
             Format::Svg => {
-                let svg = if input_options.include_info {
-                    conv.to_svg_with_options_and_diagnostics(render_opts)
+                let svg = if svg_mode == SvgMode::Text {
+                    if input_options.include_info {
+                        conv.to_svg_text_with_svg_options_and_diagnostics(svg_opts)
+                            .map_err(|e| CliError::Render(e.to_string()))
+                            .map(|(svg, diagnostics)| {
+                                print_diagnostics(&source_name, &diagnostics, true);
+                                svg
+                            })
+                    } else {
+                        conv.to_svg_text_with_svg_options(svg_opts)
+                            .map_err(|e| CliError::Render(e.to_string()))
+                    }
+                } else if input_options.include_info {
+                    conv.to_svg_with_svg_options_and_diagnostics(svg_opts)
                         .map_err(|e| CliError::Render(e.to_string()))
                         .map(|(svg, diagnostics)| {
                             print_diagnostics(&source_name, &diagnostics, true);
                             svg
                         })
                 } else {
-                    conv.to_svg_with(render_opts)
+                    conv.to_svg_with_svg_options(svg_opts)
                         .map_err(|e| CliError::Render(e.to_string()))
                 };
                 svg.map(String::into_bytes)
@@ -906,7 +1049,7 @@ fn run_render_batch(
                     _ => mathema::ImageFormat::Png,
                 };
                 let raster_opts = mathema::RasterOptions {
-                    render: render_opts.clone(),
+                    render: svg_opts.render.clone(),
                     format: raster_fmt,
                     ..mathema::RasterOptions::default()
                 };
@@ -1143,6 +1286,26 @@ fn validate_omml_dialect(dialect: Option<OmmlDialect>, target: Format) -> Result
     Ok(())
 }
 
+fn validate_mathml_profile(
+    profile: Option<MathmlProfileArg>,
+    target: Format,
+) -> Result<(), CliError> {
+    if profile.is_some() && target != Format::MathML {
+        return Err(CliError::Unsupported(
+            "--mathml-profile requires --to mathml".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "render")]
+fn validate_svg_mode(mode: SvgMode, target: Format) -> Result<(), CliError> {
+    if mode == SvgMode::Text && target != Format::Svg {
+        return Err(CliError::Unsupported("--svg-mode requires --to svg".into()));
+    }
+    Ok(())
+}
+
 /// Determine output extension for a given format.
 fn format_extension(fmt: Format) -> &'static str {
     match fmt {
@@ -1184,6 +1347,28 @@ struct ConvertOptions {
     include_info: bool,
     mtef_binary: bool,
     omml_dialect: Option<OmmlDialect>,
+    mathml_profile: Option<MathmlProfileArg>,
+    #[cfg(feature = "render")]
+    svg_mode: SvgMode,
+}
+
+#[derive(Clone, Copy)]
+struct ConversionOutputOptions {
+    omml_dialect: Option<OmmlDialect>,
+    mathml_profile: Option<MathmlProfileArg>,
+    #[cfg(feature = "render")]
+    svg_mode: SvgMode,
+}
+
+impl ConvertOptions {
+    fn output_options(self) -> ConversionOutputOptions {
+        ConversionOutputOptions {
+            omml_dialect: self.omml_dialect,
+            mathml_profile: self.mathml_profile,
+            #[cfg(feature = "render")]
+            svg_mode: self.svg_mode,
+        }
+    }
 }
 
 /// Resolve the `input` positional args into a list of `Input` items.

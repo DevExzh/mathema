@@ -62,7 +62,7 @@ impl MathemaConverter {
     /// Formats: "latex", "mathml", "omml", "mtef", "unicodemath"
     #[wasm_bindgen(constructor)]
     pub fn new(format: &str) -> Result<MathemaConverter, JsValue> {
-        let format = super::parse_format(format)?;
+        let format = super::parse_input_format(format)?;
         Ok(MathemaConverter {
             format,
             config: Config::default(),
@@ -80,7 +80,7 @@ impl MathemaConverter {
         strict: bool,
         display: bool,
     ) -> Result<MathemaConverter, JsValue> {
-        let format = super::parse_format(format)?;
+        let format = super::parse_input_format(format)?;
         let strictness = if strict {
             Strictness::Strict
         } else {
@@ -221,6 +221,39 @@ impl ParsedMath {
         }
         opts.display_mode = display;
         crate::render::render_to_svg_standalone_compact(&self.compact.expr, &opts)
+            .map_err(to_js_err)
+    }
+
+    /// Render a standalone SVG with optional accessibility metadata and an ID
+    /// prefix for composing several inline SVG documents.
+    #[cfg(feature = "render")]
+    #[wasm_bindgen(js_name = "toSvgWithOptions")]
+    pub fn to_svg_with_options(
+        &self,
+        font_size_px: Option<f64>,
+        display: Option<bool>,
+        title: Option<String>,
+        aria_label: Option<String>,
+        id_prefix: Option<String>,
+    ) -> Result<String, JsValue> {
+        let mut render = crate::render::RenderOptions::default();
+        if let Some(px) = font_size_px
+            && px > 0.0
+        {
+            render.font_size_px = px;
+        }
+        render.display_mode = display;
+        let mut options = crate::render::SvgOptions::new(render);
+        if let Some(title) = title {
+            options = options.with_title(title);
+        }
+        if let Some(label) = aria_label {
+            options = options.with_aria_label(label);
+        }
+        if let Some(prefix) = id_prefix {
+            options = options.with_id_prefix(prefix).map_err(to_js_err)?;
+        }
+        crate::render::render_to_svg_compact_with_options(&self.compact.expr, &options)
             .map_err(to_js_err)
     }
 

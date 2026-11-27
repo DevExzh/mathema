@@ -24,6 +24,7 @@ pub mod layout;
 pub(crate) mod math_table;
 #[allow(dead_code)]
 pub(crate) mod metrics;
+pub(crate) mod paint;
 #[allow(dead_code)]
 pub(crate) mod params;
 pub(crate) mod path_writer;
@@ -40,10 +41,15 @@ pub(crate) mod svg_writer;
 pub(crate) static FONT_DATA: &[u8] = include_bytes!("fonts/LatinModernMath-Regular.otf");
 
 use std::cell::RefCell;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
 use crate::error::{Diagnostic, DiagnosticKind, Result};
+use crate::writer::xml_chars;
 use std::collections::HashSet;
 
 thread_local! {
@@ -86,6 +92,241 @@ pub struct RenderOptions {
     pub fg_color: String,
     /// CSS font-family for text elements (default: "serif").
     pub font_family: String,
+}
+
+/// Options for standalone SVG output and document metadata.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct SvgOptions {
+    /// Rendering and geometry options.
+    pub render: RenderOptions,
+    /// SVG backend.
+    pub mode: SvgMode,
+    title: Option<String>,
+    aria_label: Option<String>,
+    id_prefix: Option<String>,
+}
+
+/// SVG rendering backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SvgMode {
+    /// Embed covered glyph outlines in the document.
+    #[default]
+    Standalone,
+    /// Emit client-font text elements.
+    Text,
+}
+
+/// Escaped metadata split at the SVG root boundary.
+///
+/// Attributes belong inside the opening `<svg>` tag, while the title element
+/// belongs immediately after that tag. Keeping the two pieces separate lets
+/// emitters stream metadata at the root instead of copying an already-built
+/// document to insert it afterward.
+pub(crate) struct SvgMetadata {
+    attrs: String,
+    body: String,
+}
+
+impl SvgMetadata {
+    pub(crate) fn attrs(&self) -> &str {
+        &self.attrs
+    }
+
+    pub(crate) fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.attrs.len() + self.body.len()
+    }
+}
+
+impl SvgOptions {
+    /// Create SVG options from ordinary rendering options.
+    #[must_use]
+    pub fn new(render: RenderOptions) -> Self {
+        Self {
+            render,
+            mode: SvgMode::Standalone,
+            ..Self::default()
+        }
+    }
+
+    /// Select the SVG backend.
+    #[must_use]
+    pub fn with_mode(mut self, mode: SvgMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Add a document title element.
+    #[must_use]
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Add an accessible ARIA label and mark the SVG as an image.
+    #[must_use]
+    pub fn with_aria_label(mut self, label: impl Into<String>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Prefix generated glyph IDs so several inline SVG documents can coexist.
+    pub fn with_id_prefix(mut self, prefix: impl Into<String>) -> Result<Self> {
+        let prefix = prefix.into();
+        if !prefix.is_empty()
+            && !prefix.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'_' | b'-' | b'.')
+                    || (index == 0 && byte == b':')
+            })
+        {
+            return Err(crate::error::Error::Render {
+                message: "SVG id_prefix must contain only ASCII XML name characters".into(),
+            });
+        }
+        if !prefix.is_empty()
+            && !prefix
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b':'))
+        {
+            return Err(crate::error::Error::Render {
+                message: "SVG id_prefix must start with an ASCII letter, '_' or ':'".into(),
+            });
+        }
+        self.id_prefix = Some(prefix);
+        Ok(self)
+    }
+
+    pub(crate) fn id_prefix(&self) -> Option<&str> {
+        self.id_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+    }
+
+    fn metadata_markup(&self) -> Result<SvgMetadata> {
+        self.render.validate()?;
+        let mut attrs = String::new();
+        if self.aria_label.is_some() {
+            attrs.push_str(r#" role="img" aria-label=""#);
+            if let Some(label) = self.aria_label.as_deref() {
+                emit::push_xml_escaped(&mut attrs, label);
+            }
+            attrs.push('"');
+        } else if self.title.is_some() {
+            attrs.push_str(r#" role="img"#);
+        }
+        let mut body = String::new();
+        if let Some(title) = self.title.as_deref() {
+            body.push_str("<title>");
+            emit::push_xml_escaped(&mut body, title);
+            body.push_str("</title>");
+        }
+        Ok(SvgMetadata { attrs, body })
+    }
+
+    pub(crate) fn limits_for_metadata(
+        &self,
+        limits: &SvgLimits,
+    ) -> Result<(SvgMetadata, SvgLimits)> {
+        reject_if_cancelled(limits)?;
+        let metadata_len = self.metadata_len();
+        if let Some(max) = limits.max_bytes
+            && metadata_len > max
+        {
+            return Err(crate::error::Error::Render {
+                message: "SVG output exceeded the configured byte limit".into(),
+            });
+        }
+        let metadata = self.metadata_markup()?;
+        // Metadata is streamed into the root opening tag by each emitter, so
+        // the sink's ordinary byte counter accounts for it exactly once.
+        Ok((metadata, limits.clone()))
+    }
+
+    fn metadata_len(&self) -> usize {
+        let label_len = self.aria_label.as_deref().map_or(0, xml_escaped_len);
+        let title_len = self.title.as_deref().map_or(0, xml_escaped_len);
+        let role_len = if self.aria_label.is_some() {
+            r#" role="img" aria-label=""#.len() + 1
+        } else if self.title.is_some() {
+            r#" role="img"#.len()
+        } else {
+            0
+        };
+        role_len
+            + label_len
+            + title_len
+            + if self.title.is_some() {
+                "<title></title>".len()
+            } else {
+                0
+            }
+    }
+}
+
+fn xml_escaped_len(value: &str) -> usize {
+    value.chars().fold(0usize, |length, ch| {
+        let add = if !xml_chars::is_xml_char(ch) {
+            3
+        } else {
+            match ch {
+                '<' | '>' => 4,
+                '&' => 5,
+                '"' | '\'' => 6,
+                _ => ch.len_utf8(),
+            }
+        };
+        length.saturating_add(add)
+    })
+}
+
+/// Limits for bounded SVG rendering requests.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct SvgLimits {
+    /// Maximum number of bytes retained in the SVG output. `None` is unbounded.
+    pub max_bytes: Option<usize>,
+    /// Optional cancellation flag checked while output is emitted.
+    pub cancellation: Option<Arc<AtomicBool>>,
+}
+
+impl SvgLimits {
+    /// Return an output limit measured in UTF-8 bytes.
+    #[must_use]
+    pub const fn with_max_bytes(max_bytes: usize) -> Self {
+        Self {
+            max_bytes: Some(max_bytes),
+            cancellation: None,
+        }
+    }
+
+    /// Add a cancellation flag to this request. Set it from another thread to
+    /// stop emission at the next output boundary.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+}
+
+fn reject_if_cancelled(limits: &SvgLimits) -> Result<()> {
+    if limits.is_cancelled() {
+        return Err(crate::error::Error::Render {
+            message: "SVG rendering was cancelled".into(),
+        });
+    }
+    Ok(())
 }
 
 /// Geometry of a prepared render in pixels.
@@ -236,13 +477,24 @@ impl PreparedRender {
         Ok(emit::emit_svg_arena(&self.layout_arena, self.root, options))
     }
 
+    /// Emit a text SVG with a caller-selected output byte budget and
+    /// cancellation flag.
+    pub fn to_svg_text_with_limits(
+        &self,
+        options: &RenderOptions,
+        limits: &SvgLimits,
+    ) -> Result<String> {
+        self.svg_geometry(options)?;
+        emit::emit_svg_arena_with_limits(&self.layout_arena, self.root, options, limits)
+    }
+
     /// Emit a text-based SVG and report glyph fallbacks.
     pub fn to_svg_text_with_diagnostics(
         &self,
         options: &RenderOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         self.svg_geometry(options)?;
-        let diagnostics = missing_glyph_diagnostics_arena(&self.layout_arena, self.root);
+        let diagnostics = svg_diagnostics_arena(&self.layout_arena, self.root, &options.fg_color);
         Ok((
             emit::emit_svg_arena(&self.layout_arena, self.root, options),
             diagnostics,
@@ -256,6 +508,102 @@ impl PreparedRender {
         Ok(emit_standalone_svg(&self.layout_arena, self.root, options))
     }
 
+    /// Emit a prepared SVG using the selected backend and metadata profile.
+    pub fn to_svg_with_svg_options(&self, options: &SvgOptions) -> Result<String> {
+        self.svg_geometry(&options.render)?;
+        let metadata = options.metadata_markup()?;
+        let output = match options.mode {
+            SvgMode::Text => emit::emit_svg_arena_with_metadata(
+                &self.layout_arena,
+                self.root,
+                &options.render,
+                &metadata,
+            ),
+            SvgMode::Standalone => emit_prepared_standalone(
+                &self.layout_arena,
+                self.root,
+                &options.render,
+                options.id_prefix(),
+                Some(&metadata),
+            ),
+        };
+        Ok(output)
+    }
+
+    /// Emit a prepared SVG with metadata, a byte budget, and cancellation.
+    pub fn to_svg_with_svg_options_and_limits(
+        &self,
+        options: &SvgOptions,
+        limits: &SvgLimits,
+    ) -> Result<String> {
+        self.svg_geometry(&options.render)?;
+        let (metadata, limits) = options.limits_for_metadata(limits)?;
+        let output = match options.mode {
+            SvgMode::Text => emit::emit_svg_arena_with_metadata_and_limits(
+                &self.layout_arena,
+                self.root,
+                &options.render,
+                &metadata,
+                &limits,
+            )?,
+            SvgMode::Standalone => emit_prepared_standalone_with_limits(
+                &self.layout_arena,
+                self.root,
+                &options.render,
+                &limits,
+                options.id_prefix(),
+                Some(&metadata),
+            )?,
+        };
+        Ok(output)
+    }
+
+    /// Emit a prepared SVG with metadata and fallback diagnostics.
+    pub fn to_svg_with_svg_options_and_diagnostics(
+        &self,
+        options: &SvgOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        self.svg_geometry(&options.render)?;
+        let diagnostics =
+            svg_diagnostics_arena(&self.layout_arena, self.root, &options.render.fg_color);
+        Ok((self.to_svg_with_svg_options(options)?, diagnostics))
+    }
+
+    /// Emit a prepared SVG with metadata, fallback diagnostics, a byte budget,
+    /// and cancellation.
+    pub fn to_svg_with_svg_options_and_limits_and_diagnostics(
+        &self,
+        options: &SvgOptions,
+        limits: &SvgLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let output = self.to_svg_with_svg_options_and_limits(options, limits)?;
+        let diagnostics =
+            svg_diagnostics_arena(&self.layout_arena, self.root, &options.render.fg_color);
+        Ok((output, diagnostics))
+    }
+
+    /// Emit an embedded-outline SVG with a caller-selected output byte budget
+    /// and cancellation flag.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_limits(
+        &self,
+        options: &RenderOptions,
+        limits: &SvgLimits,
+    ) -> Result<String> {
+        self.svg_geometry(options)?;
+        let chars = subset::collect_chars_arena(&self.layout_arena, self.root);
+        let mut glyphs = subset::build_glyph_set(&chars);
+        let variants = subset::collect_variants_arena(&self.layout_arena, self.root);
+        subset::add_variants(&mut glyphs, &variants);
+        svg_writer::emit_svg_with_fonts_arena_limits(
+            &self.layout_arena,
+            self.root,
+            options,
+            &glyphs,
+            limits,
+        )
+    }
+
     /// Emit a standalone SVG and report glyph fallbacks.
     #[cfg(feature = "render")]
     pub fn to_svg_with_diagnostics(
@@ -263,7 +611,7 @@ impl PreparedRender {
         options: &RenderOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         self.svg_geometry(options)?;
-        let diagnostics = missing_glyph_diagnostics_arena(&self.layout_arena, self.root);
+        let diagnostics = svg_diagnostics_arena(&self.layout_arena, self.root, &options.fg_color);
         Ok((
             emit_standalone_svg(&self.layout_arena, self.root, options),
             diagnostics,
@@ -273,9 +621,19 @@ impl PreparedRender {
     /// Emit a raster image using the format and raster settings in `options`.
     #[cfg(feature = "raster")]
     pub fn to_image(&self, options: &raster::RasterOptions) -> Result<Vec<u8>> {
+        self.to_image_with_limits(options, &raster::RasterLimits::default())
+    }
+
+    /// Emit a raster image while enforcing a caller-selected pixel budget.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_limits(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterLimits,
+    ) -> Result<Vec<u8>> {
         options.validate()?;
         self.validate_options(&options.render)?;
-        raster::rasterize_layout_arena(&self.layout_arena, self.root, options)
+        raster::rasterize_layout_arena(&self.layout_arena, self.root, options, limits)
     }
 
     /// Emit a raster image and report missing glyphs and unsupported colors.
@@ -284,6 +642,16 @@ impl PreparedRender {
         &self,
         options: &raster::RasterOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        self.to_image_with_diagnostics_and_limits(options, &raster::RasterLimits::default())
+    }
+
+    /// Emit a raster image with diagnostics and a caller-selected pixel budget.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_diagnostics_and_limits(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         options.validate()?;
         self.validate_options(&options.render)?;
         let diagnostics = raster::raster_diagnostics_arena(
@@ -291,7 +659,7 @@ impl PreparedRender {
             self.root,
             &options.render.fg_color,
         );
-        let image = raster::rasterize_layout_arena(&self.layout_arena, self.root, options)?;
+        let image = raster::rasterize_layout_arena(&self.layout_arena, self.root, options, limits)?;
         Ok((image, diagnostics))
     }
 
@@ -303,6 +671,20 @@ impl PreparedRender {
             ..options.clone()
         };
         self.to_image(&options)
+    }
+
+    /// Emit PNG bytes with a caller-selected raster pixel budget.
+    #[cfg(feature = "raster")]
+    pub fn to_png_with_limits(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterLimits,
+    ) -> Result<Vec<u8>> {
+        let options = raster::RasterOptions {
+            format: raster::ImageFormat::Png,
+            ..options.clone()
+        };
+        self.to_image_with_limits(&options, limits)
     }
 
     /// Emit PNG bytes and report missing glyphs and unsupported colors.
@@ -318,6 +700,20 @@ impl PreparedRender {
         self.to_image_with_diagnostics(&options)
     }
 
+    /// Emit PNG bytes with diagnostics and a caller-selected raster pixel budget.
+    #[cfg(feature = "raster")]
+    pub fn to_png_with_limits_and_diagnostics(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        let options = raster::RasterOptions {
+            format: raster::ImageFormat::Png,
+            ..options.clone()
+        };
+        self.to_image_with_diagnostics_and_limits(&options, limits)
+    }
+
     /// Emit JPEG bytes using the supplied raster settings.
     #[cfg(feature = "raster")]
     pub fn to_jpeg(&self, options: &raster::RasterOptions) -> Result<Vec<u8>> {
@@ -326,6 +722,20 @@ impl PreparedRender {
             ..options.clone()
         };
         self.to_image(&options)
+    }
+
+    /// Emit JPEG bytes with a caller-selected raster pixel budget.
+    #[cfg(feature = "raster")]
+    pub fn to_jpeg_with_limits(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterLimits,
+    ) -> Result<Vec<u8>> {
+        let options = raster::RasterOptions {
+            format: raster::ImageFormat::Jpeg,
+            ..options.clone()
+        };
+        self.to_image_with_limits(&options, limits)
     }
 
     /// Emit JPEG bytes and report missing glyphs and unsupported colors.
@@ -339,6 +749,20 @@ impl PreparedRender {
             ..options.clone()
         };
         self.to_image_with_diagnostics(&options)
+    }
+
+    /// Emit JPEG bytes with diagnostics and a caller-selected raster pixel budget.
+    #[cfg(feature = "raster")]
+    pub fn to_jpeg_with_limits_and_diagnostics(
+        &self,
+        options: &raster::RasterOptions,
+        limits: &raster::RasterLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        let options = raster::RasterOptions {
+            format: raster::ImageFormat::Jpeg,
+            ..options.clone()
+        };
+        self.to_image_with_diagnostics_and_limits(&options, limits)
     }
 }
 
@@ -371,6 +795,196 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
     Ok(emit::emit_svg(&root, options))
 }
 
+/// Render a standalone SVG with metadata and compositing options.
+pub fn render_to_svg_with_options(expr: &MathExpr, options: &SvgOptions) -> Result<String> {
+    let compact = CompactExpr::from_math_expr(expr)?;
+    render_to_svg_compact_with_options(&compact, options)
+}
+
+/// Render a compact expression to SVG with metadata and compositing options.
+pub fn render_to_svg_compact_with_options(
+    expr: &CompactExpr,
+    options: &SvgOptions,
+) -> Result<String> {
+    let metadata = options.metadata_markup()?;
+    let output = match options.mode {
+        SvgMode::Standalone => render_compact_svg(
+            expr,
+            &options.render,
+            None,
+            |arena, root, render_options| {
+                emit_standalone_svg_with_metadata(
+                    arena,
+                    root,
+                    render_options,
+                    options.id_prefix(),
+                    &metadata,
+                )
+            },
+        )?,
+        SvgMode::Text => render_compact_svg(
+            expr,
+            &options.render,
+            None,
+            |arena, root, render_options| {
+                emit::emit_svg_arena_with_metadata(arena, root, render_options, &metadata)
+            },
+        )?,
+    };
+    Ok(output)
+}
+
+/// Render a heap expression with metadata, an output-byte budget, and
+/// cancellation.
+pub fn render_to_svg_with_options_and_limits(
+    expr: &MathExpr,
+    options: &SvgOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    let compact = CompactExpr::from_math_expr(expr)?;
+    render_to_svg_compact_with_options_and_limits(&compact, options, limits)
+}
+
+/// Render a compact SVG with profile options and fallback diagnostics.
+pub(crate) fn render_to_svg_compact_with_options_and_diagnostics(
+    expr: &CompactExpr,
+    options: &SvgOptions,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let metadata = options.metadata_markup()?;
+    let result = match options.mode {
+        SvgMode::Standalone => render_compact_svg_with_diagnostics(
+            expr,
+            &options.render,
+            None,
+            |arena, root, render_options| {
+                emit_standalone_svg_with_metadata(
+                    arena,
+                    root,
+                    render_options,
+                    options.id_prefix(),
+                    &metadata,
+                )
+            },
+        )?,
+        SvgMode::Text => render_compact_svg_with_diagnostics(
+            expr,
+            &options.render,
+            None,
+            |arena, root, render_options| {
+                emit::emit_svg_arena_with_metadata(arena, root, render_options, &metadata)
+            },
+        )?,
+    };
+    Ok(result)
+}
+
+/// Render SVG with metadata and a byte/cancellation budget.
+pub fn render_to_svg_compact_with_options_and_limits(
+    expr: &CompactExpr,
+    options: &SvgOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    let (metadata, limits) = options.limits_for_metadata(limits)?;
+    let output = match options.mode {
+        SvgMode::Standalone => {
+            render_to_svg_standalone_compact_with_prefix_and_limits_and_metadata(
+                expr,
+                &options.render,
+                &limits,
+                options.id_prefix(),
+                Some(&metadata),
+            )?
+        },
+        SvgMode::Text => render_to_svg_compact_with_metadata_and_limits(
+            expr,
+            &options.render,
+            &metadata,
+            &limits,
+        )?,
+    };
+    Ok(output)
+}
+
+/// Render SVG with metadata, a byte/cancellation budget, and fallback
+/// diagnostics.
+pub(crate) fn render_to_svg_compact_with_options_and_limits_and_diagnostics(
+    expr: &CompactExpr,
+    options: &SvgOptions,
+    limits: &SvgLimits,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let (metadata, limits) = options.limits_for_metadata(limits)?;
+    let result = match options.mode {
+        SvgMode::Standalone => {
+            render_to_svg_standalone_compact_with_prefix_and_limits_and_diagnostics_and_metadata(
+                expr,
+                &options.render,
+                &limits,
+                options.id_prefix(),
+                Some(&metadata),
+            )?
+        },
+        SvgMode::Text => render_to_svg_compact_with_limits_and_diagnostics(
+            expr,
+            &options.render,
+            &limits,
+            Some(&metadata),
+        )?,
+    };
+    Ok(result)
+}
+
+/// Render a text SVG with metadata and compositing options.
+pub fn render_to_svg_text_with_options(expr: &MathExpr, options: &SvgOptions) -> Result<String> {
+    let compact = CompactExpr::from_math_expr(expr)?;
+    let options = options.clone().with_mode(SvgMode::Text);
+    render_to_svg_compact_with_options(&compact, &options)
+}
+
+/// Render a compact text SVG with metadata and compositing options.
+pub fn render_to_svg_text_compact_with_options(
+    expr: &CompactExpr,
+    options: &SvgOptions,
+) -> Result<String> {
+    let options = options.clone().with_mode(SvgMode::Text);
+    render_to_svg_compact_with_options(expr, &options)
+}
+
+/// Render a heap expression to text SVG with output and cancellation limits.
+pub fn render_to_svg_with_limits(
+    expr: &MathExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    options.validate()?;
+    crate::ast::validate_ast_depth(expr)?;
+    if crate::ast::has_attributes(expr) {
+        return render_to_svg_compact_with_limits(
+            &CompactExpr::from_math_expr(expr)?,
+            options,
+            limits,
+        );
+    }
+    let style = if options.is_display(expr) {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    let root = layout::layout_expr(expr, style, options);
+    let em = options.font_size_px;
+    let (view_x_px, width_px) = emit::svg_x_bounds_px(&root, em);
+    let height_px = (root.height + root.depth) * em;
+    let depth_px = root.depth * em;
+    let pad = 0.08 * em;
+    emit::validate_svg_geometry(
+        view_x_px - pad,
+        width_px + 2.0 * pad,
+        height_px + 2.0 * pad,
+        root.height * em + pad,
+        depth_px + pad,
+    )?;
+    emit::emit_svg_with_limits(&root, options, limits)
+}
+
 /// Render a math expression to an SVG string and report glyph fallbacks.
 ///
 /// The SVG output is identical to [`render_to_svg`]. The diagnostics identify
@@ -396,7 +1010,7 @@ pub fn render_to_svg_with_diagnostics(
     };
     let root = layout::layout_expr(expr, style, options);
     validate_svg_layout(&root, options)?;
-    let diagnostics = missing_glyph_diagnostics(&root);
+    let diagnostics = svg_diagnostics(&root, &options.fg_color);
     Ok((emit::emit_svg(&root, options), diagnostics))
 }
 
@@ -411,6 +1025,88 @@ pub fn render_to_svg_with_diagnostics(
 /// via [`render_to_svg_compact_arena`].
 pub fn render_to_svg_compact(expr: &CompactExpr, options: &RenderOptions) -> Result<String> {
     render_compact_svg(expr, options, None, emit::emit_svg_arena)
+}
+
+/// Render a compact expression to text SVG with output and cancellation limits.
+pub fn render_to_svg_compact_with_limits(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    render_compact_svg_with_limits(expr, options, limits, |arena, root, options, limits| {
+        emit::emit_svg_arena_with_limits(arena, root, options, limits)
+    })
+}
+
+fn render_compact_svg_with_limits<T>(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    emit: impl FnOnce(&arena::LayoutArena, arena::LayoutBoxId, &RenderOptions, &SvgLimits) -> Result<T>,
+) -> Result<T> {
+    options.validate()?;
+    reject_if_cancelled(limits)?;
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
+    let style = if options
+        .display_mode
+        .unwrap_or(expr.display == DisplayStyle::Block)
+    {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    with_pooled_arena(|arena| {
+        arena.clear();
+        let root = layout::LayoutBuilder::new(style, options).layout(arena, expr);
+        let root_box = arena.get(root);
+        let em = options.font_size_px;
+        let (view_x_px, width_px) = emit::svg_x_bounds_px_arena(arena, root, em);
+        let height_px = (root_box.height + root_box.depth) * em;
+        let depth_px = root_box.depth * em;
+        let pad = 0.08 * em;
+        emit::validate_svg_geometry(
+            view_x_px - pad,
+            width_px + 2.0 * pad,
+            height_px + 2.0 * pad,
+            root_box.height * em + pad,
+            depth_px + pad,
+        )?;
+        emit(arena, root, options, limits)
+    })
+}
+
+/// Render a compact text SVG with profile metadata and output limits.
+fn render_to_svg_compact_with_metadata_and_limits(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    metadata: &SvgMetadata,
+    limits: &SvgLimits,
+) -> Result<String> {
+    render_compact_svg_with_limits(expr, options, limits, |arena, root, options, limits| {
+        emit::emit_svg_arena_with_metadata_and_limits(arena, root, options, metadata, limits)
+    })
+}
+
+/// Render a compact text SVG with one bounded layout/emission pass and report
+/// glyph fallbacks from that same layout. Keeping diagnostics on the bounded
+/// path is important for callers that use both an output cap and diagnostics:
+/// a second unbounded render would defeat the cap and duplicate layout work.
+fn render_to_svg_compact_with_limits_and_diagnostics(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    metadata: Option<&SvgMetadata>,
+) -> Result<(String, Vec<Diagnostic>)> {
+    render_compact_svg_with_limits(expr, options, limits, |arena, root, options, limits| {
+        let output = match metadata {
+            None => emit::emit_svg_arena_with_limits(arena, root, options, limits)?,
+            Some(metadata) => emit::emit_svg_arena_with_metadata_and_limits(
+                arena, root, options, metadata, limits,
+            )?,
+        };
+        let diagnostics = svg_diagnostics_arena(arena, root, &options.fg_color);
+        Ok((output, diagnostics))
+    })
 }
 
 /// Render a compact math expression to SVG and report glyph fallbacks.
@@ -449,7 +1145,9 @@ fn render_compact_svg_with_diagnostics(
     arena: Option<&mut arena::LayoutArena>,
     emit: impl FnOnce(&arena::LayoutArena, arena::LayoutBoxId, &RenderOptions) -> String,
 ) -> Result<(String, Vec<Diagnostic>)> {
-    render_compact_svg_with(expr, options, arena, emit, missing_glyph_diagnostics_arena)
+    render_compact_svg_with(expr, options, arena, emit, |arena, root| {
+        svg_diagnostics_arena(arena, root, &options.fg_color)
+    })
 }
 
 fn render_compact_svg_with<T>(
@@ -494,10 +1192,22 @@ fn render_compact_svg_with<T>(
 /// glyph outlines from Latin Modern Math are embedded as `<path>` elements.
 #[cfg(feature = "render")]
 pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
+    render_to_svg_standalone_with_prefix(expr, options, None)
+}
+
+fn render_to_svg_standalone_with_prefix(
+    expr: &MathExpr,
+    options: &RenderOptions,
+    id_prefix: Option<&str>,
+) -> Result<String> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     if crate::ast::has_attributes(expr) {
-        return render_to_svg_standalone_compact(&CompactExpr::from_math_expr(expr)?, options);
+        return render_to_svg_standalone_compact_with_prefix(
+            &CompactExpr::from_math_expr(expr)?,
+            options,
+            id_prefix,
+        );
     }
     let style = if options.is_display(expr) {
         style::MathStyle::Display
@@ -521,7 +1231,72 @@ pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Res
     let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants(&root);
     subset::add_variants(&mut glyphs, &variant_ids);
-    Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
+    match id_prefix {
+        None => Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs)),
+        Some(prefix) => Ok(svg_writer::emit_svg_with_fonts_prefixed(
+            &root, options, &glyphs, prefix,
+        )),
+    }
+}
+
+/// Render a heap expression to embedded-outline SVG with output and
+/// cancellation limits.
+#[cfg(feature = "render")]
+pub fn render_to_svg_standalone_with_limits(
+    expr: &MathExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    render_to_svg_standalone_with_prefix_and_limits(expr, options, limits, None)
+}
+
+fn render_to_svg_standalone_with_prefix_and_limits(
+    expr: &MathExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    id_prefix: Option<&str>,
+) -> Result<String> {
+    options.validate()?;
+    reject_if_cancelled(limits)?;
+    crate::ast::validate_ast_depth(expr)?;
+    if crate::ast::has_attributes(expr) {
+        return render_to_svg_standalone_compact_with_prefix_and_limits(
+            &CompactExpr::from_math_expr(expr)?,
+            options,
+            limits,
+            id_prefix,
+        );
+    }
+    let style = if options.is_display(expr) {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    let root = layout::layout_expr(expr, style, options);
+    let em = options.font_size_px;
+    let (view_x_px, width_px) = emit::svg_x_bounds_px(&root, em);
+    let height_px = (root.height + root.depth) * em;
+    let depth_px = root.depth * em;
+    let pad = 0.08 * em;
+    emit::validate_svg_geometry(
+        view_x_px - pad,
+        width_px + 2.0 * pad,
+        height_px + 2.0 * pad,
+        root.height * em + pad,
+        depth_px + pad,
+    )?;
+    let chars = subset::collect_chars(&root);
+    let mut glyphs = subset::build_glyph_set(&chars);
+    let variants = subset::collect_variants(&root);
+    subset::add_variants(&mut glyphs, &variants);
+    match id_prefix {
+        None => Ok(svg_writer::emit_svg_with_fonts_limits(
+            &root, options, &glyphs, limits,
+        )?),
+        Some(prefix) => Ok(svg_writer::emit_svg_with_fonts_limits_prefixed(
+            &root, options, &glyphs, limits, prefix,
+        )?),
+    }
 }
 
 /// Render a math expression to a standalone SVG and report glyph fallbacks.
@@ -549,7 +1324,7 @@ pub fn render_to_svg_standalone_with_diagnostics(
     };
     let root = layout::layout_expr(expr, style, options);
     validate_svg_layout(&root, options)?;
-    let diagnostics = missing_glyph_diagnostics(&root);
+    let diagnostics = svg_diagnostics(&root, &options.fg_color);
     let chars = subset::collect_chars(&root);
     let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants(&root);
@@ -570,6 +1345,145 @@ pub fn render_to_svg_standalone_compact(
     options: &RenderOptions,
 ) -> Result<String> {
     render_compact_svg(expr, options, None, emit_standalone_svg)
+}
+
+pub(crate) fn render_to_svg_standalone_compact_with_prefix(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    id_prefix: Option<&str>,
+) -> Result<String> {
+    render_compact_svg(expr, options, None, |arena, root, options| {
+        emit_standalone_svg_prefixed(arena, root, options, id_prefix)
+    })
+}
+
+/// Render a compact expression to embedded-outline SVG with output and
+/// cancellation limits.
+#[cfg(feature = "render")]
+pub fn render_to_svg_standalone_compact_with_limits(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    render_to_svg_standalone_compact_with_prefix_and_limits(expr, options, limits, None)
+}
+
+pub(crate) fn render_to_svg_standalone_compact_with_prefix_and_limits(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    id_prefix: Option<&str>,
+) -> Result<String> {
+    render_to_svg_standalone_compact_with_prefix_and_limits_and_metadata(
+        expr, options, limits, id_prefix, None,
+    )
+}
+
+fn render_to_svg_standalone_compact_with_prefix_and_limits_and_metadata(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    id_prefix: Option<&str>,
+    metadata: Option<&SvgMetadata>,
+) -> Result<String> {
+    render_standalone_compact_svg_with_limits(
+        expr,
+        options,
+        limits,
+        |arena, root, options, limits| {
+            emit_standalone_compact_with_limits(arena, root, options, limits, id_prefix, metadata)
+        },
+    )
+}
+
+fn render_standalone_compact_svg_with_limits<T>(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    emit: impl FnOnce(&arena::LayoutArena, arena::LayoutBoxId, &RenderOptions, &SvgLimits) -> Result<T>,
+) -> Result<T> {
+    options.validate()?;
+    reject_if_cancelled(limits)?;
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
+    let style = if options
+        .display_mode
+        .unwrap_or(expr.display == DisplayStyle::Block)
+    {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    with_pooled_arena(|arena| {
+        arena.clear();
+        let root = layout::LayoutBuilder::new(style, options).layout(arena, expr);
+        let root_box = arena.get(root);
+        let em = options.font_size_px;
+        let (view_x_px, width_px) = emit::svg_x_bounds_px_arena(arena, root, em);
+        let height_px = (root_box.height + root_box.depth) * em;
+        let depth_px = root_box.depth * em;
+        let pad = 0.08 * em;
+        emit::validate_svg_geometry(
+            view_x_px - pad,
+            width_px + 2.0 * pad,
+            height_px + 2.0 * pad,
+            root_box.height * em + pad,
+            depth_px + pad,
+        )?;
+        emit(arena, root, options, limits)
+    })
+}
+
+fn emit_standalone_compact_with_limits(
+    arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    id_prefix: Option<&str>,
+    metadata: Option<&SvgMetadata>,
+) -> Result<String> {
+    let chars = subset::collect_chars_arena(arena, root);
+    let mut glyphs = subset::build_glyph_set(&chars);
+    let variants = subset::collect_variants_arena(arena, root);
+    subset::add_variants(&mut glyphs, &variants);
+    match id_prefix {
+        None => match metadata {
+            None => {
+                svg_writer::emit_svg_with_fonts_arena_limits(arena, root, options, &glyphs, limits)
+            },
+            Some(metadata) => svg_writer::emit_svg_with_fonts_arena_metadata_limits(
+                arena, root, options, &glyphs, metadata, limits,
+            ),
+        },
+        Some(prefix) => match metadata {
+            None => svg_writer::emit_svg_with_fonts_arena_limits_prefixed(
+                arena, root, options, &glyphs, limits, prefix,
+            ),
+            Some(metadata) => svg_writer::emit_svg_with_fonts_arena_metadata_limits_prefixed(
+                arena, root, options, &glyphs, metadata, limits, prefix,
+            ),
+        },
+    }
+}
+
+fn render_to_svg_standalone_compact_with_prefix_and_limits_and_diagnostics_and_metadata(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    id_prefix: Option<&str>,
+    metadata: Option<&SvgMetadata>,
+) -> Result<(String, Vec<Diagnostic>)> {
+    render_standalone_compact_svg_with_limits(
+        expr,
+        options,
+        limits,
+        |arena, root, options, limits| {
+            let output = emit_standalone_compact_with_limits(
+                arena, root, options, limits, id_prefix, metadata,
+            )?;
+            let diagnostics = svg_diagnostics_arena(arena, root, &options.fg_color);
+            Ok((output, diagnostics))
+        },
+    )
 }
 
 /// Render a compact expression to a standalone SVG and report glyph fallbacks.
@@ -604,6 +1518,119 @@ fn emit_standalone_svg(
     let variant_ids = subset::collect_variants_arena(layout_arena, root);
     subset::add_variants(&mut glyphs, &variant_ids);
     svg_writer::emit_svg_with_fonts_arena(layout_arena, root, options, &glyphs)
+}
+
+fn emit_standalone_svg_prefixed(
+    layout_arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    options: &RenderOptions,
+    id_prefix: Option<&str>,
+) -> String {
+    let chars = subset::collect_chars_arena(layout_arena, root);
+    let mut glyphs = subset::build_glyph_set(&chars);
+    let variant_ids = subset::collect_variants_arena(layout_arena, root);
+    subset::add_variants(&mut glyphs, &variant_ids);
+    match id_prefix {
+        None => svg_writer::emit_svg_with_fonts_arena(layout_arena, root, options, &glyphs),
+        Some(prefix) => svg_writer::emit_svg_with_fonts_arena_prefixed(
+            layout_arena,
+            root,
+            options,
+            &glyphs,
+            prefix,
+        ),
+    }
+}
+
+fn emit_standalone_svg_with_metadata(
+    layout_arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    options: &RenderOptions,
+    id_prefix: Option<&str>,
+    metadata: &SvgMetadata,
+) -> String {
+    let chars = subset::collect_chars_arena(layout_arena, root);
+    let mut glyphs = subset::build_glyph_set(&chars);
+    let variants = subset::collect_variants_arena(layout_arena, root);
+    subset::add_variants(&mut glyphs, &variants);
+    match id_prefix {
+        None => svg_writer::emit_svg_with_fonts_arena_metadata(
+            layout_arena,
+            root,
+            options,
+            &glyphs,
+            metadata,
+        ),
+        Some(prefix) => svg_writer::emit_svg_with_fonts_arena_metadata_prefixed(
+            layout_arena,
+            root,
+            options,
+            &glyphs,
+            metadata,
+            prefix,
+        ),
+    }
+}
+
+fn emit_prepared_standalone(
+    arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    options: &RenderOptions,
+    id_prefix: Option<&str>,
+    metadata: Option<&SvgMetadata>,
+) -> String {
+    let chars = subset::collect_chars_arena(arena, root);
+    let mut glyphs = subset::build_glyph_set(&chars);
+    let variants = subset::collect_variants_arena(arena, root);
+    subset::add_variants(&mut glyphs, &variants);
+    match id_prefix {
+        None => match metadata {
+            None => svg_writer::emit_svg_with_fonts_arena(arena, root, options, &glyphs),
+            Some(metadata) => svg_writer::emit_svg_with_fonts_arena_metadata(
+                arena, root, options, &glyphs, metadata,
+            ),
+        },
+        Some(prefix) => match metadata {
+            None => svg_writer::emit_svg_with_fonts_arena_prefixed(
+                arena, root, options, &glyphs, prefix,
+            ),
+            Some(metadata) => svg_writer::emit_svg_with_fonts_arena_metadata_prefixed(
+                arena, root, options, &glyphs, metadata, prefix,
+            ),
+        },
+    }
+}
+
+fn emit_prepared_standalone_with_limits(
+    arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+    id_prefix: Option<&str>,
+    metadata: Option<&SvgMetadata>,
+) -> Result<String> {
+    let chars = subset::collect_chars_arena(arena, root);
+    let mut glyphs = subset::build_glyph_set(&chars);
+    let variants = subset::collect_variants_arena(arena, root);
+    subset::add_variants(&mut glyphs, &variants);
+    match id_prefix {
+        None => match metadata {
+            None => {
+                svg_writer::emit_svg_with_fonts_arena_limits(arena, root, options, &glyphs, limits)
+            },
+            Some(metadata) => svg_writer::emit_svg_with_fonts_arena_metadata_limits(
+                arena, root, options, &glyphs, metadata, limits,
+            ),
+        },
+        Some(prefix) => match metadata {
+            None => svg_writer::emit_svg_with_fonts_arena_limits_prefixed(
+                arena, root, options, &glyphs, limits, prefix,
+            ),
+            Some(metadata) => svg_writer::emit_svg_with_fonts_arena_metadata_limits_prefixed(
+                arena, root, options, &glyphs, metadata, limits, prefix,
+            ),
+        },
+    }
 }
 
 fn validate_svg_layout(root: &layout::LayoutBox, options: &RenderOptions) -> Result<()> {
@@ -671,6 +1698,91 @@ fn missing_glyph_diagnostics(root: &layout::LayoutBox) -> Vec<Diagnostic> {
     diagnostics
 }
 
+fn paint_diagnostic(role: &str, value: &str) -> Option<Diagnostic> {
+    let (kind, explanation) = match paint::classify(value) {
+        paint::PaintClass::Concrete(_) | paint::PaintClass::CurrentColor => return None,
+        paint::PaintClass::HostDependent => {
+            (DiagnosticKind::Info, "depends on the host CSS environment")
+        },
+        paint::PaintClass::Invalid => (
+            DiagnosticKind::Warning,
+            "is unrecognized by Mathema; the SVG viewer receives it verbatim",
+        ),
+    };
+    let mut chars = value.chars();
+    let mut sample: String = chars.by_ref().take(64).collect();
+    if chars.next().is_some() {
+        sample.push('…');
+    }
+    Some(Diagnostic {
+        kind,
+        message: format!("SVG {role} paint {sample:?} {explanation}"),
+        span: None,
+    })
+}
+
+fn svg_diagnostics(root: &layout::LayoutBox, foreground: &str) -> Vec<Diagnostic> {
+    let mut diagnostics = missing_glyph_diagnostics(root);
+    let mut seen = HashSet::new();
+    if let Some(diagnostic) = paint_diagnostic("foreground", foreground)
+        && seen.insert(diagnostic.message.clone())
+    {
+        diagnostics.push(diagnostic);
+    }
+    collect_svg_paints(root, &mut seen, &mut diagnostics);
+    diagnostics
+}
+
+fn collect_svg_paints(
+    layout: &layout::LayoutBox,
+    seen: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use layout::BoxKind;
+    match &layout.kind {
+        BoxKind::Color { color, child } => {
+            if let Some(diagnostic) = paint_diagnostic("expression", color)
+                && seen.insert(diagnostic.message.clone())
+            {
+                diagnostics.push(diagnostic);
+            }
+            collect_svg_paints(&child.layout, seen, diagnostics);
+        },
+        BoxKind::Boxed {
+            bg_color,
+            border_color,
+            child,
+            ..
+        } => {
+            for (role, value) in [
+                ("box background", bg_color.as_deref()),
+                ("box border", border_color.as_deref()),
+            ] {
+                if let Some(value) = value
+                    && let Some(diagnostic) = paint_diagnostic(role, value)
+                    && seen.insert(diagnostic.message.clone())
+                {
+                    diagnostics.push(diagnostic);
+                }
+            }
+            collect_svg_paints(&child.layout, seen, diagnostics);
+        },
+        BoxKind::HBox { children } | BoxKind::VBox { children } => {
+            for child in children {
+                collect_svg_paints(&child.layout, seen, diagnostics);
+            }
+        },
+        BoxKind::Reflected { child } => collect_svg_paints(&child.layout, seen, diagnostics),
+        BoxKind::Glyph { .. }
+        | BoxKind::TextRun { .. }
+        | BoxKind::Rule { .. }
+        | BoxKind::Delimiter { .. }
+        | BoxKind::Kern
+        | BoxKind::SvgPath(_)
+        | BoxKind::Phantom => {},
+    }
+}
+
 fn collect_missing_glyphs(
     layout: &layout::LayoutBox,
     seen: &mut HashSet<char>,
@@ -723,6 +1835,75 @@ fn missing_glyph_diagnostics_arena(
     let mut seen = HashSet::new();
     collect_missing_glyphs_arena(arena, root, &mut seen, &mut diagnostics);
     diagnostics
+}
+
+fn svg_diagnostics_arena(
+    arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    foreground: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = missing_glyph_diagnostics_arena(arena, root);
+    let mut seen = HashSet::new();
+    if let Some(diagnostic) = paint_diagnostic("foreground", foreground)
+        && seen.insert(diagnostic.message.clone())
+    {
+        diagnostics.push(diagnostic);
+    }
+    collect_svg_paints_arena(arena, root, &mut seen, &mut diagnostics);
+    diagnostics
+}
+
+fn collect_svg_paints_arena(
+    arena: &arena::LayoutArena,
+    id: arena::LayoutBoxId,
+    seen: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use arena::ArenaBoxKind;
+    match &arena.get(id).kind {
+        ArenaBoxKind::Color { color, child } => {
+            if let Some(diagnostic) = paint_diagnostic("expression", color)
+                && seen.insert(diagnostic.message.clone())
+            {
+                diagnostics.push(diagnostic);
+            }
+            collect_svg_paints_arena(arena, *child, seen, diagnostics);
+        },
+        ArenaBoxKind::Boxed {
+            bg_color,
+            border_color,
+            child,
+            ..
+        } => {
+            for (role, value) in [
+                ("box background", bg_color.as_deref()),
+                ("box border", border_color.as_deref()),
+            ] {
+                if let Some(value) = value
+                    && let Some(diagnostic) = paint_diagnostic(role, value)
+                    && seen.insert(diagnostic.message.clone())
+                {
+                    diagnostics.push(diagnostic);
+                }
+            }
+            collect_svg_paints_arena(arena, *child, seen, diagnostics);
+        },
+        ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
+            for child in arena.children(*children) {
+                collect_svg_paints_arena(arena, child.id, seen, diagnostics);
+            }
+        },
+        ArenaBoxKind::Reflected { child } => {
+            collect_svg_paints_arena(arena, *child, seen, diagnostics)
+        },
+        ArenaBoxKind::Glyph { .. }
+        | ArenaBoxKind::TextRun { .. }
+        | ArenaBoxKind::Rule { .. }
+        | ArenaBoxKind::Delimiter { .. }
+        | ArenaBoxKind::Kern
+        | ArenaBoxKind::SvgPath(_)
+        | ArenaBoxKind::Phantom => {},
+    }
 }
 
 fn collect_missing_glyphs_arena(
@@ -858,6 +2039,44 @@ mod integration_tests {
                 .iter()
                 .any(|d| d.message.contains("U+4E2D"))
         );
+    }
+
+    #[test]
+    fn svg_paint_diagnostics_distinguish_host_css_from_invalid_values() {
+        let expr = MathExpr::inline(vec![crate::ast::MathNode::Color {
+            color: "var(--equation-ink)".into(),
+            content: Box::new(crate::ast::MathNode::Identifier("x".into())),
+        }]);
+        let options = RenderOptions::default();
+        let (_, host_diagnostics) = render_to_svg_with_diagnostics(&expr, &options).unwrap();
+        assert!(
+            host_diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("host CSS environment") })
+        );
+
+        let invalid = MathExpr::inline(vec![crate::ast::MathNode::Color {
+            color: "not-a-css-paint".into(),
+            content: Box::new(crate::ast::MathNode::Identifier("x".into())),
+        }]);
+        let (_, invalid_diagnostics) = render_to_svg_with_diagnostics(&invalid, &options).unwrap();
+        assert!(
+            invalid_diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("unrecognized by Mathema") })
+        );
+
+        let prepared = prepare_render(&expr, &options).unwrap();
+        let (_, prepared_diagnostics) = prepared.to_svg_text_with_diagnostics(&options).unwrap();
+        let expected_messages: Vec<_> = host_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        let actual_messages: Vec<_> = prepared_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert_eq!(actual_messages, expected_messages);
     }
 
     #[test]

@@ -1,9 +1,133 @@
 /// SVG emission: converts a LayoutBox tree into an SVG string.
 use super::RenderOptions;
+use super::SvgLimits;
+use super::SvgMetadata;
 use super::fonts_registry::FontId;
 use super::layout::{BoxKind, LayoutBox};
 use crate::error::Result;
 use crate::writer::xml_chars;
+
+/// Small output sink abstraction shared by the unbounded and bounded SVG
+/// emitters. Bounded sinks stop accepting chunks before their output grows past
+/// the request budget.
+pub(crate) trait SvgSink {
+    fn push_str(&mut self, value: &str);
+    fn push(&mut self, value: char);
+    fn stopped(&self) -> bool;
+    fn is_bounded(&self) -> bool {
+        false
+    }
+
+    /// Prefix the next generated SVG ID or reference.
+    #[inline]
+    fn push_id_prefix(&mut self) {}
+}
+
+impl SvgSink for String {
+    #[inline]
+    fn push_str(&mut self, value: &str) {
+        String::push_str(self, value);
+    }
+
+    #[inline]
+    fn push(&mut self, value: char) {
+        String::push(self, value);
+    }
+
+    #[inline]
+    fn stopped(&self) -> bool {
+        false
+    }
+}
+
+/// Finish an SVG root opening tag, streaming profile attributes and child
+/// metadata at the root boundary.
+pub(crate) fn push_svg_root_end(svg: &mut impl SvgSink, metadata: Option<&SvgMetadata>) {
+    if let Some(metadata) = metadata {
+        svg.push_str(metadata.attrs());
+    }
+    svg.push('>');
+    if let Some(metadata) = metadata {
+        svg.push_str(metadata.body());
+    }
+}
+
+pub(crate) struct BoundedSvg {
+    output: String,
+    limits: SvgLimits,
+    failure: Option<SvgFailure>,
+}
+
+#[derive(Clone, Copy)]
+enum SvgFailure {
+    Cancelled,
+    OutputLimit,
+}
+
+impl BoundedSvg {
+    pub(crate) fn new(limits: &SvgLimits) -> Self {
+        Self {
+            output: String::new(),
+            limits: limits.clone(),
+            failure: None,
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<String> {
+        match self.failure {
+            Some(SvgFailure::Cancelled) => Err(crate::error::Error::Render {
+                message: "SVG rendering was cancelled".into(),
+            }),
+            Some(SvgFailure::OutputLimit) => Err(crate::error::Error::Render {
+                message: "SVG output exceeded the configured byte limit".into(),
+            }),
+            _ => Ok(self.output),
+        }
+    }
+
+    fn check(&mut self, additional: usize) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        if self.limits.is_cancelled() {
+            self.failure = Some(SvgFailure::Cancelled);
+            return false;
+        }
+        if let Some(limit) = self.limits.max_bytes
+            && self.output.len().saturating_add(additional) > limit
+        {
+            self.failure = Some(SvgFailure::OutputLimit);
+            return false;
+        }
+        true
+    }
+}
+
+impl SvgSink for BoundedSvg {
+    #[inline]
+    fn push_str(&mut self, value: &str) {
+        if self.check(value.len()) {
+            self.output.push_str(value);
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, value: char) {
+        let mut encoded = [0; 4];
+        let value = value.encode_utf8(&mut encoded);
+        self.push_str(value);
+    }
+
+    #[inline]
+    fn stopped(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    #[inline]
+    fn is_bounded(&self) -> bool {
+        true
+    }
+}
 
 /// Largest finite value that [`push_f3`] can serialize without entering its
 /// saturation path. Keep a little headroom for the multiplication and
@@ -44,7 +168,7 @@ pub(crate) fn validate_svg_geometry(
 }
 
 /// Mirror local x coordinates about the right edge of the layout box.
-pub(super) fn open_reflected_group(svg: &mut String, right_edge: f64) {
+pub(super) fn open_reflected_group(svg: &mut impl SvgSink, right_edge: f64) {
     svg.push_str(r#"<g transform="translate("#);
     push_f3(svg, right_edge);
     svg.push_str(r#",0) scale(-1,1)">"#);
@@ -54,7 +178,7 @@ pub(super) fn open_reflected_group(svg: &mut String, right_edge: f64) {
 /// Maps `<`, `>`, `&`, `"`, `'` to their entities to prevent attribute
 /// injection, while avoiding the `std::fmt` machinery entirely.
 #[inline]
-pub(crate) fn push_xml_escaped(out: &mut String, s: &str) {
+pub(crate) fn push_xml_escaped(out: &mut impl SvgSink, s: &str) {
     // Fast path: ordinary UTF-8 source strings need no XML work. The combined
     // predicate also catches XML 1.0 controls before they reach the output.
     if !xml_chars::needs_xml_sanitization(s) {
@@ -82,7 +206,7 @@ pub(crate) fn push_xml_escaped(out: &mut String, s: &str) {
 /// trailing zeros and a redundant leading zero trimmed), avoiding `std::fmt`.
 /// E.g. `12.0` → `12`, `0.04` → `.04`, `16.5` → `16.5`, `-0.384` → `-.384`.
 #[inline]
-pub(crate) fn push_f3(out: &mut String, v: f64) {
+pub(crate) fn push_f3(out: &mut impl SvgSink, v: f64) {
     // Guard against NaN/Infinity producing corrupt SVG attribute values
     if !v.is_finite() {
         out.push('0');
@@ -126,7 +250,7 @@ pub(crate) fn push_f3(out: &mut String, v: f64) {
 
 /// Write a u64 in decimal to a String buffer (manual, no fmt overhead).
 #[inline]
-pub(crate) fn push_u64(out: &mut String, mut n: u64) {
+pub(crate) fn push_u64(out: &mut impl SvgSink, mut n: u64) {
     if n == 0 {
         out.push('0');
         return;
@@ -147,7 +271,30 @@ pub(crate) fn push_u64(out: &mut String, mut n: u64) {
 /// Avoids re-escaping on every element emission.
 struct EscapedAttrs<'a> {
     font_family: &'a str,
-    fg_color: String,
+    font_family_preescaped: bool,
+    fg_color: &'a str,
+    fg_color_preescaped: bool,
+    raw_fg_color: &'a str,
+}
+
+impl EscapedAttrs<'_> {
+    #[inline]
+    fn push_font_family(&self, svg: &mut impl SvgSink) {
+        if self.font_family_preescaped {
+            svg.push_str(self.font_family);
+        } else {
+            push_xml_escaped(svg, self.font_family);
+        }
+    }
+
+    #[inline]
+    fn push_fg_color(&self, svg: &mut impl SvgSink) {
+        if self.fg_color_preescaped {
+            svg.push_str(self.fg_color);
+        } else {
+            push_xml_escaped(svg, self.fg_color);
+        }
+    }
 }
 
 #[inline]
@@ -187,19 +334,31 @@ fn font_css(font: FontId) -> Option<(Option<&'static str>, bool, bool)> {
     })
 }
 
-fn svg_text_run(text: &str, italic: bool) -> (String, bool) {
-    if !italic {
-        return (text.to_string(), false);
-    }
+#[inline]
+fn svg_text_run_needs_synthetic_italic(text: &str, italic: bool) -> bool {
+    italic
+        && text
+            .chars()
+            .any(|ch| super::layout::math_italic_codepoint(ch).is_none())
+}
 
-    let mut mapped = String::with_capacity(text.len());
-    for ch in text.chars() {
-        let Some(mapped_ch) = super::layout::math_italic_codepoint(ch) else {
-            return (text.to_string(), true);
-        };
-        mapped.push(mapped_ch);
+#[inline]
+fn push_svg_text_run(svg: &mut impl SvgSink, text: &str, italic: bool) {
+    if !italic {
+        push_xml_escaped(svg, text);
+        return;
     }
-    (mapped, false)
+    if text
+        .chars()
+        .any(|ch| super::layout::math_italic_codepoint(ch).is_none())
+    {
+        push_xml_escaped(svg, text);
+        return;
+    }
+    for ch in text.chars() {
+        let output = super::layout::math_italic_codepoint(ch).unwrap();
+        write_escaped_char(svg, output);
+    }
 }
 
 /// Return `(view_box_left_px, content_width_px)` for visible horizontal SVG content.
@@ -313,6 +472,17 @@ fn compute_x_bounds_arena(arena: &LayoutArena, id: LayoutBoxId, x: f64) -> (f64,
 
 /// Emit the final SVG string from a laid-out box tree.
 pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
+    let mut svg = String::with_capacity(4096);
+    emit_svg_to(root, options, &mut svg, None);
+    svg
+}
+
+fn emit_svg_to(
+    root: &LayoutBox,
+    options: &RenderOptions,
+    svg: &mut impl SvgSink,
+    metadata: Option<&SvgMetadata>,
+) {
     let em = options.font_size_px;
     let (view_x_px, width_px) = svg_x_bounds_px(root, em);
     let height_px = (root.height + root.depth) * em;
@@ -322,40 +492,62 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     // strokes, delimiter curves) are not clipped at the exact bounding box edge.
     let pad = 0.08 * em;
 
-    let mut svg = String::with_capacity(4096);
-    let mut font_family_escaped = String::with_capacity(options.font_family.len() + 4);
-    push_xml_escaped(&mut font_family_escaped, &options.font_family);
-    let mut fg_color_escaped = String::with_capacity(options.fg_color.len() + 4);
-    push_xml_escaped(&mut fg_color_escaped, &options.fg_color);
+    let preescaped = !svg.is_bounded();
+    let font_family_escaped = preescaped.then(|| {
+        let mut value = String::with_capacity(options.font_family.len() + 4);
+        push_xml_escaped(&mut value, &options.font_family);
+        value
+    });
+    let fg_color_escaped = preescaped.then(|| {
+        let mut value = String::with_capacity(options.fg_color.len() + 4);
+        push_xml_escaped(&mut value, &options.fg_color);
+        value
+    });
     let attrs = EscapedAttrs {
-        font_family: &font_family_escaped,
-        fg_color: fg_color_escaped,
+        font_family: font_family_escaped
+            .as_deref()
+            .unwrap_or(&options.font_family),
+        font_family_preescaped: preescaped,
+        fg_color: fg_color_escaped.as_deref().unwrap_or(&options.fg_color),
+        fg_color_preescaped: preescaped,
+        raw_fg_color: &options.fg_color,
     };
 
     // SVG header — use fast float formatter
     svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
-    push_f3(&mut svg, width_px + 2.0 * pad);
+    push_f3(svg, width_px + 2.0 * pad);
     svg.push_str(r#"" height=""#);
-    push_f3(&mut svg, height_px + 2.0 * pad);
+    push_f3(svg, height_px + 2.0 * pad);
     svg.push_str(r#"" viewBox=""#);
-    push_f3(&mut svg, view_x_px - pad);
+    push_f3(svg, view_x_px - pad);
     svg.push(' ');
-    push_f3(&mut svg, -pad);
+    push_f3(svg, -pad);
     svg.push(' ');
-    push_f3(&mut svg, width_px + 2.0 * pad);
+    push_f3(svg, width_px + 2.0 * pad);
     svg.push(' ');
-    push_f3(&mut svg, height_px + 2.0 * pad);
+    push_f3(svg, height_px + 2.0 * pad);
     svg.push_str(r#"" style="vertical-align: "#);
-    push_f3(&mut svg, -(depth_px + pad));
-    svg.push_str(r#"px">"#);
+    push_f3(svg, -(depth_px + pad));
+    svg.push_str("px\"");
+    push_svg_root_end(svg, metadata);
 
     // Render content
     // Origin in SVG: (0, root.height * em) corresponds to the baseline at x=0
     let baseline_y = root.height * em;
-    emit_box(&mut svg, root, 0.0, baseline_y, em, &attrs);
+    emit_box(svg, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
-    svg
+}
+
+/// Emit a text SVG while enforcing output and cancellation limits.
+pub fn emit_svg_with_limits(
+    root: &LayoutBox,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    emit_svg_to(root, options, &mut svg, None);
+    svg.finish()
 }
 
 /// The font size and baseline of a glyph drawn as text. A client font has no
@@ -384,13 +576,16 @@ fn text_glyph_size(ch: char, font: FontId, font_size: f64, y: f64) -> (f64, f64)
 }
 
 fn emit_box(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     layout: &LayoutBox,
     x: f64,
     y: f64,
     em: f64,
     attrs: &EscapedAttrs<'_>,
 ) {
+    if svg.stopped() {
+        return;
+    }
     match &layout.kind {
         BoxKind::Glyph {
             ch,
@@ -408,7 +603,11 @@ fn emit_box(
                 svg.push_str(r#"" font-size=""#);
                 push_f3(svg, font_size);
                 svg.push_str(r#"" font-family=""#);
-                svg.push_str(family.unwrap_or(attrs.font_family));
+                if let Some(family) = family {
+                    svg.push_str(family);
+                } else {
+                    attrs.push_font_family(svg);
+                }
                 if ital_style {
                     svg.push_str(r#"" font-style="italic"#);
                 }
@@ -416,7 +615,7 @@ fn emit_box(
                     svg.push_str(r#"" font-weight="bold"#);
                 }
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"">"#);
                 write_escaped_char(svg, *ch);
                 svg.push_str("</text>");
@@ -430,12 +629,12 @@ fn emit_box(
                 svg.push_str(r#"" font-size=""#);
                 push_f3(svg, font_size);
                 svg.push_str(r#"" font-family=""#);
-                svg.push_str(attrs.font_family);
+                attrs.push_font_family(svg);
                 if emit_italic_style {
                     svg.push_str(r#"" font-style="italic"#);
                 }
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"">"#);
                 write_escaped_char(svg, render_ch);
                 svg.push_str("</text>");
@@ -448,7 +647,7 @@ fn emit_box(
             italic,
             text_style,
         } => {
-            let (render_text, emit_italic_style) = svg_text_run(text, *italic);
+            let emit_italic_style = svg_text_run_needs_synthetic_italic(text, *italic);
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -470,7 +669,7 @@ fn emit_box(
                     svg.push_str("monospace");
                 },
                 _ => {
-                    svg.push_str(attrs.font_family);
+                    attrs.push_font_family(svg);
                 },
             }
             if emit_italic_style {
@@ -490,9 +689,9 @@ fn emit_box(
                 svg.push_str(r#"" font-weight="bold"#);
             }
             svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
+            attrs.push_fg_color(svg);
             svg.push_str(r#"">"#);
-            push_xml_escaped(svg, &render_text);
+            push_svg_text_run(svg, text, *italic);
             svg.push_str("</text>");
         },
 
@@ -530,7 +729,7 @@ fn emit_box(
                 svg.push_str(r#"" height=""#);
                 push_f3(svg, th_px);
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#""/>"#);
             }
         },
@@ -563,7 +762,7 @@ fn emit_box(
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, fill_path);
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"" stroke="none"/></g>"#);
             } else if let Some(dp) =
                 super::delimiter_paths::delimiter_path(*ch, *target_height / glyph_scale, 1.0)
@@ -581,13 +780,13 @@ fn emit_box(
                     svg.push_str(r#")"><path d=""#);
                     push_xml_escaped(svg, fill_path);
                     svg.push_str(r#"" fill=""#);
-                    svg.push_str(&attrs.fg_color);
+                    attrs.push_fg_color(svg);
                     svg.push_str(r#"" stroke="none"/></g>"#);
                 } else {
                     svg.push_str(r#")"><path d=""#);
                     push_xml_escaped(svg, &dp.path_data);
                     svg.push_str(r#"" stroke=""#);
-                    svg.push_str(&attrs.fg_color);
+                    attrs.push_fg_color(svg);
                     svg.push_str(r#"" stroke-width=""#);
                     push_f3(svg, dp.stroke_width);
                     svg.push_str(
@@ -604,8 +803,7 @@ fn emit_box(
                     (layout.width, layout.height, layout.depth),
                     em,
                     target_height * em,
-                    attrs.font_family,
-                    &attrs.fg_color,
+                    attrs,
                 );
             }
         },
@@ -627,13 +825,13 @@ fn emit_box(
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, fill_path);
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"" stroke="none"/></g>"#);
             } else {
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, path);
                 svg.push_str(r#"" stroke=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
             }
         },
@@ -645,11 +843,10 @@ fn emit_box(
             // correct color instead of "currentColor").
             let color_attrs = EscapedAttrs {
                 font_family: attrs.font_family,
-                fg_color: {
-                    let mut c = String::new();
-                    push_xml_escaped(&mut c, color);
-                    c
-                },
+                font_family_preescaped: attrs.font_family_preescaped,
+                fg_color: color,
+                fg_color_preescaped: false,
+                raw_fg_color: color,
             };
             svg.push_str(r#"<g fill=""#);
             push_xml_escaped(svg, color);
@@ -674,7 +871,7 @@ fn emit_box(
         } => {
             let extent = (layout.width, layout.height, layout.depth);
             let colors = (bg_color.as_deref(), border_color.as_deref());
-            push_box(svg, (x, y), extent, em, colors, &attrs.fg_color);
+            push_box(svg, (x, y), extent, em, colors, attrs.raw_fg_color);
 
             // Content
             let cx = x + child.dx * em;
@@ -703,50 +900,110 @@ use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
 /// Emit the final SVG string from an arena-based layout.
 /// Produces byte-identical output to `emit_svg` for the same expression.
 pub fn emit_svg_arena(arena: &LayoutArena, root: LayoutBoxId, options: &RenderOptions) -> String {
+    let mut svg = String::with_capacity(4096);
+    emit_svg_arena_to(arena, root, options, &mut svg, None);
+    svg
+}
+
+/// Emit an arena text SVG with profile metadata at the root opening tag.
+pub(crate) fn emit_svg_arena_with_metadata(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    metadata: &SvgMetadata,
+) -> String {
+    let mut svg = String::with_capacity(4096 + metadata.len());
+    emit_svg_arena_to(arena, root, options, &mut svg, Some(metadata));
+    svg
+}
+
+fn emit_svg_arena_to(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    svg: &mut impl SvgSink,
+    metadata: Option<&SvgMetadata>,
+) {
     let root_box = arena.get(root);
     let em = options.font_size_px;
     let (view_x_px, width_px) = svg_x_bounds_px_arena(arena, root, em);
     let height_px = (root_box.height + root_box.depth) * em;
     let depth_px = root_box.depth * em;
 
-    let mut svg = String::with_capacity(4096);
-    let mut font_family_escaped = String::with_capacity(options.font_family.len() + 4);
-    push_xml_escaped(&mut font_family_escaped, &options.font_family);
-    let mut fg_color_escaped = String::with_capacity(options.fg_color.len() + 4);
-    push_xml_escaped(&mut fg_color_escaped, &options.fg_color);
+    let preescaped = !svg.is_bounded();
+    let font_family_escaped = preescaped.then(|| {
+        let mut value = String::with_capacity(options.font_family.len() + 4);
+        push_xml_escaped(&mut value, &options.font_family);
+        value
+    });
+    let fg_color_escaped = preescaped.then(|| {
+        let mut value = String::with_capacity(options.fg_color.len() + 4);
+        push_xml_escaped(&mut value, &options.fg_color);
+        value
+    });
     let attrs = EscapedAttrs {
-        font_family: &font_family_escaped,
-        fg_color: fg_color_escaped,
+        font_family: font_family_escaped
+            .as_deref()
+            .unwrap_or(&options.font_family),
+        font_family_preescaped: preescaped,
+        fg_color: fg_color_escaped.as_deref().unwrap_or(&options.fg_color),
+        fg_color_preescaped: preescaped,
+        raw_fg_color: &options.fg_color,
     };
 
     // SVG header — identical format to emit_svg
     let pad = 0.08 * em;
     svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
-    push_f3(&mut svg, width_px + 2.0 * pad);
+    push_f3(svg, width_px + 2.0 * pad);
     svg.push_str(r#"" height=""#);
-    push_f3(&mut svg, height_px + 2.0 * pad);
+    push_f3(svg, height_px + 2.0 * pad);
     svg.push_str(r#"" viewBox=""#);
-    push_f3(&mut svg, view_x_px - pad);
+    push_f3(svg, view_x_px - pad);
     svg.push(' ');
-    push_f3(&mut svg, -pad);
+    push_f3(svg, -pad);
     svg.push(' ');
-    push_f3(&mut svg, width_px + 2.0 * pad);
+    push_f3(svg, width_px + 2.0 * pad);
     svg.push(' ');
-    push_f3(&mut svg, height_px + 2.0 * pad);
+    push_f3(svg, height_px + 2.0 * pad);
     svg.push_str(r#"" style="vertical-align: "#);
-    push_f3(&mut svg, -(depth_px + pad));
-    svg.push_str(r#"px">"#);
+    push_f3(svg, -(depth_px + pad));
+    svg.push_str("px\"");
+    push_svg_root_end(svg, metadata);
 
     // Render content
     let baseline_y = root_box.height * em;
-    emit_box_arena(&mut svg, arena, root, 0.0, baseline_y, em, &attrs);
+    emit_box_arena(svg, arena, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
-    svg
+}
+
+/// Emit an arena layout as a text SVG while enforcing output and cancellation limits.
+pub fn emit_svg_arena_with_limits(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    limits: &SvgLimits,
+) -> Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    emit_svg_arena_to(arena, root, options, &mut svg, None);
+    svg.finish()
+}
+
+/// Emit an arena text SVG with profile metadata while enforcing output limits.
+pub(crate) fn emit_svg_arena_with_metadata_and_limits(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    metadata: &SvgMetadata,
+    limits: &SvgLimits,
+) -> Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    emit_svg_arena_to(arena, root, options, &mut svg, Some(metadata));
+    svg.finish()
 }
 
 fn emit_box_arena(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     arena: &LayoutArena,
     id: LayoutBoxId,
     x: f64,
@@ -754,6 +1011,9 @@ fn emit_box_arena(
     em: f64,
     attrs: &EscapedAttrs<'_>,
 ) {
+    if svg.stopped() {
+        return;
+    }
     let layout = arena.get(id);
     match &layout.kind {
         ArenaBoxKind::Glyph {
@@ -771,7 +1031,11 @@ fn emit_box_arena(
                 svg.push_str(r#"" font-size=""#);
                 push_f3(svg, font_size);
                 svg.push_str(r#"" font-family=""#);
-                svg.push_str(family.unwrap_or(attrs.font_family));
+                if let Some(family) = family {
+                    svg.push_str(family);
+                } else {
+                    attrs.push_font_family(svg);
+                }
                 if ital_style {
                     svg.push_str(r#"" font-style="italic"#);
                 }
@@ -779,7 +1043,7 @@ fn emit_box_arena(
                     svg.push_str(r#"" font-weight="bold"#);
                 }
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"">"#);
                 write_escaped_char(svg, *ch);
                 svg.push_str("</text>");
@@ -792,12 +1056,12 @@ fn emit_box_arena(
                 svg.push_str(r#"" font-size=""#);
                 push_f3(svg, font_size);
                 svg.push_str(r#"" font-family=""#);
-                svg.push_str(attrs.font_family);
+                attrs.push_font_family(svg);
                 if emit_italic_style {
                     svg.push_str(r#"" font-style="italic"#);
                 }
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"">"#);
                 write_escaped_char(svg, render_ch);
                 svg.push_str("</text>");
@@ -810,7 +1074,7 @@ fn emit_box_arena(
             italic,
             text_style,
         } => {
-            let (render_text, emit_italic_style) = svg_text_run(text, *italic);
+            let emit_italic_style = svg_text_run_needs_synthetic_italic(text, *italic);
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -832,7 +1096,7 @@ fn emit_box_arena(
                     svg.push_str("monospace");
                 },
                 _ => {
-                    svg.push_str(attrs.font_family);
+                    attrs.push_font_family(svg);
                 },
             }
             if emit_italic_style {
@@ -852,9 +1116,9 @@ fn emit_box_arena(
                 svg.push_str(r#"" font-weight="bold"#);
             }
             svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
+            attrs.push_fg_color(svg);
             svg.push_str(r#"">"#);
-            push_xml_escaped(svg, &render_text);
+            push_svg_text_run(svg, text, *italic);
             svg.push_str("</text>");
         },
 
@@ -890,7 +1154,7 @@ fn emit_box_arena(
                 svg.push_str(r#"" height=""#);
                 push_f3(svg, th_px);
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#""/>"#);
             }
         },
@@ -921,7 +1185,7 @@ fn emit_box_arena(
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, fill_path);
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"" stroke="none"/></g>"#);
             } else if let Some(dp) =
                 super::delimiter_paths::delimiter_path(*ch, *target_height / glyph_scale, 1.0)
@@ -939,13 +1203,13 @@ fn emit_box_arena(
                     svg.push_str(r#")"><path d=""#);
                     push_xml_escaped(svg, fill_path);
                     svg.push_str(r#"" fill=""#);
-                    svg.push_str(&attrs.fg_color);
+                    attrs.push_fg_color(svg);
                     svg.push_str(r#"" stroke="none"/></g>"#);
                 } else {
                     svg.push_str(r#")"><path d=""#);
                     push_xml_escaped(svg, &dp.path_data);
                     svg.push_str(r#"" stroke=""#);
-                    svg.push_str(&attrs.fg_color);
+                    attrs.push_fg_color(svg);
                     svg.push_str(r#"" stroke-width=""#);
                     push_f3(svg, dp.stroke_width);
                     svg.push_str(
@@ -962,8 +1226,7 @@ fn emit_box_arena(
                     (layout.width, layout.height, layout.depth),
                     em,
                     target_height * em,
-                    attrs.font_family,
-                    &attrs.fg_color,
+                    attrs,
                 );
             }
         },
@@ -982,13 +1245,13 @@ fn emit_box_arena(
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, fill_path);
                 svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"" stroke="none"/></g>"#);
             } else {
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, path);
                 svg.push_str(r#"" stroke=""#);
-                svg.push_str(&attrs.fg_color);
+                attrs.push_fg_color(svg);
                 svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
             }
         },
@@ -996,11 +1259,10 @@ fn emit_box_arena(
         ArenaBoxKind::Color { color, child } => {
             let color_attrs = EscapedAttrs {
                 font_family: attrs.font_family,
-                fg_color: {
-                    let mut c = String::new();
-                    push_xml_escaped(&mut c, color);
-                    c
-                },
+                font_family_preescaped: attrs.font_family_preescaped,
+                fg_color: color,
+                fg_color_preescaped: false,
+                raw_fg_color: color,
             };
             svg.push_str(r#"<g fill=""#);
             push_xml_escaped(svg, color);
@@ -1024,7 +1286,7 @@ fn emit_box_arena(
         } => {
             let extent = (layout.width, layout.height, layout.depth);
             let colors = (bg_color.as_deref(), border_color.as_deref());
-            push_box(svg, (x, y), extent, em, colors, &attrs.fg_color);
+            push_box(svg, (x, y), extent, em, colors, attrs.raw_fg_color);
 
             // Content — arena version stores child without position offset,
             // so we must apply padding here (heap version stored dx=padding in PositionedBox)
@@ -1041,7 +1303,7 @@ fn emit_box_arena(
 /// The background and frame of a `Boxed` node of the given width, height and
 /// depth (em) at `(x, y)`. The frame is inside the box.
 pub(super) fn push_box(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     (x, y): (f64, f64),
     (width, height, depth): (f64, f64, f64),
     em: f64,
@@ -1073,7 +1335,7 @@ pub(super) fn push_box(
 }
 
 /// Write an XML-escaped character directly to the buffer (zero allocation).
-pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
+pub(crate) fn write_escaped_char(out: &mut impl SvgSink, ch: char) {
     let ch = if xml_chars::is_xml_char(ch) {
         ch
     } else {
@@ -1111,15 +1373,14 @@ fn delimiter_glyph_scale(scale: f64) -> f64 {
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn push_delimiter_text(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     ch: char,
     x: f64,
     y: f64,
     (width, height, depth): (f64, f64, f64),
     em: f64,
     font_size: f64,
-    font_family: &str,
-    fg_color: &str,
+    attrs: &EscapedAttrs<'_>,
 ) {
     let m = super::metrics::glyph_metrics(ch);
     let box_center = (height - depth) / 2.0 * em;
@@ -1149,9 +1410,9 @@ fn push_delimiter_text(
     svg.push_str(r#" font-size=""#);
     push_f3(svg, font_size);
     svg.push_str(r#"" font-family=""#);
-    svg.push_str(font_family);
+    attrs.push_font_family(svg);
     svg.push_str(r#"" fill=""#);
-    svg.push_str(fg_color);
+    attrs.push_fg_color(svg);
     svg.push_str(r#"">"#);
     write_escaped_char(svg, ch);
     svg.push_str("</text>");

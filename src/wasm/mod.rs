@@ -48,13 +48,18 @@ pub(crate) fn js_string(_s: &str) -> JsValue {
 }
 
 pub(crate) fn parse_format(s: &str) -> Result<Format, JsValue> {
-    match s.to_lowercase().as_str() {
-        "latex" | "tex" => Ok(Format::LaTeX),
-        "mathml" | "mml" => Ok(Format::MathML),
-        "omml" => Ok(Format::Omml),
-        "mtef" => Ok(Format::Mtef),
-        "unicodemath" | "unicode-math" | "um" => Ok(Format::UnicodeMath),
-        _ => Err(js_string(&format!("unknown format: {s}"))),
+    s.parse::<Format>()
+        .map_err(|_| js_string(&format!("unknown format: {s}")))
+}
+
+pub(crate) fn parse_input_format(s: &str) -> Result<Format, JsValue> {
+    let format = parse_format(s)?;
+    match format {
+        #[cfg(feature = "render")]
+        Format::Svg => Err(js_string("SVG is output-only")),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(js_string("raster formats are output-only")),
+        _ => Ok(format),
     }
 }
 
@@ -63,9 +68,27 @@ pub(crate) fn parse_format(s: &str) -> Result<Format, JsValue> {
 /// Formats: "latex", "mathml", "omml", "mtef", "unicodemath"
 #[wasm_bindgen]
 pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
-    let from_fmt = parse_format(from)?;
+    let from_fmt = parse_input_format(from)?;
     let to_fmt = parse_format(to)?;
     do_convert(input, from_fmt, to_fmt).map_err(to_js_err)
+}
+
+/// Convert an input expression to SVG.
+///
+/// Standalone embedded outlines are used by default. Pass true for the
+/// explicit client-font text backend.
+#[cfg(feature = "render")]
+#[wasm_bindgen(js_name = "convertSvg")]
+pub fn convert_svg(input: &str, from: &str, text_backend: Option<bool>) -> Result<String, JsValue> {
+    let from_fmt = parse_format(from)?;
+    let mode = if text_backend.unwrap_or(false) {
+        crate::render::SvgMode::Text
+    } else {
+        crate::render::SvgMode::Standalone
+    };
+    let options = crate::render::SvgOptions::default().with_mode(mode);
+    crate::convert::convert_with_svg_options(input, from_fmt, Format::Svg, &options)
+        .map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize the AST, and return MathML.

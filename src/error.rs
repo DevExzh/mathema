@@ -2,6 +2,8 @@
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
+use std::fmt;
+use std::str::FromStr;
 
 /// Position span in source input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -518,4 +520,51 @@ pub enum Format {
     /// JPEG raster image. Output-only; requires the `raster` feature.
     #[cfg(feature = "raster")]
     Jpeg,
+}
+
+impl Format {
+    /// Return the canonical lower-case spelling accepted by [`FromStr`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LaTeX => "latex",
+            Self::MathML => "mathml",
+            Self::Omml => "omml",
+            Self::Mtef => "mtef",
+            Self::UnicodeMath => "unicodemath",
+            #[cfg(feature = "render")]
+            Self::Svg => "svg",
+            #[cfg(feature = "raster")]
+            Self::Png => "png",
+            #[cfg(feature = "raster")]
+            Self::Jpeg => "jpeg",
+        }
+    }
+}
+
+impl fmt::Display for Format {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Format {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "latex" | "tex" => Ok(Self::LaTeX),
+            "mathml" | "mml" => Ok(Self::MathML),
+            "omml" => Ok(Self::Omml),
+            "mtef" => Ok(Self::Mtef),
+            "unicodemath" | "unicode-math" | "um" => Ok(Self::UnicodeMath),
+            #[cfg(feature = "render")]
+            "svg" => Ok(Self::Svg),
+            #[cfg(feature = "raster")]
+            "png" => Ok(Self::Png),
+            #[cfg(feature = "raster")]
+            "jpeg" | "jpg" => Ok(Self::Jpeg),
+            _ => Err(format!("unknown format '{value}'")),
+        }
+    }
 }

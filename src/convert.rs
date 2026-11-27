@@ -14,11 +14,13 @@ use crate::reader::mathml::MathmlReader;
 use crate::reader::mtef::{MtefInfo, MtefReader};
 use crate::reader::omml::OmmlReader;
 use crate::reader::unicode_math::UnicodeMathReader;
+use crate::writer::Writer;
 use crate::writer::latex::LatexWriter;
 use crate::writer::mathml::MathmlWriter;
 use crate::writer::mtef::{MtefWriteOptions, MtefWriter};
 use crate::writer::omml::OmmlWriter;
 use crate::writer::unicode_math::UnicodeMathWriter;
+use std::fmt;
 use std::sync::OnceLock;
 
 /// One-liner conversion between any two supported formats.
@@ -42,6 +44,201 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
     )?;
     normalize_for(&mut compact.expr, from, to)?;
     write_compact(&compact.expr, to, config)
+}
+
+/// Write a caller-constructed heap expression to a supported output format.
+///
+/// This checked entry point validates the complete tree before a writer
+/// traverses it. Use [`write_compact_expr`] when the compact arena is already
+/// available and [`write_expr_with_diagnostics`] when target losses should be
+/// reported alongside the output.
+pub fn write_expr(expr: &MathExpr, to: Format, config: &Config) -> Result<String> {
+    validate_heap_output(expr, config)?;
+    match to {
+        Format::LaTeX => LatexWriter::write(expr, config),
+        Format::MathML => MathmlWriter::write(expr, config),
+        Format::Omml => OmmlWriter::write(expr, config),
+        Format::Mtef => MtefWriter::write(expr, config),
+        Format::UnicodeMath => UnicodeMathWriter::write(expr, config),
+        #[cfg(feature = "render")]
+        Format::Svg => {
+            crate::render::render_to_svg_standalone(expr, &crate::render::RenderOptions::default())
+        },
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats produce binary output; use render_to_image() instead".into(),
+        )),
+    }
+}
+
+/// Write a caller-constructed compact expression to a supported text format.
+/// The writer validates arena references and limits before following them.
+pub fn write_compact_expr(expr: &CompactExpr, to: Format, config: &Config) -> Result<String> {
+    match to {
+        Format::LaTeX => LatexWriter::write_compact(expr, config),
+        Format::MathML => MathmlWriter::write_compact(expr, config),
+        Format::Omml => OmmlWriter::write_compact(expr, config),
+        Format::Mtef => MtefWriter::write_compact(expr, config),
+        Format::UnicodeMath => UnicodeMathWriter::write_compact(expr, config),
+        #[cfg(feature = "render")]
+        Format::Svg => {
+            validate_compact_output(expr, config)?;
+            crate::render::render_to_svg_standalone_compact(
+                expr,
+                &crate::render::RenderOptions::default(),
+            )
+        },
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats produce binary output; use render_to_image() instead".into(),
+        )),
+    }
+}
+
+/// Write a heap expression and return target-loss diagnostics when supported.
+pub fn write_expr_with_diagnostics(
+    expr: &MathExpr,
+    to: Format,
+    config: &Config,
+) -> Result<(String, Vec<Diagnostic>)> {
+    validate_heap_output(expr, config)?;
+    let compact = CompactExpr::from_math_expr_after_validation(expr)?;
+    match to {
+        Format::LaTeX => LatexWriter::write_compact_with_diagnostics(&compact, config),
+        Format::MathML => MathmlWriter::write_compact_with_diagnostics(&compact, config),
+        Format::Omml => OmmlWriter::write_compact_with_diagnostics(&compact, config),
+        Format::Mtef => MtefWriter::write_compact_with_diagnostics(&compact, config),
+        Format::UnicodeMath => UnicodeMathWriter::write_compact_with_diagnostics(&compact, config),
+        #[cfg(feature = "render")]
+        Format::Svg => crate::render::render_to_svg_standalone_with_diagnostics(
+            expr,
+            &crate::render::RenderOptions::default(),
+        ),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats produce binary output; use render_to_image_with_diagnostics() instead"
+                .into(),
+        )),
+    }
+}
+
+/// Write a compact expression and return target-loss diagnostics when supported.
+pub fn write_compact_expr_with_diagnostics(
+    expr: &CompactExpr,
+    to: Format,
+    config: &Config,
+) -> Result<(String, Vec<Diagnostic>)> {
+    match to {
+        Format::LaTeX => LatexWriter::write_compact_with_diagnostics(expr, config),
+        Format::MathML => MathmlWriter::write_compact_with_diagnostics(expr, config),
+        Format::Omml => OmmlWriter::write_compact_with_diagnostics(expr, config),
+        Format::Mtef => MtefWriter::write_compact_with_diagnostics(expr, config),
+        Format::UnicodeMath => UnicodeMathWriter::write_compact_with_diagnostics(expr, config),
+        #[cfg(feature = "render")]
+        Format::Svg => crate::render::render_to_svg_standalone_compact_with_diagnostics(
+            {
+                validate_compact_output(expr, config)?;
+                expr
+            },
+            &crate::render::RenderOptions::default(),
+        ),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats produce binary output; use render_to_image_with_diagnostics() instead"
+                .into(),
+        )),
+    }
+}
+
+fn validate_heap_output(expr: &MathExpr, config: &Config) -> Result<()> {
+    crate::ast::validate_ast_depth_with(expr, config.effective_max_depth())
+}
+
+#[cfg(feature = "render")]
+fn validate_compact_output(expr: &CompactExpr, config: &Config) -> Result<()> {
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, config.effective_max_depth())
+}
+/// Convert with an explicit SVG backend and document profile.
+///
+/// The options are used when the output is SVG. Other output formats return
+/// an unsupported-target error.
+#[cfg(feature = "render")]
+pub fn convert_with_svg_options(
+    input: &str,
+    from: Format,
+    to: Format,
+    options: &crate::render::SvgOptions,
+) -> Result<String> {
+    convert_with_config_and_svg_options(input, from, to, &Config::default(), options)
+}
+
+/// Convert with an explicit SVG backend, metadata profile, and configuration.
+#[cfg(feature = "render")]
+pub fn convert_with_config_and_svg_options(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    options: &crate::render::SvgOptions,
+) -> Result<String> {
+    if to != Format::Svg {
+        return Err(crate::error::Error::Unsupported(
+            "SVG options require Format::Svg as the output".into(),
+        ));
+    }
+    let mut compact = parse_compact(input, from, config)?;
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )?;
+    normalize_for(&mut compact.expr, from, to)?;
+    crate::render::render_to_svg_compact_with_options(&compact.expr, options)
+}
+
+/// Convert with an explicit SVG backend and return reader and render diagnostics.
+#[cfg(feature = "render")]
+pub fn convert_with_svg_options_and_diagnostics(
+    input: &str,
+    from: Format,
+    to: Format,
+    options: &crate::render::SvgOptions,
+) -> Result<(String, Vec<Diagnostic>)> {
+    convert_with_config_and_svg_options_and_diagnostics(
+        input,
+        from,
+        to,
+        &Config::default(),
+        options,
+    )
+}
+
+/// Configured SVG conversion with reader and render diagnostics.
+#[cfg(feature = "render")]
+pub fn convert_with_config_and_svg_options_and_diagnostics(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    options: &crate::render::SvgOptions,
+) -> Result<(String, Vec<Diagnostic>)> {
+    if to != Format::Svg {
+        return Err(crate::error::Error::Unsupported(
+            "SVG options require Format::Svg as the output".into(),
+        ));
+    }
+    let mut compact = parse_compact(input, from, config)?;
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )?;
+    let mut diagnostics = std::mem::take(&mut compact.diagnostics);
+    normalize_for(&mut compact.expr, from, to)?;
+    let (output, render_diagnostics) =
+        crate::render::render_to_svg_compact_with_options_and_diagnostics(&compact.expr, options)?;
+    diagnostics.extend(render_diagnostics);
+    Ok((output, diagnostics))
 }
 
 /// One-liner conversion that also returns diagnostics from both phases of the
@@ -231,7 +428,7 @@ fn write_compact(
         #[cfg(feature = "render")]
         Format::Svg => {
             let options = crate::render::RenderOptions::default();
-            crate::render::render_to_svg_compact(expr, &options)
+            crate::render::render_to_svg_standalone_compact(expr, &options)
         },
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
@@ -256,7 +453,7 @@ fn write_compact_with_diagnostics(
         #[cfg(feature = "render")]
         Format::Svg => {
             let options = crate::render::RenderOptions::default();
-            crate::render::render_to_svg_compact_with_diagnostics(expr, &options)
+            crate::render::render_to_svg_standalone_compact_with_diagnostics(expr, &options)
         },
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
@@ -271,6 +468,19 @@ pub struct ConvertResult {
     compact: CompactParseResult,
     config: Config,
     mtef: Option<MtefInfo>,
+}
+
+impl fmt::Debug for ConvertResult {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let expr = &self.compact.expr;
+        output
+            .debug_struct("ConvertResult")
+            .field("display", &expr.display)
+            .field("node_count", &expr.arena.node_count())
+            .field("diagnostic_count", &self.compact.diagnostics.len())
+            .field("has_mtef_info", &self.mtef.is_some())
+            .finish()
+    }
 }
 
 impl ConvertResult {
@@ -580,6 +790,26 @@ impl ConvertResult {
         crate::render::render_to_svg_standalone_compact(expr, options)
     }
 
+    /// Render a standalone SVG with metadata and compositing options.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_svg_options(&self, options: &crate::render::SvgOptions) -> Result<String> {
+        crate::render::render_to_svg_compact_with_options(self.output_expr()?, options)
+    }
+
+    /// Render a profiled SVG with an output-byte budget and cancellation flag.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_svg_options_and_limits(
+        &self,
+        options: &crate::render::SvgOptions,
+        limits: &crate::render::SvgLimits,
+    ) -> Result<String> {
+        crate::render::render_to_svg_compact_with_options_and_limits(
+            self.output_expr()?,
+            options,
+            limits,
+        )
+    }
+
     /// Render a standalone SVG with custom options and report glyph fallbacks.
     #[cfg(feature = "render")]
     pub fn to_svg_with_options_and_diagnostics(
@@ -589,6 +819,32 @@ impl ConvertResult {
         crate::render::render_to_svg_standalone_compact_with_diagnostics(
             self.output_expr()?,
             options,
+        )
+    }
+
+    /// Render a standalone SVG with metadata and report glyph fallbacks.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_svg_options_and_diagnostics(
+        &self,
+        options: &crate::render::SvgOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        crate::render::render_to_svg_compact_with_options_and_diagnostics(
+            self.output_expr()?,
+            options,
+        )
+    }
+
+    /// Render a profiled SVG with a budget and fallback diagnostics.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_svg_options_and_limits_and_diagnostics(
+        &self,
+        options: &crate::render::SvgOptions,
+        limits: &crate::render::SvgLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        crate::render::render_to_svg_compact_with_options_and_limits_and_diagnostics(
+            self.output_expr()?,
+            options,
+            limits,
         )
     }
 
@@ -624,11 +880,91 @@ impl ConvertResult {
         )
     }
 
+    /// Render text-based SVG with metadata and report glyph fallbacks.
+    #[cfg(feature = "render")]
+    pub fn to_svg_text_with_svg_options_and_diagnostics(
+        &self,
+        options: &crate::render::SvgOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let options = options.clone().with_mode(crate::render::SvgMode::Text);
+        crate::render::render_to_svg_compact_with_options_and_diagnostics(
+            self.output_expr()?,
+            &options,
+        )
+    }
+
     /// Render a text-based (client-font) SVG using custom [`RenderOptions`](crate::render::RenderOptions).
     #[cfg(feature = "render")]
     pub fn to_svg_text_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
         let expr = self.output_expr()?;
         crate::render::render_to_svg_compact(expr, options)
+    }
+
+    /// Render text-based SVG with metadata and compositing options.
+    #[cfg(feature = "render")]
+    pub fn to_svg_text_with_svg_options(
+        &self,
+        options: &crate::render::SvgOptions,
+    ) -> Result<String> {
+        crate::render::render_to_svg_text_compact_with_options(self.output_expr()?, options)
+    }
+
+    /// Render text-based SVG with metadata, a byte budget, and cancellation.
+    #[cfg(feature = "render")]
+    pub fn to_svg_text_with_svg_options_and_limits(
+        &self,
+        options: &crate::render::SvgOptions,
+        limits: &crate::render::SvgLimits,
+    ) -> Result<String> {
+        let options = options.clone().with_mode(crate::render::SvgMode::Text);
+        crate::render::render_to_svg_compact_with_options_and_limits(
+            self.output_expr()?,
+            &options,
+            limits,
+        )
+    }
+
+    /// Render text-based SVG with metadata, a budget, and fallback diagnostics.
+    #[cfg(feature = "render")]
+    pub fn to_svg_text_with_svg_options_and_limits_and_diagnostics(
+        &self,
+        options: &crate::render::SvgOptions,
+        limits: &crate::render::SvgLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let options = options.clone().with_mode(crate::render::SvgMode::Text);
+        crate::render::render_to_svg_compact_with_options_and_limits_and_diagnostics(
+            self.output_expr()?,
+            &options,
+            limits,
+        )
+    }
+
+    /// Render PNG or JPEG, checking the requested pixel budget before allocation.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_limits(
+        &self,
+        options: &crate::render::raster::RasterOptions,
+        limits: &crate::render::raster::RasterLimits,
+    ) -> Result<Vec<u8>> {
+        crate::render::raster::render_to_image_compact_with_limits(
+            self.output_expr()?,
+            options,
+            limits,
+        )
+    }
+
+    /// Render a bounded raster image and report glyph or paint substitutions.
+    #[cfg(feature = "raster")]
+    pub fn to_image_with_diagnostics_and_limits(
+        &self,
+        options: &crate::render::raster::RasterOptions,
+        limits: &crate::render::raster::RasterLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        crate::render::raster::render_to_image_compact_with_diagnostics_and_limits(
+            self.output_expr()?,
+            options,
+            limits,
+        )
     }
 
     /// Render the expression to PNG image bytes.

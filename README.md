@@ -71,7 +71,8 @@ mathema convert -f latex -t omml --omml-dialect word "\\color{red}{x}"
 mathema convert --lenient --diagnostics -f latex -t unicodemath "\\color{red}{x}"
 
 # Render to SVG, PNG, or JPEG
-mathema render -f latex "x^2"                              # SVG to stdout
+mathema render -f latex "x^2"                              # standalone SVG to stdout
+mathema render -f latex --svg-mode text "x^2"              # explicit client-font SVG text
 mathema render -f latex --format png -o out.png "x^2"      # PNG (requires raster)
 mathema render -f latex --format jpeg -o out.jpeg "x^2"    # JPEG (requires raster)
 mathema render -f latex --font-size 24 --color black "x^2" # custom options
@@ -96,6 +97,11 @@ by the library's configured input-size limit before parsing starts.
 SVG output is **self-contained** for characters covered by the embedded Latin Modern Math faces: those glyph outlines are emitted as `<path>`/`<use>` elements. Characters without embedded coverage remain visible as `<text>` fallbacks and may depend on a client font. The diagnostic render routes report these fallbacks. SVG preserves CSS paint values for browser interpretation. PNG and JPEG accept named sRGB colors, 3/4/6/8-digit hex, and RGB or HSL functions with optional alpha. Raster diagnostics flag other paint values when the renderer substitutes black. SVG and PNG/JPEG share layout and covered glyph outlines, while rasterizer and fallback differences can affect pixel comparisons, so exact parity depends on the formula, scale, and renderer.
 
 Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg`, `png`, `jpeg` (`jpg`).
+
+Conversion and render commands use embedded-outline SVG by default. The builder
+method to_svg_text and the WASM method toSvgText explicitly select the
+client-font text backend. Rust callers can use SvgOptions to add a title, an
+ARIA label, and an ID prefix for composing several inline SVG documents.
 
 ### LaTeX output profile
 

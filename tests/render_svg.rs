@@ -1,18 +1,22 @@
 #![cfg(feature = "render")]
 
-use mathema::ast::{AccentPosition, FractionKind, MathExpr, MathNode, OperatorNameForm, TextStyle};
+use mathema::ast::{
+    AccentPosition, FractionKind, MathExpr, MathNode, OperatorNameForm, Rational, TextStyle,
+};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
 use mathema::render::arena::LayoutArena;
 use mathema::render::{
-    RenderOptions, render_to_svg, render_to_svg_compact, render_to_svg_compact_arena,
+    RenderOptions, SvgLimits, SvgMode, SvgOptions, render_to_svg, render_to_svg_compact,
+    render_to_svg_compact_arena, render_to_svg_standalone, render_to_svg_standalone_compact,
+    render_to_svg_standalone_with_limits, render_to_svg_with_limits,
 };
-use mathema::{Format, convert};
+use std::sync::{Arc, atomic::AtomicBool};
 
-/// Helper: LaTeX string → SVG string via the convert API.
+/// Helper: LaTeX string → text-based SVG via the low-level render API.
 fn latex_to_svg(input: &str) -> String {
-    convert(input, Format::LaTeX, Format::Svg).unwrap()
+    render_latex(input)
 }
 
 /// Helper: LaTeX string → SVG via the render API directly.
@@ -23,10 +27,152 @@ fn render_latex(input: &str) -> String {
     render_to_svg(&parsed.expr, &options).unwrap()
 }
 
+fn render_latex_standalone(input: &str) -> String {
+    let config = Config::default();
+    let parsed = LatexReader::parse(input, &config).unwrap();
+    render_to_svg_standalone(&parsed.expr, &RenderOptions::default()).unwrap()
+}
+
 fn compact_latex_to_svg(input: &str) -> String {
     let config = Config::default();
     let parsed = LatexReader::parse_compact(input, &config).unwrap();
     render_to_svg_compact(&parsed.expr, &RenderOptions::default()).unwrap()
+}
+
+#[test]
+fn bounded_svg_stops_before_retaining_an_unbounded_output() {
+    let config = Config::default();
+    let parsed = LatexReader::parse(r"\frac{a}{b}+\sqrt{x}", &config).unwrap();
+    let options = RenderOptions::default();
+    let limits = SvgLimits::with_max_bytes(16);
+    assert!(render_to_svg_with_limits(&parsed.expr, &options, &limits).is_err());
+    assert!(render_to_svg_standalone_with_limits(&parsed.expr, &options, &limits).is_err());
+
+    let cancelled = Arc::new(AtomicBool::new(true));
+    let limits = SvgLimits::default().with_cancellation(cancelled);
+    let error = render_to_svg_with_limits(&parsed.expr, &options, &limits).unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error}");
+}
+
+#[test]
+fn bounded_text_svg_does_not_charge_unused_font_family() {
+    let rule = MathExpr::inline(vec![MathNode::Rule {
+        width: Rational::new(1, 1),
+        height: Rational::new(1, 1),
+        lift: Rational::zero(),
+    }]);
+    let options = RenderOptions {
+        font_family: "unused-font-family ".repeat(10_000),
+        ..RenderOptions::default()
+    };
+    let svg =
+        render_to_svg_with_limits(&rule, &options, &SvgLimits::with_max_bytes(1_000)).unwrap();
+    assert!(svg.contains("<rect"), "{svg}");
+}
+
+#[test]
+fn bounded_text_svg_uses_the_exact_escaped_attribute_budget() {
+    let expr = MathExpr::inline(vec![MathNode::Identifier("x".into())]);
+    let options = RenderOptions {
+        font_family: "A<&".into(),
+        fg_color: "B<&".into(),
+        ..RenderOptions::default()
+    };
+    let unbounded = render_to_svg(&expr, &options).unwrap();
+    assert!(
+        render_to_svg_with_limits(&expr, &options, &SvgLimits::with_max_bytes(unbounded.len()),)
+            .is_ok()
+    );
+    assert!(
+        render_to_svg_with_limits(
+            &expr,
+            &options,
+            &SvgLimits::with_max_bytes(unbounded.len() - 1),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn bounded_text_diagnostics_use_one_layout_and_match_output() {
+    let parsed = mathema::from_latex(r"\text{中}").unwrap();
+    let options = SvgOptions::default().with_mode(SvgMode::Text);
+    let limits = SvgLimits::with_max_bytes(100_000);
+    let (bounded, bounded_diagnostics) = parsed
+        .to_svg_text_with_svg_options_and_limits_and_diagnostics(&options, &limits)
+        .unwrap();
+    let (plain, plain_diagnostics) = parsed.to_svg_text_with_diagnostics().unwrap();
+    assert_eq!(bounded, plain);
+    assert_eq!(bounded_diagnostics.len(), plain_diagnostics.len());
+    for (bounded, plain) in bounded_diagnostics.iter().zip(plain_diagnostics.iter()) {
+        assert_eq!(bounded.kind, plain.kind);
+        assert_eq!(bounded.message, plain.message);
+        assert_eq!(bounded.span, plain.span);
+    }
+}
+
+#[test]
+fn prepared_svg_respects_the_same_limits() {
+    let result = mathema::from_latex(r"x^2+y^2").unwrap();
+    let prepared = result.prepare_render(&RenderOptions::default()).unwrap();
+    let limits = SvgLimits::with_max_bytes(16);
+    assert!(
+        prepared
+            .to_svg_text_with_limits(&RenderOptions::default(), &limits)
+            .is_err()
+    );
+    assert!(
+        prepared
+            .to_svg_with_limits(&RenderOptions::default(), &limits)
+            .is_err()
+    );
+}
+
+#[test]
+fn bounded_valid_svg_is_byte_identical_for_all_public_layout_paths() {
+    let config = Config::default();
+    let parsed = LatexReader::parse(r"\frac{a}{b}+\sqrt{x}", &config).unwrap();
+    let compact = LatexReader::parse_compact(r"\frac{a}{b}+\sqrt{x}", &config).unwrap();
+    let options = RenderOptions {
+        font_family: "A&B <family>".into(),
+        fg_color: "red&blue".into(),
+        ..RenderOptions::default()
+    };
+    let limits = SvgLimits::with_max_bytes(1_000_000);
+    assert_eq!(
+        render_to_svg(&parsed.expr, &options).unwrap(),
+        render_to_svg_with_limits(&parsed.expr, &options, &limits).unwrap()
+    );
+    assert_eq!(
+        render_to_svg_compact(&compact.expr, &options).unwrap(),
+        mathema::render::render_to_svg_compact_with_limits(&compact.expr, &options, &limits)
+            .unwrap()
+    );
+    assert_eq!(
+        render_to_svg_standalone(&parsed.expr, &options).unwrap(),
+        render_to_svg_standalone_with_limits(&parsed.expr, &options, &limits).unwrap()
+    );
+    assert_eq!(
+        render_to_svg_standalone_compact(&compact.expr, &options).unwrap(),
+        mathema::render::render_to_svg_standalone_compact_with_limits(
+            &compact.expr,
+            &options,
+            &limits,
+        )
+        .unwrap()
+    );
+    let prepared = mathema::from_latex(r"\frac{a}{b}+\sqrt{x}")
+        .unwrap()
+        .prepare_render(&options)
+        .unwrap();
+    assert_eq!(
+        prepared.to_svg_text(&options).unwrap(),
+        prepared.to_svg_text_with_limits(&options, &limits).unwrap()
+    );
+    assert_eq!(
+        prepared.to_svg(&options).unwrap(),
+        prepared.to_svg_with_limits(&options, &limits).unwrap()
+    );
 }
 
 fn text_x_positions(svg: &str) -> Vec<f64> {
@@ -693,8 +839,9 @@ fn custom_color() {
 
 #[test]
 fn convert_api_matches_render_api() {
-    let via_convert = latex_to_svg("x^2");
-    let via_render = render_latex("x^2");
+    let via_convert =
+        mathema::convert("x^2", mathema::Format::LaTeX, mathema::Format::Svg).unwrap();
+    let via_render = render_latex_standalone("x^2");
     // Both paths use default options, should produce identical output
     assert_eq!(
         via_convert, via_render,
@@ -2417,6 +2564,21 @@ fn svg_nested_colors_font_family() {
             "text element should use custom font family: {text_el}"
         );
     }
+}
+
+#[test]
+fn svg_nested_colors_escape_inherited_font_family_once() {
+    let parsed = LatexReader::parse(r"{\color{red}x}", &Config::default()).unwrap();
+    let options = RenderOptions {
+        font_family: "Test<&Family".into(),
+        ..RenderOptions::default()
+    };
+    let svg = render_to_svg(&parsed.expr, &options).unwrap();
+    assert!(
+        svg.contains(r#"font-family="Test&lt;&amp;Family""#),
+        "{svg}"
+    );
+    assert!(!svg.contains("&amp;amp;"), "{svg}");
 }
 
 #[test]

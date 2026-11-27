@@ -94,6 +94,34 @@ fn png_dimensions_reasonable() {
 }
 
 #[test]
+fn raster_budget_counts_the_full_canvas_before_encoding() {
+    let result = from_latex(r"\sqrt{x}").unwrap();
+    let mut options = RasterOptions::default();
+    let png = result.to_png_with(&options).unwrap();
+    let (width, height) = png_data_dimensions(&png);
+    let pixels = (width * height) as usize;
+    let exact = mathema::RasterLimits::with_max_pixels(pixels);
+    let short = mathema::RasterLimits::with_max_pixels(pixels - 1);
+    let heap = result.expr();
+    let prepared = result.prepare_render(&options.render).unwrap();
+    assert_eq!(result.to_image_with_limits(&options, &exact).unwrap(), png);
+    assert_eq!(
+        prepared.to_image_with_limits(&options, &exact).unwrap(),
+        png
+    );
+    for format in [ImageFormat::Png, ImageFormat::Jpeg] {
+        options.format = format;
+        assert!(mathema::render_to_image_with_limits(&heap, &options, &short).is_err());
+        assert!(
+            result
+                .to_image_with_diagnostics_and_limits(&options, &short)
+                .is_err()
+        );
+        assert!(prepared.to_image_with_limits(&options, &short).is_err());
+    }
+}
+
+#[test]
 fn empty_expression_renders() {
     let result = from_latex("").unwrap();
     let png = result.to_png().unwrap();

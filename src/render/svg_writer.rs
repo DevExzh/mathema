@@ -4,13 +4,53 @@
 //! Glyph outlines are defined once in `<defs>` and referenced via `<use>`.
 
 use super::RenderOptions;
+use super::SvgLimits;
+use super::SvgMetadata;
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
+use super::emit::{BoundedSvg, SvgSink};
 use super::emit::{
     push_f3, push_u64, push_xml_escaped, svg_x_bounds_px, svg_x_bounds_px_arena, write_escaped_char,
 };
 use super::fonts_registry::{self, FontId};
 use super::layout::{BoxKind, LayoutBox};
 use super::subset::GlyphSet;
+
+/// Wrap an SVG sink and prefix only the static glyph ID/reference tokens
+/// emitted by this module. Text, path data, metadata, and CSS values pass
+/// through unchanged.
+struct PrefixedSink<'a, S: SvgSink> {
+    inner: &'a mut S,
+    prefix: &'a str,
+}
+
+impl<'a, S: SvgSink> PrefixedSink<'a, S> {
+    fn new(inner: &'a mut S, prefix: &'a str) -> Self {
+        Self { inner, prefix }
+    }
+}
+
+impl<S: SvgSink> SvgSink for PrefixedSink<'_, S> {
+    fn push_str(&mut self, value: &str) {
+        self.inner.push_str(value);
+    }
+
+    fn push(&mut self, value: char) {
+        self.inner.push(value);
+    }
+
+    fn stopped(&self) -> bool {
+        self.inner.stopped()
+    }
+
+    #[inline]
+    fn is_bounded(&self) -> bool {
+        self.inner.is_bounded()
+    }
+
+    fn push_id_prefix(&mut self) {
+        self.inner.push_str(self.prefix);
+    }
+}
 
 /// Write the `<defs>` id for an embedded glyph directly into `out`.
 ///
@@ -19,7 +59,8 @@ use super::subset::GlyphSet;
 /// when the same base codepoint is drawn from multiple faces. Streaming into the
 /// buffer avoids the per-glyph `format!` allocation the previous emitter used.
 #[inline]
-fn push_glyph_id(out: &mut String, font: FontId, cp: u32) {
+fn push_glyph_id(out: &mut impl SvgSink, font: FontId, cp: u32) {
+    out.push_id_prefix();
     if font.is_math() {
         out.push('g');
         push_u64(out, u64::from(cp));
@@ -37,7 +78,7 @@ fn push_glyph_id(out: &mut String, font: FontId, cp: u32) {
 /// `.6` glyph scales). Output is byte-identical to the previous
 /// `write!(out, "{v:.N}")` for the finite values produced here.
 #[inline]
-fn push_fixed(out: &mut String, v: f64, places: u32) {
+fn push_fixed(out: &mut impl SvgSink, v: f64, places: u32) {
     if !v.is_finite() {
         out.push_str("0.");
         for _ in 0..places {
@@ -83,12 +124,13 @@ fn push_fixed(out: &mut String, v: f64, places: u32) {
 /// heap and arena entry points.
 #[inline]
 fn push_svg_open(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     view_x_px: f64,
     width_px: f64,
     height_px: f64,
     depth_px: f64,
     pad: f64,
+    metadata: Option<&SvgMetadata>,
 ) {
     let w = width_px + 2.0 * pad;
     let h = height_px + 2.0 * pad;
@@ -106,7 +148,8 @@ fn push_svg_open(
     push_f3(svg, h);
     svg.push_str(r#"" style="vertical-align: -"#);
     push_f3(svg, depth_px + pad);
-    svg.push_str(r#"px">"#);
+    svg.push_str("px\"");
+    super::emit::push_svg_root_end(svg, metadata);
 }
 
 /// Estimate the output buffer size from the glyph defs, with a 4096-byte floor.
@@ -130,6 +173,32 @@ fn estimate_capacity(glyphs: &GlyphSet) -> usize {
 
 /// Emit SVG with embedded font paths from a heap-based layout tree.
 pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &GlyphSet) -> String {
+    let mut svg = String::with_capacity(estimate_capacity(glyphs));
+    emit_svg_with_fonts_to(root, options, glyphs, &mut svg, None);
+    svg
+}
+
+/// Emit an outlined SVG while prefixing only generated glyph IDs and
+/// references.
+pub fn emit_svg_with_fonts_prefixed(
+    root: &LayoutBox,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    prefix: &str,
+) -> String {
+    let mut svg = String::with_capacity(estimate_capacity(glyphs));
+    let mut sink = PrefixedSink::new(&mut svg, prefix);
+    emit_svg_with_fonts_to(root, options, glyphs, &mut sink, None);
+    svg
+}
+
+fn emit_svg_with_fonts_to(
+    root: &LayoutBox,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    svg: &mut impl SvgSink,
+    metadata: Option<&SvgMetadata>,
+) {
     let em = options.font_size_px;
     let (view_x_px, width_px) = svg_x_bounds_px(root, em);
     let height_px = (root.height + root.depth) * em;
@@ -139,21 +208,48 @@ pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &G
     // (matches the padding in emit.rs).
     let pad = 0.08 * em;
 
-    let mut svg = String::with_capacity(estimate_capacity(glyphs));
+    push_svg_open(svg, view_x_px, width_px, height_px, depth_px, pad, metadata);
 
-    push_svg_open(&mut svg, view_x_px, width_px, height_px, depth_px, pad);
-
-    emit_defs(&mut svg, glyphs);
+    emit_defs(svg, glyphs);
 
     let baseline_y = root.height * em;
-    emit_box_embedded(&mut svg, root, 0.0, baseline_y, em, options, glyphs);
+    emit_box_embedded(svg, root, 0.0, baseline_y, em, options, glyphs);
 
     svg.push_str("</svg>");
-    svg
+}
+
+/// Emit an embedded-outline SVG while enforcing output and cancellation limits.
+pub fn emit_svg_with_fonts_limits(
+    root: &LayoutBox,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    limits: &SvgLimits,
+) -> crate::error::Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    emit_svg_with_fonts_to(root, options, glyphs, &mut svg, None);
+    svg.finish()
+}
+
+/// Emit a bounded outlined SVG while prefixing only generated glyph IDs and
+/// references.
+pub fn emit_svg_with_fonts_limits_prefixed(
+    root: &LayoutBox,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    limits: &SvgLimits,
+    prefix: &str,
+) -> crate::error::Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    let mut sink = PrefixedSink::new(&mut svg, prefix);
+    emit_svg_with_fonts_to(root, options, glyphs, &mut sink, None);
+    svg.finish()
 }
 
 /// Write `<defs>` block with glyph path definitions, sorted for determinism.
-fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
+fn emit_defs(svg: &mut impl SvgSink, glyphs: &GlyphSet) {
+    if svg.stopped() {
+        return;
+    }
     let has_glyphs = glyphs.fonts.values().any(|f| !f.glyphs.is_empty());
     if !has_glyphs && glyphs.variants.is_empty() {
         return;
@@ -180,7 +276,9 @@ fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
     let mut var_entries: Vec<_> = glyphs.variants.iter().collect();
     var_entries.sort_by_key(|(id, _)| **id);
     for (id, outline) in var_entries {
-        svg.push_str(r#"<path id="vg"#);
+        svg.push_str(r#"<path id=""#);
+        svg.push_id_prefix();
+        svg.push_str("vg");
         push_u64(svg, u64::from(*id));
         svg.push_str(r#"" d=""#);
         push_xml_escaped(svg, &outline.path_data);
@@ -196,7 +294,14 @@ fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
 /// optional trailing transform token (e.g. `"skewX(-12)"`). Byte-identical to
 /// the previous `transform="translate({x:.3},{y:.3}) scale({s:.6})…"` output.
 #[inline]
-fn push_use_tail(svg: &mut String, x: f64, y: f64, scale: f64, skew: Option<&str>, color: &str) {
+fn push_use_tail(
+    svg: &mut impl SvgSink,
+    x: f64,
+    y: f64,
+    scale: f64,
+    skew: Option<&str>,
+    color: &str,
+) {
     svg.push_str(r#"" transform="translate("#);
     push_f3(svg, x);
     svg.push(',');
@@ -218,7 +323,7 @@ fn push_use_tail(svg: &mut String, x: f64, y: f64, scale: f64, skew: Option<&str
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn push_use_glyph(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     font: FontId,
     cp: u32,
     x: f64,
@@ -233,7 +338,7 @@ fn push_use_glyph(
 }
 /// scale(s)">`. Shared by delimiter and free-path emission.
 #[inline]
-fn push_g_open(svg: &mut String, tx: f64, ty: f64, scale: f64) {
+fn push_g_open(svg: &mut impl SvgSink, tx: f64, ty: f64, scale: f64) {
     svg.push_str(r#"<g transform="translate("#);
     push_f3(svg, tx);
     svg.push(',');
@@ -245,7 +350,7 @@ fn push_g_open(svg: &mut String, tx: f64, ty: f64, scale: f64) {
 
 /// Emit a filled `<path>` inside a transformed group (parens, braces, accents).
 #[inline]
-fn push_fill_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &str, color: &str) {
+fn push_fill_path(svg: &mut impl SvgSink, tx: f64, ty: f64, scale: f64, path: &str, color: &str) {
     push_g_open(svg, tx, ty, scale);
     svg.push_str(r#"<path d=""#);
     push_xml_escaped(svg, path);
@@ -257,7 +362,7 @@ fn push_fill_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &str, co
 /// Emit a stroked delimiter `<path>` (rounded caps, `.4`-precision stroke width).
 #[inline]
 fn push_stroke_delim_path(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     tx: f64,
     ty: f64,
     scale: f64,
@@ -277,7 +382,14 @@ fn push_stroke_delim_path(
 
 /// Emit a stroked free `<path>` (KaTeX-style accents/arrows, fixed `0.04` width).
 #[inline]
-fn push_stroke_free_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &str, color: &str) {
+fn push_stroke_free_path(
+    svg: &mut impl SvgSink,
+    tx: f64,
+    ty: f64,
+    scale: f64,
+    path: &str,
+    color: &str,
+) {
     push_g_open(svg, tx, ty, scale);
     svg.push_str(r#"<path d=""#);
     push_xml_escaped(svg, path);
@@ -288,7 +400,7 @@ fn push_stroke_free_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &
 
 /// Emit a `<use>` referencing an embedded MATH-table variant glyph outline.
 fn emit_variant_glyph(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     glyph_id: u16,
     font_size_px: f64,
     x: f64,
@@ -297,7 +409,9 @@ fn emit_variant_glyph(
     color: &str,
 ) {
     let scale = font_size_px / upem;
-    svg.push_str(r##"<use href="#vg"##);
+    svg.push_str(r##"<use href="#"##);
+    svg.push_id_prefix();
+    svg.push_str("vg");
     push_u64(svg, u64::from(glyph_id));
     push_use_tail(svg, x, y, scale, None, color);
 }
@@ -307,7 +421,7 @@ fn emit_variant_glyph(
 /// (emitting nothing) when no assembly exists, so the caller can fall back.
 #[allow(clippy::too_many_arguments)]
 fn emit_vertical_assembly_embedded(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     glyphs: &GlyphSet,
     ch: char,
     fill_height_em: f64,
@@ -346,7 +460,7 @@ fn emit_vertical_assembly_embedded(
 }
 
 fn emit_box_embedded(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     layout: &LayoutBox,
     x: f64,
     y: f64,
@@ -354,6 +468,9 @@ fn emit_box_embedded(
     options: &RenderOptions,
     glyphs: &GlyphSet,
 ) {
+    if svg.stopped() {
+        return;
+    }
     match &layout.kind {
         BoxKind::Glyph {
             ch,
@@ -569,7 +686,7 @@ fn emit_box_embedded(
 /// Emit a single glyph: `<use>` if outline exists, `<text>` fallback otherwise.
 #[allow(clippy::too_many_arguments)]
 fn emit_glyph(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     ch: char,
     size: f64,
     x: f64,
@@ -671,7 +788,7 @@ fn emit_glyph(
 /// `<text>` fallback when no embedded outline is available.
 #[allow(clippy::too_many_arguments)]
 fn emit_text_fallback(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     ch: char,
     size: f64,
     x: f64,
@@ -709,6 +826,61 @@ pub fn emit_svg_with_fonts_arena(
     options: &RenderOptions,
     glyphs: &GlyphSet,
 ) -> String {
+    let mut svg = String::with_capacity(estimate_capacity(glyphs));
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut svg, None);
+    svg
+}
+
+/// Emit an arena standalone SVG with profile metadata at the root opening tag.
+pub(crate) fn emit_svg_with_fonts_arena_metadata(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    metadata: &SvgMetadata,
+) -> String {
+    let mut svg = String::with_capacity(estimate_capacity(glyphs) + metadata.len());
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut svg, Some(metadata));
+    svg
+}
+
+/// Emit an arena-based outlined SVG while prefixing only generated glyph IDs.
+pub fn emit_svg_with_fonts_arena_prefixed(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    prefix: &str,
+) -> String {
+    let mut svg = String::with_capacity(estimate_capacity(glyphs));
+    let mut sink = PrefixedSink::new(&mut svg, prefix);
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut sink, None);
+    svg
+}
+
+/// Emit an arena standalone SVG with profile metadata and prefixed IDs.
+pub(crate) fn emit_svg_with_fonts_arena_metadata_prefixed(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    metadata: &SvgMetadata,
+    prefix: &str,
+) -> String {
+    let mut svg = String::with_capacity(estimate_capacity(glyphs) + metadata.len());
+    let mut sink = PrefixedSink::new(&mut svg, prefix);
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut sink, Some(metadata));
+    svg
+}
+
+fn emit_svg_with_fonts_arena_to(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    svg: &mut impl SvgSink,
+    metadata: Option<&SvgMetadata>,
+) {
     let root_box = arena.get(root);
     let em = options.font_size_px;
     let (view_x_px, width_px) = svg_x_bounds_px_arena(arena, root, em);
@@ -719,22 +891,77 @@ pub fn emit_svg_with_fonts_arena(
     // (matches the padding in emit.rs).
     let pad = 0.08 * em;
 
-    let mut svg = String::with_capacity(estimate_capacity(glyphs));
+    push_svg_open(svg, view_x_px, width_px, height_px, depth_px, pad, metadata);
 
-    push_svg_open(&mut svg, view_x_px, width_px, height_px, depth_px, pad);
-
-    emit_defs(&mut svg, glyphs);
+    emit_defs(svg, glyphs);
 
     let baseline_y = root_box.height * em;
-    emit_box_arena_embedded(&mut svg, arena, root, 0.0, baseline_y, em, options, glyphs);
+    emit_box_arena_embedded(svg, arena, root, 0.0, baseline_y, em, options, glyphs);
 
     svg.push_str("</svg>");
-    svg
+}
+
+/// Emit an arena embedded-outline SVG while enforcing output and cancellation limits.
+pub fn emit_svg_with_fonts_arena_limits(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    limits: &SvgLimits,
+) -> crate::error::Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut svg, None);
+    svg.finish()
+}
+
+/// Emit an arena standalone SVG with profile metadata while enforcing limits.
+pub(crate) fn emit_svg_with_fonts_arena_metadata_limits(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    metadata: &SvgMetadata,
+    limits: &SvgLimits,
+) -> crate::error::Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut svg, Some(metadata));
+    svg.finish()
+}
+
+/// Emit a bounded arena-based outlined SVG while prefixing generated IDs.
+pub fn emit_svg_with_fonts_arena_limits_prefixed(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    limits: &SvgLimits,
+    prefix: &str,
+) -> crate::error::Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    let mut sink = PrefixedSink::new(&mut svg, prefix);
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut sink, None);
+    svg.finish()
+}
+
+/// Emit a bounded arena standalone SVG with profile metadata and prefixed IDs.
+pub(crate) fn emit_svg_with_fonts_arena_metadata_limits_prefixed(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+    glyphs: &GlyphSet,
+    metadata: &SvgMetadata,
+    limits: &SvgLimits,
+    prefix: &str,
+) -> crate::error::Result<String> {
+    let mut svg = BoundedSvg::new(limits);
+    let mut sink = PrefixedSink::new(&mut svg, prefix);
+    emit_svg_with_fonts_arena_to(arena, root, options, glyphs, &mut sink, Some(metadata));
+    svg.finish()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn emit_box_arena_embedded(
-    svg: &mut String,
+    svg: &mut impl SvgSink,
     arena: &LayoutArena,
     id: LayoutBoxId,
     x: f64,
@@ -743,6 +970,9 @@ fn emit_box_arena_embedded(
     options: &RenderOptions,
     glyphs: &GlyphSet,
 ) {
+    if svg.stopped() {
+        return;
+    }
     let layout = arena.get(id);
     match &layout.kind {
         ArenaBoxKind::Glyph {
