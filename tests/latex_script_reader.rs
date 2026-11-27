@@ -85,6 +85,59 @@ fn mathml_of_a_split_number() {
     );
 }
 
+#[test]
+fn sideset_builder_and_one_shot_mathml_have_the_same_structure() {
+    let input = r"\sideset{_a^b}{_c^d}\sum";
+    let one_shot = mathema::convert(input, Format::LaTeX, Format::MathML).unwrap();
+    let parsed = mathema::from_latex(input).unwrap();
+    let builder = parsed.to_mathml().unwrap();
+    assert!(one_shot.contains("<msubsup><mmultiscripts>"));
+    assert!(builder.contains("<msubsup><mmultiscripts>"));
+    assert!(!builder.contains("<mrow></mrow>"), "{builder}");
+}
+
+#[test]
+fn sideset_implicit_body_marker_is_scoped_to_its_operator() {
+    let nested = mathema::from_latex(r"\sideset{_a}{}{\sideset{_c}{}\prod}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(nested.contains("<mi>a</mi>") && nested.contains("<mi>c</mi>"));
+
+    let adjacent = mathema::from_latex(r"{\sideset{_a}{}\sum}{\sideset{_c}{}\prod}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(!adjacent.contains("<mrow></mrow>"), "{adjacent}");
+
+    // An authored empty body remains a distinct atom and is not mistaken for
+    // the parser's implicit n-ary placeholder.
+    let authored = mathema::from_latex(r"\sideset{_a}{}\sum{}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(authored.contains("<mrow></mrow>"), "{authored}");
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn sideset_builder_geometry_matches_normalized_one_shot() {
+    let input = r"\sideset{_a^b}{_c^d}\sum";
+    let one_shot = mathema::convert(input, Format::LaTeX, Format::Svg).unwrap();
+    let marker = "width=\"";
+    let start = one_shot.find(marker).unwrap() + marker.len();
+    let end = one_shot[start..].find('"').unwrap() + start;
+    let one_shot_width: f64 = one_shot[start..end].parse().unwrap();
+    let parsed = mathema::from_latex(input).unwrap();
+    let options = mathema::render::RenderOptions::default();
+    let geometry = parsed
+        .prepare_render(&options)
+        .unwrap()
+        .geometry(&options)
+        .unwrap();
+    assert!((geometry.width_px - one_shot_width).abs() < 1e-3);
+}
+
 /// The braced spellings still take the whole number in every script
 /// position.
 #[test]

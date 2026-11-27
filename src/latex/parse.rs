@@ -2222,6 +2222,11 @@ pub(crate) struct LatexCompactParser {
     grouped_operator: Option<(NodeId, NodeId)>,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
+    /// The most recently built n-ary node whose body was synthesized at a
+    /// grammar boundary rather than read from an authored token. `\sideset`
+    /// consults this immediately after parsing its operator so it does not
+    /// append an empty placeholder as a trailing spacing atom.
+    last_implicit_nary: Option<NodeId>,
     /// Undefined control words met so far, each with whether it is a macro
     /// left unexpanded (see `undefined_command`), so that each name is
     /// reported once however often it occurs or is re-parsed, and the number
@@ -2284,6 +2289,7 @@ impl LatexCompactParser {
             command_depth: 0,
             grouped_operator: None,
             arrays_built: 0,
+            last_implicit_nary: None,
             undefined_commands: None,
             single_token: None,
             source: (0, 0),
@@ -3255,11 +3261,13 @@ impl LatexCompactParser {
         // to the body (outside a fence `\middle` is a plain delimiter). An
         // infix fraction command divides the list the operator is in.
         // A declaration is no body: it applies to the rest of the list.
+        let mut implicit_empty_body = false;
         let (input, body_id) = if is_nary_body_boundary(input)
             || starts_declaration(input)
             || infix::starts_infix_command(input)
             || (self.in_left_right && strip_control_word(input, "middle").is_some())
         {
+            implicit_empty_body = true;
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
         } else {
@@ -3291,6 +3299,7 @@ impl LatexCompactParser {
             body,
             limits: limit_style,
         });
+        self.last_implicit_nary = implicit_empty_body.then_some(nary);
         if !spliced {
             return Ok((input, nary));
         }
@@ -5618,6 +5627,7 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
             }),
         };
+        let op_body_is_implicit = self.last_implicit_nary == Some(op_id);
 
         // Decompose the parsed operator so the four corner scripts hug the bare
         // operator glyph (like amsmath / MathJax) rather than scattering around
@@ -5748,7 +5758,7 @@ impl LatexCompactParser {
 
         items.push(stacked);
         items.extend(r_rest);
-        if op_body != NodeId::NONE {
+        if op_body != NodeId::NONE && !op_body_is_implicit {
             items.push(op_body);
         }
 

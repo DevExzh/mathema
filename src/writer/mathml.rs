@@ -146,8 +146,11 @@ pub struct MathmlWriter;
 impl MathWriter for MathmlWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
-        if !expr.meta.is_empty() {
-            let compact = CompactExpr::from_math_expr_after_validation(expr)?;
+        let needs_compact =
+            !expr.meta.is_empty() || crate::ast::normalize::math_expr_has_empty_base_script(expr);
+        if needs_compact {
+            let mut compact = CompactExpr::from_math_expr_after_validation(expr)?;
+            super::normalize_leading_scripts_for_write(&mut compact, config)?;
             return write_compact_validated(&compact);
         }
         let mut writer = MathOutput::new(Writer::new(Cursor::new(Vec::with_capacity(512))));
@@ -188,13 +191,13 @@ impl MathWriter for MathmlWriter {
         expr: &CompactExpr,
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        super::validate_compact_for_write(expr, config)?;
-        write_with_diagnostics_validated(expr)
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_with_diagnostics_validated(&prepared)
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
-        super::validate_compact_for_write(expr, config)?;
-        write_compact_validated(expr)
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_compact_validated(&prepared)
     }
 }
 
@@ -215,18 +218,8 @@ impl MathmlWriter {
         config: &Config,
         options: &MathmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        super::validate_compact_for_write(expr, config)?;
-        write_with_options_validated(expr, options)
-    }
-
-    /// Trusted counterpart of [`MathmlWriter::write_with_options`].
-    pub(crate) fn write_with_options_trusted(
-        expr: &CompactExpr,
-        config: &Config,
-        options: &MathmlOptions,
-    ) -> Result<(String, Vec<Diagnostic>)> {
-        super::validate_compact_trusted(expr, config)?;
-        write_with_options_validated(expr, options)
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_with_options_validated(&prepared, options)
     }
 
     /// Trusted counterpart of [`Writer::write_compact_with_diagnostics`].
@@ -246,7 +239,7 @@ pub(crate) fn write_with_diagnostics_validated(
     write_with_options_validated(expr, &MathmlOptions::default())
 }
 
-fn write_with_options_validated(
+pub(crate) fn write_with_options_validated(
     expr: &CompactExpr,
     options: &MathmlOptions,
 ) -> Result<(String, Vec<Diagnostic>)> {

@@ -346,8 +346,11 @@ impl MathWriter for UnicodeMathWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
         // UnicodeMath has no font sizes: the compact writer looks past them.
-        if crate::ast::has_attributes(expr) {
-            let compact = CompactExpr::from_math_expr_after_validation(expr)?;
+        if crate::ast::has_attributes(expr)
+            || crate::ast::normalize::math_expr_has_empty_base_script(expr)
+        {
+            let mut compact = CompactExpr::from_math_expr_after_validation(expr)?;
+            super::normalize_leading_scripts_for_write(&mut compact, config)?;
             return write_compact_validated(&compact);
         }
         let mut out = String::with_capacity(256);
@@ -359,15 +362,14 @@ impl MathWriter for UnicodeMathWriter {
         expr: &CompactExpr,
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        super::validate_compact_for_write(expr, config)?;
-        let out = write_compact_validated(expr);
-        let out = out?;
-        Ok((out, Self::compact_diagnostics(expr, config)))
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        let out = write_compact_validated(&prepared)?;
+        Ok((out, Self::compact_diagnostics(&prepared, config)))
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
-        super::validate_compact_for_write(expr, config)?;
-        write_compact_validated(expr)
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_compact_validated(&prepared)
     }
 }
 
@@ -491,6 +493,43 @@ fn write_quoted_text(out: &mut String, text: &str) {
         out.push(c);
     }
     out.push('"');
+}
+
+/// Write the children of a font-style scope. Readers may leave an explicit
+/// row around a token run, while target normalization flattens that row. The
+/// style must reach through both shapes so the builder and one-shot routes
+/// emit the same UnicodeMath glyphs.
+fn write_styled_children(
+    out: &mut String,
+    children: &[MathNode],
+    text_style: TextStyle,
+    style: MathStyle,
+) {
+    let mut current_style = style;
+    let mut previous_operator = false;
+    for child in children {
+        if let MathNode::StyleSwitch(value) = child {
+            current_style = MathStyle::branch_from_switch(*value);
+            continue;
+        }
+        let start = out.len();
+        let terminates = needs_operator_terminator(child, current_style);
+        match child {
+            MathNode::Identifier(s) | MathNode::Number(s) | MathNode::Text(_, s) => {
+                for ch in s.chars() {
+                    let styled = crate::unicode::fonts::styled_char(ch, text_style).unwrap_or(ch);
+                    out.push(styled);
+                }
+            },
+            MathNode::Row(inner) => write_styled_children(out, inner, text_style, current_style),
+            MathNode::Styled(nested_style, inner) => {
+                write_styled_children(out, inner, *nested_style, current_style)
+            },
+            _ => write_node(out, child, current_style),
+        }
+        separate_after_script(out, start, previous_operator);
+        previous_operator = terminates;
+    }
 }
 
 fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
@@ -823,28 +862,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Styled(text_style, children) => {
             // Apply Unicode math alphabet mapping
-            let mut current_style = style;
-            let mut previous_operator = false;
-            for child in children {
-                if let MathNode::StyleSwitch(value) = child {
-                    current_style = MathStyle::branch_from_switch(*value);
-                    continue;
-                }
-                let start = out.len();
-                let terminates = needs_operator_terminator(child, current_style);
-                match child {
-                    MathNode::Identifier(s) | MathNode::Number(s) | MathNode::Text(_, s) => {
-                        for ch in s.chars() {
-                            let styled =
-                                crate::unicode::fonts::styled_char(ch, *text_style).unwrap_or(ch);
-                            out.push(styled);
-                        }
-                    },
-                    _ => write_node(out, child, current_style),
-                }
-                separate_after_script(out, start, previous_operator);
-                previous_operator = terminates;
-            }
+            write_styled_children(out, children, *text_style, style);
         },
         MathNode::Color { content, .. } => write_node(out, content, style),
         MathNode::MathChoice {
@@ -3182,6 +3200,47 @@ fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId, style: MathStyle) 
     }
 }
 
+fn write_styled_children_c(
+    out: &mut String,
+    arena: &AstArena,
+    children: &[NodeId],
+    text_style: TextStyle,
+    style: MathStyle,
+) {
+    let mut current_style = style;
+    let mut previous_operator = false;
+    for &child_id in children {
+        let child = *arena.node(child_id);
+        if let CompactNode::StyleSwitch(value) = child {
+            current_style = MathStyle::branch_from_switch(value);
+            continue;
+        }
+        let start = out.len();
+        let terminates = needs_operator_terminator_c(arena, child_id, current_style);
+        match child {
+            CompactNode::Identifier(sid) | CompactNode::Number(sid) | CompactNode::Text(_, sid) => {
+                for ch in arena.str_val(sid).chars() {
+                    let styled = crate::unicode::fonts::styled_char(ch, text_style).unwrap_or(ch);
+                    out.push(styled);
+                }
+            },
+            CompactNode::Row(span) => {
+                write_styled_children_c(out, arena, arena.children(span), text_style, current_style)
+            },
+            CompactNode::Styled(nested_style, span) => write_styled_children_c(
+                out,
+                arena,
+                arena.children(span),
+                nested_style,
+                current_style,
+            ),
+            _ => write_node_c(out, arena, child_id, current_style),
+        }
+        separate_after_script(out, start, previous_operator);
+        previous_operator = terminates;
+    }
+}
+
 fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
@@ -3510,31 +3569,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Styled(text_style, span) => {
-            let mut current_style = style;
-            let mut previous_operator = false;
-            for &child_id in arena.children(span) {
-                let child = *arena.node(child_id);
-                if let CompactNode::StyleSwitch(value) = child {
-                    current_style = MathStyle::branch_from_switch(value);
-                    continue;
-                }
-                let start = out.len();
-                let terminates = needs_operator_terminator_c(arena, child_id, current_style);
-                match child {
-                    CompactNode::Identifier(sid)
-                    | CompactNode::Number(sid)
-                    | CompactNode::Text(_, sid) => {
-                        for ch in arena.str_val(sid).chars() {
-                            let styled =
-                                crate::unicode::fonts::styled_char(ch, text_style).unwrap_or(ch);
-                            out.push(styled);
-                        }
-                    },
-                    _ => write_node_c(out, arena, child_id, current_style),
-                }
-                separate_after_script(out, start, previous_operator);
-                previous_operator = terminates;
-            }
+            write_styled_children_c(out, arena, arena.children(span), text_style, style);
         },
 
         CompactNode::Color { content, .. } => {

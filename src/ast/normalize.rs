@@ -45,12 +45,17 @@ struct Rules {
     identifiers: Identifiers,
     /// Whether the argument of a function is one node (see [`applies_to_next`]).
     keeps_arguments: bool,
+    /// Restrict normalization to empty-base script attachment. This keeps
+    /// reader grouping and token boundaries intact for parse-once writers
+    /// while applying the semantic leading-script rule.
+    leading_only: bool,
 }
 
 impl Rules {
     const DEFAULT: Self = Self {
         identifiers: Identifiers::JoinedInNames,
         keeps_arguments: true,
+        leading_only: false,
     };
 
     /// Those for what a node has above, below or beside it: it is no part of a
@@ -856,10 +861,89 @@ pub(crate) fn normalize_compact_expr_keeping_identifiers(
         Rules {
             identifiers: Identifiers::Apart,
             keeps_arguments: false,
+            leading_only: false,
         },
     )?;
     expr.drop_unreachable_attrs();
     expr.arena.check_limits()
+}
+
+/// Attach scripts that were parsed with an implicit empty base to the node
+/// they lead, without changing the reader's other grouping or token-boundary
+/// decisions. Parse-once writers use this semantic pass so their output agrees
+/// with the one-shot conversion on leading scripts while retaining their
+/// established spelling for harmless structural differences.
+pub(crate) fn normalize_compact_expr_leading_scripts(
+    expr: &mut CompactExpr,
+) -> crate::error::Result<()> {
+    expr.roots = normalize_compact_span_with_identifiers(
+        &mut expr.arena,
+        expr.roots,
+        0,
+        Rules {
+            leading_only: true,
+            ..Rules::DEFAULT
+        },
+    )?;
+    expr.arena.check_limits()
+}
+
+/// Cold-path predicate used by parse-once writers. It scans the arena's node
+/// records without cloning or recursively validating a tree that already came
+/// from a reader boundary.
+pub(crate) fn compact_has_empty_base_script(expr: &CompactExpr) -> bool {
+    expr.arena.nodes().iter().any(|node| {
+        let base = match *node {
+            CompactNode::Subscript { base, .. }
+            | CompactNode::Superscript { base, .. }
+            | CompactNode::SubSup { base, .. } => base,
+            _ => return false,
+        };
+        safe_empty_script_base(&expr.arena, base, 0)
+    })
+}
+
+fn safe_empty_script_base(arena: &AstArena, id: NodeId, depth: usize) -> bool {
+    if depth > super::MAX_AST_DEPTH {
+        return false;
+    }
+    let Some(node) = arena.try_node(id) else {
+        return false;
+    };
+    match *node {
+        CompactNode::Row(span) => arena.try_children(span).is_some_and(|children| {
+            children
+                .iter()
+                .all(|&child| safe_empty_script_base(arena, child, depth + 1))
+        }),
+        CompactNode::Scaled { content, .. } => safe_empty_script_base(arena, content, depth + 1),
+        CompactNode::Identifier(sid) => arena.try_str_val(sid).is_some_and(str::is_empty),
+        CompactNode::Space(width) => width == Rational::zero(),
+        _ => false,
+    }
+}
+
+/// Whether a heap tree contains a script whose base is effectively empty.
+pub(crate) fn math_expr_has_empty_base_script(expr: &MathExpr) -> bool {
+    struct Finder(bool);
+    impl crate::ast::visit::Visitor for Finder {
+        fn visit_node(&mut self, node: &MathNode) {
+            if !self.0
+                && match node {
+                    MathNode::Subscript { base, .. }
+                    | MathNode::Superscript { base, .. }
+                    | MathNode::SubSup { base, .. } => is_empty_script_base_math(base),
+                    _ => false,
+                }
+            {
+                self.0 = true;
+            }
+            crate::ast::visit::walk_node(self, node);
+        }
+    }
+    let mut finder = Finder(false);
+    crate::ast::visit::Visitor::visit_expr(&mut finder, expr);
+    finder.0
 }
 
 /// [`normalize_compact_expr`] on the way to LaTeX, which has no argument of a
@@ -934,44 +1018,53 @@ fn normalize_span_keeping_breaks(
     // into separate `\int \cdots \int` nodes (e.g. inside `\left\langle ...
     // \right\rangle`) makes the triple unrecognizable across a round-trip.
     let mut flattened: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in &child_ids {
-        match *arena.node(id) {
-            CompactNode::Row(_)
-                if rules.keeps_arguments
-                    && flattened
-                        .last()
-                        .is_some_and(|&last| applies_to_next(arena, last)) =>
-            {
-                flattened.push(id);
-            },
-            CompactNode::Row(inner) if inner.is_empty() => {
-                // Remove empty Row
-            },
-            CompactNode::Row(inner) if is_idotsint_row(arena, inner) => {
-                flattened.push(id);
-            },
-            CompactNode::Row(inner) if has_direct_declaration(arena, inner) => {
-                // Explicit groups containing a style declaration must remain
-                // grouped so the declaration cannot leak into following
-                // siblings when LaTeX is written back.
-                flattened.push(id);
-            },
-            CompactNode::Row(inner) if keep_break_groups && has_direct_newline(arena, inner) => {
-                flattened.push(id);
-            },
-            CompactNode::Row(inner) => {
-                // Flatten: inline inner children
-                for &inner_id in arena.children(inner) {
-                    flattened.push(inner_id);
-                }
-            },
-            _ => flattened.push(id),
+    if rules.leading_only {
+        flattened.extend(child_ids.iter().copied());
+    } else {
+        for &id in &child_ids {
+            match *arena.node(id) {
+                CompactNode::Row(_)
+                    if rules.keeps_arguments
+                        && flattened
+                            .last()
+                            .is_some_and(|&last| applies_to_next(arena, last)) =>
+                {
+                    flattened.push(id);
+                },
+                CompactNode::Row(inner) if inner.is_empty() => {
+                    // Remove empty Row
+                },
+                CompactNode::Row(inner) if is_idotsint_row(arena, inner) => {
+                    flattened.push(id);
+                },
+                CompactNode::Row(inner) if has_direct_declaration(arena, inner) => {
+                    // Explicit groups containing a style declaration must remain
+                    // grouped so the declaration cannot leak into following
+                    // siblings when LaTeX is written back.
+                    flattened.push(id);
+                },
+                CompactNode::Row(inner)
+                    if keep_break_groups && has_direct_newline(arena, inner) =>
+                {
+                    flattened.push(id);
+                },
+                CompactNode::Row(inner) => {
+                    // Flatten: inline inner children
+                    for &inner_id in arena.children(inner) {
+                        flattened.push(inner_id);
+                    }
+                },
+                _ => flattened.push(id),
+            }
         }
     }
 
     let mut settled = settle_list(arena, flattened, rules)?;
     let (mut all, mut passes) = (false, 0);
-    while rules.keeps_arguments && open_groups(arena, &mut settled, keep_break_groups, all) {
+    while !rules.leading_only
+        && rules.keeps_arguments
+        && open_groups(arena, &mut settled, keep_break_groups, all)
+    {
         if rules.identifiers == Identifiers::Joined {
             // In a name what was in an argument is now in the name.
             normalize_in_name(arena, &settled, d, rules)?;
@@ -1130,10 +1223,16 @@ fn settle_list(
     // (e.g. a malformed/empty `\kern` or `\hspace{}`) and their presence can
     // block merges, suppress script attachment, or create/destroy separator
     // spaces in the writer.
-    let splayed: SmallVec<[NodeId; 8]> = flattened
-        .into_iter()
-        .filter(|&id| !matches!(*arena.node(id), CompactNode::Space(r) if r == Rational::zero()))
-        .collect();
+    let splayed: SmallVec<[NodeId; 8]> = if rules.leading_only {
+        flattened
+    } else {
+        flattened
+            .into_iter()
+            .filter(
+                |&id| !matches!(*arena.node(id), CompactNode::Space(r) if r == Rational::zero()),
+            )
+            .collect()
+    };
 
     // Phase 3: merge adjacent Text nodes with the same style.
     // Phase 3b: merge adjacent Number nodes.
@@ -1144,23 +1243,27 @@ fn settle_list(
     //
     // Each run is collected first and its string interned once, so merging
     // stays linear in the length of the run.
-    let merged = merge_runs(arena, &splayed, |_, node| match node {
-        CompactNode::Text(style, sid) => Some((MergeKind::Text(style), sid)),
-        _ => None,
-    });
-    let final_nodes = merge_runs(arena, &merged, |_, node| match node {
-        CompactNode::Number(sid) => Some((MergeKind::Number, sid)),
-        _ => None,
-    });
-    let merged_ids = if rules.identifiers == Identifiers::Joined {
-        merge_runs(arena, &final_nodes, |arena, node| match node {
-            CompactNode::Identifier(sid) if arena.str_val(sid).is_ascii() => {
-                Some((MergeKind::Identifier, sid))
-            },
-            _ => None,
-        })
+    let merged_ids = if rules.leading_only {
+        splayed
     } else {
-        final_nodes
+        let merged = merge_runs(arena, &splayed, |_, node| match node {
+            CompactNode::Text(style, sid) => Some((MergeKind::Text(style), sid)),
+            _ => None,
+        });
+        let final_nodes = merge_runs(arena, &merged, |_, node| match node {
+            CompactNode::Number(sid) => Some((MergeKind::Number, sid)),
+            _ => None,
+        });
+        if rules.identifiers == Identifiers::Joined {
+            merge_runs(arena, &final_nodes, |arena, node| match node {
+                CompactNode::Identifier(sid) if arena.str_val(sid).is_ascii() => {
+                    Some((MergeKind::Identifier, sid))
+                },
+                _ => None,
+            })
+        } else {
+            final_nodes
+        }
     };
 
     // Phase 4: an empty-base script belongs to what follows it (`{}^{14}C`,
@@ -1176,30 +1279,57 @@ fn settle_list(
     // sets x after an empty atom). Any other script keeps its empty base
     // (`x{}_1`); the MTEF writer's `attaches_to_previous` mirrors this.
     let mut with_limits: SmallVec<[NodeId; 8]> = SmallVec::new();
+    let mut blocked_leading_scripts: SmallVec<[NodeId; 4]> = SmallVec::new();
     for &id in &merged_ids {
-        if is_empty_base_script(arena, id)
+        if empty_base_for_rules(arena, id, rules)
             && let Some(previous) = with_limits.last_mut()
             && takes_limits(arena, *arena.node(*previous))
         {
             *previous = make_script_with_base(arena, *previous, id);
             continue;
         }
+        if rules.leading_only
+            && empty_base_for_rules(arena, id, rules)
+            && with_limits.last().is_some_and(|&previous| {
+                (matches!(
+                    *arena.node(previous),
+                    CompactNode::Subscript { .. }
+                        | CompactNode::Superscript { .. }
+                        | CompactNode::SubSup { .. }
+                        | CompactNode::PreScripts { .. }
+                )
+                    && !script_has_large_operator(arena, previous)
+                    && !empty_base_for_rules(arena, previous, rules))
+                    || (is_effectively_empty_node(arena, previous)
+                        && !matches!(*arena.node(previous), CompactNode::Row(span) if span.is_empty()))
+            })
+        {
+            // An explicit empty group immediately after a scripted atom is a
+            // separate atom. Keep its script detached so a rewrite does not
+            // change `a^'{}^'Ze` into a script on `Z`.
+            blocked_leading_scripts.push(id);
+        }
         with_limits.push(id);
     }
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in with_limits.iter().rev() {
-        if is_empty_base_script(arena, id) {
+        if empty_base_for_rules(arena, id, rules) {
             // A base of nothing would be none, and the scripts lead what
             // follows it.
             while coalesced.last().is_some_and(|&next| {
                 can_take_prescripts(*arena.node(next))
-                    && !matches!(*arena.node(next), CompactNode::Row(_))
-                    && is_effectively_empty_node(arena, next)
+                    && (rules.leading_only || !matches!(*arena.node(next), CompactNode::Row(_)))
+                    && if rules.leading_only {
+                        matches!(*arena.node(next), CompactNode::Row(span) if span.is_empty())
+                    } else {
+                        is_effectively_empty_node(arena, next)
+                    }
             }) {
                 coalesced.pop();
             }
         }
-        if is_empty_base_script(arena, id)
+        if empty_base_for_rules(arena, id, rules)
+            && !blocked_leading_scripts.contains(&id)
             && let Some(&next_id) = coalesced.last()
             && let Some(prescripts) = leading_scripts_on(arena, id, next_id, rules)?
         {
@@ -1234,6 +1364,9 @@ fn leading_scripts_on(
     next: NodeId,
     rules: Rules,
 ) -> crate::error::Result<Option<NodeId>> {
+    if !empty_base_for_rules(arena, script, rules) {
+        return Ok(None);
+    }
     let Some((pre_sub, pre_sup)) = empty_base_scripts(arena, script) else {
         return Ok(None);
     };
@@ -1253,7 +1386,7 @@ fn leading_scripts_on(
     }
     let takes = can_take_prescripts(*arena.node(next))
         && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_declaration(arena, span))
-        && !is_empty_base_script(arena, next)
+        && !empty_base_for_rules(arena, next, rules)
         && !(rules.keeps_arguments && applies_to_next(arena, next));
     Ok(takes.then(|| {
         for part in [pre_sub, pre_sup].into_iter().filter(|part| part.is_some()) {
@@ -1344,6 +1477,16 @@ fn normalize_compact_node_with_identifiers(
     rules: Rules,
 ) -> crate::error::Result<()> {
     if depth > super::MAX_AST_DEPTH {
+        return Ok(());
+    }
+    if rules.leading_only {
+        return normalize_compact_node_leading_only(arena, id, depth);
+    }
+    // A pre-script already carries an explicit base. Its contents may be a
+    // token run whose grouping the writer intentionally preserves. The
+    // leading-only pass must attach only implicit empty-base scripts around
+    // it, never reinterpret that existing leading-script node.
+    if rules.leading_only && matches!(*arena.node(id), CompactNode::PreScripts { .. }) {
         return Ok(());
     }
     let d = depth + 1;
@@ -1613,6 +1756,161 @@ fn normalize_compact_node_with_identifiers(
     Ok(())
 }
 
+/// Recurse through a compact node while changing only empty-base scripts in
+/// the child sequences. The ordinary normalizer also flattens rows, merges
+/// runs and settles table-cell wrappers, which are deliberately outside this
+/// parse-once semantic pass.
+fn normalize_compact_node_leading_only(
+    arena: &mut AstArena,
+    id: NodeId,
+    depth: usize,
+) -> crate::error::Result<()> {
+    if depth > super::MAX_AST_DEPTH {
+        return Ok(());
+    }
+    let child = |arena: &mut AstArena, child: NodeId, depth: usize| {
+        if child.is_some() {
+            normalize_compact_node_with_identifiers(
+                arena,
+                child,
+                depth,
+                Rules {
+                    leading_only: true,
+                    ..Rules::DEFAULT
+                },
+            )
+        } else {
+            Ok(())
+        }
+    };
+    match *arena.node(id) {
+        CompactNode::PreScripts { .. } => {},
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            let span = normalize_compact_span_with_identifiers(
+                arena,
+                span,
+                depth + 1,
+                Rules {
+                    leading_only: true,
+                    ..Rules::DEFAULT
+                },
+            )?;
+            match arena.node_mut_in_place(id) {
+                CompactNode::Row(slot) | CompactNode::Styled(_, slot) => *slot = span,
+                _ => unreachable!(),
+            }
+            if matches!(*arena.node(id), CompactNode::Row(_))
+                && let [only] = arena.children(span)
+                && matches!(*arena.node(*only), CompactNode::PreScripts { .. })
+            {
+                arena.replace_from(id, *only);
+            }
+        },
+        CompactNode::Fenced { content, .. } => {
+            let span = normalize_compact_span_with_identifiers(
+                arena,
+                content,
+                depth + 1,
+                Rules {
+                    leading_only: true,
+                    ..Rules::DEFAULT
+                },
+            )?;
+            if let CompactNode::Fenced { content, .. } = arena.node_mut_in_place(id) {
+                *content = span;
+            }
+        },
+        CompactNode::Subscript { base, sub }
+        | CompactNode::Superscript { base, sup: sub }
+        | CompactNode::SubSup { base, sub, .. } => {
+            child(arena, base, depth + 1)?;
+            child(arena, sub, depth + 1)?;
+            if let CompactNode::SubSup { sup, .. } = *arena.node(id) {
+                child(arena, sup, depth + 1)?;
+            }
+        },
+        CompactNode::Overscript { base, over, .. }
+        | CompactNode::Underscript {
+            base, under: over, ..
+        } => {
+            child(arena, base, depth + 1)?;
+            child(arena, over, depth + 1)?;
+        },
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
+            child(arena, base, depth + 1)?;
+            child(arena, under, depth + 1)?;
+            child(arena, over, depth + 1)?;
+        },
+        CompactNode::Fraction { num, den, .. } => {
+            child(arena, num, depth + 1)?;
+            child(arena, den, depth + 1)?;
+        },
+        CompactNode::Sqrt(inner) => child(arena, inner, depth + 1)?,
+        CompactNode::Root { index, radicand } => {
+            child(arena, index, depth + 1)?;
+            child(arena, radicand, depth + 1)?;
+        },
+        CompactNode::Nary { sub, sup, body, .. } => {
+            child(arena, sub, depth + 1)?;
+            child(arena, sup, depth + 1)?;
+            child(arena, body, depth + 1)?;
+        },
+        CompactNode::Accent { base, .. } => child(arena, base, depth + 1)?,
+        CompactNode::Array { cells, .. } => {
+            let ids: SmallVec<[NodeId; 8]> = arena.children(cells).into();
+            for cell in ids {
+                child(arena, cell, depth + 1)?;
+            }
+        },
+        CompactNode::AlignedCell { content, .. }
+        | CompactNode::SpannedCell { content, .. }
+        | CompactNode::Phantom(content, _)
+        | CompactNode::Reflect { content, .. }
+        | CompactNode::Boxed { content, .. }
+        | CompactNode::Actuarial { content, .. }
+        | CompactNode::Cancel { content, .. }
+        | CompactNode::Scaled { content, .. }
+        | CompactNode::RaiseBox { content, .. }
+        | CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
+            child(arena, content, depth + 1)?;
+        },
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
+            child(arena, display, depth + 1)?;
+            child(arena, text, depth + 1)?;
+            child(arena, script, depth + 1)?;
+            child(arena, script_script, depth + 1)?;
+        },
+        CompactNode::UndefinedCommand { arguments, .. } => {
+            let ids: SmallVec<[NodeId; 4]> = arena.children(arguments).into();
+            for argument in ids {
+                child(arena, argument, depth + 1)?;
+            }
+        },
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Symbol(_, _)
+        | CompactNode::Text(_, _)
+        | CompactNode::Space(_)
+        | CompactNode::Newline
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::Rule { .. }
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_) => {},
+    }
+    Ok(())
+}
+
 /// If a script node's subscript and/or superscript argument is effectively
 /// empty, collapse it to its base (or to the remaining non-empty script kind).
 /// An empty script marker carries no visual or semantic information, but
@@ -1795,6 +2093,38 @@ pub(crate) fn is_empty_base_script(arena: &AstArena, id: NodeId) -> bool {
         | CompactNode::SubSup { base, .. } => is_empty_script_base(arena, base),
         _ => false,
     }
+}
+
+/// The leading-only writer pass recognizes the explicit empty group form. A
+/// colored or sized empty base may deliberately keep an adjacent script apart
+/// after its wrapper is dropped by a target writer.
+fn empty_base_for_rules(arena: &AstArena, id: NodeId, rules: Rules) -> bool {
+    if !rules.leading_only {
+        return is_empty_base_script(arena, id);
+    }
+    let base = match *arena.node(id) {
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. } => base,
+        _ => return false,
+    };
+    matches!(*arena.node(base), CompactNode::Row(span) if span.is_empty())
+}
+
+fn script_has_large_operator(arena: &AstArena, id: NodeId) -> bool {
+    let scripts = match *arena.node(id) {
+        CompactNode::Subscript { sub, .. } => [sub, NodeId::NONE],
+        CompactNode::Superscript { sup, .. } => [NodeId::NONE, sup],
+        CompactNode::SubSup { sub, sup, .. } => [sub, sup],
+        _ => return false,
+    };
+    scripts.into_iter().any(|script| {
+        script.is_some()
+            && matches!(
+                *arena.node(script),
+                CompactNode::Symbol(SymbolKind::LargeOp, _)
+            )
+    })
 }
 
 /// True for an implicit empty script base. An expressible color remains

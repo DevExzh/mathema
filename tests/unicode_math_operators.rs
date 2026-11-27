@@ -19,6 +19,49 @@ fn mathml_body(input: &str, from: Format) -> String {
     mathml[start..end].to_owned()
 }
 
+#[test]
+fn mathml_font_scopes_style_raw_and_normalized_runs_on_every_route() {
+    use mathema::writer::unicode_math::UnicodeMathWriter;
+
+    for (source, wanted) in [
+        (
+            r#"<math><mstyle mathvariant="monospace"><mi>c</mi><mi>o</mi><mi>d</mi><mi>e</mi></mstyle></math>"#,
+            "𝚌𝚘𝚍𝚎",
+        ),
+        (
+            r#"<math><mstyle mathvariant="sans-serif"><mi>A</mi><mi>B</mi><mi>C</mi><mi>D</mi></mstyle></math>"#,
+            "𝖠𝖡𝖢𝖣",
+        ),
+        (
+            r#"<math><mstyle mathvariant="monospace"><mi>code</mi></mstyle></math>"#,
+            "𝚌𝚘𝚍𝚎",
+        ),
+    ] {
+        let parsed = mathema::from_mathml(source).unwrap();
+        let config = Config::default();
+        assert_eq!(
+            parsed.to_unicode_math().unwrap(),
+            wanted,
+            "builder: {source}"
+        );
+        assert_eq!(
+            UnicodeMathWriter::write(&parsed.expr(), &config).unwrap(),
+            wanted,
+            "heap: {source}"
+        );
+        assert_eq!(
+            UnicodeMathWriter::write_compact(parsed.compact_expr(), &config).unwrap(),
+            wanted,
+            "compact: {source}"
+        );
+        assert_eq!(
+            convert(source, Format::MathML, Format::UnicodeMath).unwrap(),
+            wanted,
+            "one-shot: {source}"
+        );
+    }
+}
+
 fn expect(found: &str, wanted: &str) -> Result<(), String> {
     if found == wanted {
         Ok(())
@@ -792,11 +835,7 @@ fn operands_agree_on_every_path() {
 #[test]
 fn an_empty_script_after_a_fraction_stays_apart() {
     for (path, unicode) in unicode_math_by_path(r"\frac{1}{2}{}{}^2x") {
-        let wanted = if path.ends_with("builder") {
-            "1/2 〖〗^2 x"
-        } else {
-            "1/2 (^2)x"
-        };
+        let wanted = "1/2 (^2)x";
         assert_eq!(unicode, wanted, "{path}");
         let latex = convert(&unicode, Format::UnicodeMath, Format::LaTeX).unwrap();
         assert!(latex.starts_with(r"\frac{1}{2}"), "{path}: {latex}");

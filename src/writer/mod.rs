@@ -11,6 +11,7 @@ use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+use std::borrow::Cow;
 
 /// Validate a caller-supplied heap tree before a concrete writer recursively
 /// compacts or emits it. The configured limit is clamped by the AST validator
@@ -31,6 +32,29 @@ pub(crate) fn validate_compact_for_write(expr: &CompactExpr, config: &Config) ->
 /// edited or assembled from foreign handles.
 pub(crate) fn validate_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<()> {
     crate::ast::validate_compact_depth_with(&expr.arena, expr.roots, config.effective_max_depth())
+}
+
+/// Validate a caller-owned tree before preparing its leading scripts. The
+/// common leaf path borrows the caller's arena, while public edited trees with
+/// an implicit empty-base script receive one owned normalized copy.
+pub(crate) fn prepare_leading_scripts<'a>(
+    expr: &'a CompactExpr,
+    config: &Config,
+) -> Result<Cow<'a, CompactExpr>> {
+    validate_compact_for_write(expr, config)?;
+    if !crate::ast::normalize::compact_has_empty_base_script(expr) {
+        return Ok(Cow::Borrowed(expr));
+    }
+    let mut normalized = expr.clone();
+    normalize_leading_scripts_for_write(&mut normalized, config)?;
+    Ok(Cow::Owned(normalized))
+}
+
+/// Attaching a script can wrap a previously independent subtree. Check the
+/// transformed depth against the caller's configured limit.
+fn normalize_leading_scripts_for_write(expr: &mut CompactExpr, config: &Config) -> Result<()> {
+    crate::ast::normalize::normalize_compact_expr_leading_scripts(expr)?;
+    validate_compact_trusted(expr, config)
 }
 
 /// The contents of a table cell after an environment-provided style marker.

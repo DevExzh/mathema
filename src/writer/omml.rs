@@ -107,7 +107,10 @@ pub struct OmmlWriter;
 impl MathWriter for OmmlWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
         super::validate_heap_for_write(expr, config)?;
-        let compact = CompactExpr::from_math_expr_after_validation(expr)?;
+        let mut compact = CompactExpr::from_math_expr_after_validation(expr)?;
+        if crate::ast::normalize::compact_has_empty_base_script(&compact) {
+            super::normalize_leading_scripts_for_write(&mut compact, config)?;
+        }
         Self::write_with_options_validated(&compact, &OmmlOptions::default()).map(|(s, _)| s)
     }
 
@@ -163,8 +166,8 @@ impl OmmlWriter {
         config: &Config,
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        super::validate_compact_for_write(expr, config)?;
-        Self::write_with_options_validated(expr, options)
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        Self::write_with_options_validated(&prepared, options)
     }
 
     fn write_with_options_validated(

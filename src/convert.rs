@@ -4,8 +4,8 @@
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
 use crate::ast::normalize::{
-    normalize_compact_expr_keeping_identifiers, normalize_compact_expr_opening_arguments,
-    normalize_compact_expr_trusted,
+    normalize_compact_expr_keeping_identifiers, normalize_compact_expr_leading_scripts,
+    normalize_compact_expr_opening_arguments, normalize_compact_expr_trusted,
 };
 use crate::error::{CompactParseResult, Config, Diagnostic, Format, Result};
 use crate::reader::Reader;
@@ -19,6 +19,7 @@ use crate::writer::mathml::MathmlWriter;
 use crate::writer::mtef::{MtefWriteOptions, MtefWriter};
 use crate::writer::omml::OmmlWriter;
 use crate::writer::unicode_math::UnicodeMathWriter;
+use std::sync::OnceLock;
 
 /// One-liner conversion between any two supported formats.
 ///
@@ -266,12 +267,38 @@ fn write_compact_with_diagnostics(
 
 /// Builder-style conversion result. Parse once, write to multiple formats.
 pub struct ConvertResult {
+    with_leading_scripts: OnceLock<Option<Box<CompactExpr>>>,
     compact: CompactParseResult,
     config: Config,
     mtef: Option<MtefInfo>,
 }
 
 impl ConvertResult {
+    /// Keep the parsed tree available to AST clients. All outputs share the
+    /// same attachment of empty-base scripts to following atoms. Ordinary
+    /// inputs reuse the original arena.
+    fn output_expr(&self) -> Result<&CompactExpr> {
+        let raw = &self.compact.expr;
+        let cached = if let Some(cached) = self.with_leading_scripts.get() {
+            cached
+        } else {
+            let normalized = if crate::ast::normalize::compact_has_empty_base_script(raw) {
+                let mut expr = Box::new(raw.clone());
+                normalize_compact_expr_leading_scripts(&mut expr)?;
+                crate::ast::validate_compact_depth_with(
+                    &expr.arena,
+                    expr.roots,
+                    self.config.effective_max_depth(),
+                )?;
+                Some(expr)
+            } else {
+                None
+            };
+            self.with_leading_scripts.get_or_init(|| normalized)
+        };
+        Ok(cached.as_deref().unwrap_or(raw))
+    }
+
     /// How the expression was normalized when it was read, if it was.
     fn normalization(&self) -> Option<crate::writer::latex::Normalize> {
         self.mtef
@@ -279,8 +306,7 @@ impl ConvertResult {
             .then_some(normalize_compact_expr_keeping_identifiers as _)
     }
 
-    /// The expression without its font sizes, for a format that writes none,
-    /// as it would have been read without them. `None` when it has none.
+    /// The expression without its font sizes, for a format that writes none.
     fn without_sizes(&self) -> Result<Option<CompactExpr>> {
         if !self.compact.expr.arena.has_attrs() {
             return Ok(None);
@@ -290,11 +316,11 @@ impl ConvertResult {
         if let Some(normalize) = self.normalization() {
             normalize(&mut plain)?;
         }
+        normalize_compact_expr_leading_scripts(&mut plain)?;
         Ok(Some(plain))
     }
 
-    /// The expression without the sizes and colors that pure OMML does not
-    /// write, if it has some.
+    /// The expression without sizes and colors that pure OMML cannot carry.
     fn in_pure_omml(&self) -> Result<Option<CompactExpr>> {
         let expr = &self.compact.expr;
         if !expr.arena.has_attrs() && !crate::writer::omml::has_colors(expr) {
@@ -305,6 +331,7 @@ impl ConvertResult {
         if let Some(normalize) = self.normalization() {
             normalize(&mut plain)?;
         }
+        normalize_compact_expr_leading_scripts(&mut plain)?;
         Ok(Some(plain))
     }
 
@@ -313,28 +340,27 @@ impl ConvertResult {
         config: &Config,
         options: &crate::writer::omml::OmmlOptions,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        let expr = &self.compact.expr;
+        let expr = self.output_expr()?;
         let written = OmmlWriter::write_with_options_trusted(expr, config, options)?;
-        let plain = match options.run_properties {
-            crate::writer::omml::OmmlRunProperties::WordprocessingMl
-            | crate::writer::omml::OmmlRunProperties::DrawingMl => None,
-            crate::writer::omml::OmmlRunProperties::None => self.in_pure_omml()?,
-        };
-        if let Some(plain) = plain {
-            let (omml, _) = OmmlWriter::write_with_options_trusted(&plain, config, options)?;
-            return Ok((omml, written.1));
+        if options.run_properties == crate::writer::omml::OmmlRunProperties::None
+            && let Some(plain) = self.in_pure_omml()?
+        {
+            let (output, _) = OmmlWriter::write_with_options_trusted(&plain, config, options)?;
+            return Ok((output, written.1));
         }
         Ok(written)
     }
 
     /// Serialize the parsed expression to LaTeX.
     pub fn to_latex(&self) -> Result<String> {
-        LatexWriter::write_read(&self.compact.expr, &self.config, self.normalization())
+        let expr = self.output_expr()?;
+        LatexWriter::write_read(expr, &self.config, self.normalization())
     }
 
     /// Serialize the parsed expression to Presentation MathML.
     pub fn to_mathml(&self) -> Result<String> {
-        crate::writer::mathml::write_compact_validated(&self.compact.expr)
+        let expr = self.output_expr()?;
+        crate::writer::mathml::write_compact_validated(expr)
     }
 
     /// Serialize to Presentation MathML using an explicit output profile.
@@ -357,35 +383,34 @@ impl ConvertResult {
         &self,
         options: &crate::writer::mathml::MathmlOptions,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        crate::writer::mathml::MathmlWriter::write_with_options_trusted(
-            &self.compact.expr,
-            &self.config,
-            options,
-        )
+        crate::writer::mathml::write_with_options_validated(self.output_expr()?, options)
     }
 
     /// Serialize to LaTeX, also returning writer-side loss diagnostics: text
     /// that is no color in a color, control characters in text, font sizes.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_latex_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        LatexWriter::write_read_with_diagnostics(
-            &self.compact.expr,
-            &self.config,
-            self.normalization(),
-        )
+        let expr = self.output_expr()?;
+        LatexWriter::write_read_with_diagnostics(expr, &self.config, self.normalization())
     }
 
     /// Serialize to LaTeX using the given configuration.
     pub fn to_latex_with(&self, config: &Config) -> Result<String> {
-        LatexWriter::write_read(&self.compact.expr, config, self.normalization())
+        let expr = self.output_expr()?;
+        LatexWriter::write_read(expr, config, self.normalization())
     }
 
     /// Serialize to Presentation MathML using the given configuration.
     pub fn to_mathml_with(&self, config: &Config) -> Result<String> {
+        let expr = self.output_expr()?;
         if config.effective_max_depth() < self.config.effective_max_depth() {
-            check_depth(&self.compact, config)?;
+            crate::ast::validate_compact_depth_with(
+                &expr.arena,
+                expr.roots,
+                config.effective_max_depth(),
+            )?;
         }
-        self.to_mathml()
+        crate::writer::mathml::write_compact_validated(expr)
     }
 
     /// Serialize the parsed expression to OMML (Office MathML).
@@ -395,8 +420,10 @@ impl ConvertResult {
 
     /// Serialize to OMML using the given configuration.
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
-        let plain = self.in_pure_omml()?;
-        OmmlWriter::write_compact_trusted(plain.as_ref().unwrap_or(&self.compact.expr), config)
+        match self.in_pure_omml()? {
+            Some(plain) => OmmlWriter::write_compact_trusted(&plain, config),
+            None => OmmlWriter::write_compact_trusted(self.output_expr()?, config),
+        }
     }
 
     /// Serialize to OMML with writer options (host run-property dialect,
@@ -421,7 +448,8 @@ impl ConvertResult {
     /// [`to_mtef_bytes`](Self::to_mtef_bytes) returns with the default
     /// [`MtefWriteOptions`].
     pub fn to_mtef(&self) -> Result<String> {
-        MtefWriter::write_compact_trusted(&self.compact.expr, &self.config)
+        let expr = self.output_expr()?;
+        MtefWriter::write_compact_trusted(expr, &self.config)
     }
 
     /// Serialize the parsed expression to binary MTEF.
@@ -448,7 +476,8 @@ impl ConvertResult {
     ///
     /// See [`MtefWriter::write_bytes`].
     pub fn to_mtef_bytes(&self, options: &MtefWriteOptions) -> Result<Vec<u8>> {
-        MtefWriter::write_bytes_with_diagnostics_trusted(&self.compact.expr, &self.config, options)
+        let expr = self.output_expr()?;
+        MtefWriter::write_bytes_with_diagnostics_trusted(expr, &self.config, options)
             .map(|(bytes, _)| bytes)
     }
 
@@ -459,12 +488,14 @@ impl ConvertResult {
         &self,
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
-        MtefWriter::write_bytes_with_diagnostics_trusted(&self.compact.expr, &self.config, options)
+        let expr = self.output_expr()?;
+        MtefWriter::write_bytes_with_diagnostics_trusted(expr, &self.config, options)
     }
 
     /// Serialize to MTEF using the given configuration.
     pub fn to_mtef_with(&self, config: &Config) -> Result<String> {
-        MtefWriter::write_compact_trusted(&self.compact.expr, config)
+        let expr = self.output_expr()?;
+        MtefWriter::write_compact_trusted(expr, config)
     }
 
     /// Serialize the parsed expression to UnicodeMath linear notation.
@@ -474,14 +505,10 @@ impl ConvertResult {
 
     /// Serialize to UnicodeMath using the given configuration.
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
-        if !self.compact.expr.arena.has_attrs() {
-            return UnicodeMathWriter::write_compact_trusted(&self.compact.expr, config);
+        match self.without_sizes()? {
+            Some(plain) => UnicodeMathWriter::write_compact_trusted(&plain, config),
+            None => UnicodeMathWriter::write_compact_trusted(self.output_expr()?, config),
         }
-        let plain = self.without_sizes()?;
-        UnicodeMathWriter::write_compact_trusted(
-            plain.as_ref().unwrap_or(&self.compact.expr),
-            config,
-        )
     }
 
     /// Serialize to Presentation MathML, also returning diagnostics for any
@@ -491,7 +518,8 @@ impl ConvertResult {
     /// warnings from parsing — this surfaces *writer-side* loss (e.g. a node
     /// kind the target cannot express). Use it when round-trip fidelity matters.
     pub fn to_mathml_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        crate::writer::mathml::write_with_diagnostics_validated(&self.compact.expr)
+        let expr = self.output_expr()?;
+        crate::writer::mathml::write_with_diagnostics_validated(expr)
     }
 
     /// Serialize to OMML, also returning writer-side loss diagnostics.
@@ -505,7 +533,8 @@ impl ConvertResult {
     /// this is the recommended entry point when targeting MathType.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_mtef_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        MtefWriter::write_compact_with_diagnostics_trusted(&self.compact.expr, &self.config)
+        let expr = self.output_expr()?;
+        MtefWriter::write_compact_with_diagnostics_trusted(expr, &self.config)
     }
 
     /// Serialize to UnicodeMath, also returning writer-side loss diagnostics.
@@ -530,7 +559,8 @@ impl ConvertResult {
     #[cfg(feature = "render")]
     pub fn to_svg(&self) -> Result<String> {
         let options = crate::render::RenderOptions::default();
-        crate::render::render_to_svg_standalone_compact(&self.compact.expr, &options)
+        let expr = self.output_expr()?;
+        crate::render::render_to_svg_standalone_compact(expr, &options)
     }
 
     /// Render to a standalone SVG and report missing embedded glyphs.
@@ -538,7 +568,7 @@ impl ConvertResult {
     pub fn to_svg_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
         let options = crate::render::RenderOptions::default();
         crate::render::render_to_svg_standalone_compact_with_diagnostics(
-            &self.compact.expr,
+            self.output_expr()?,
             &options,
         )
     }
@@ -546,7 +576,8 @@ impl ConvertResult {
     /// Render a standalone SVG using custom [`RenderOptions`](crate::render::RenderOptions).
     #[cfg(feature = "render")]
     pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
-        crate::render::render_to_svg_standalone_compact(&self.compact.expr, options)
+        let expr = self.output_expr()?;
+        crate::render::render_to_svg_standalone_compact(expr, options)
     }
 
     /// Render a standalone SVG with custom options and report glyph fallbacks.
@@ -556,7 +587,7 @@ impl ConvertResult {
         options: &crate::render::RenderOptions,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
         crate::render::render_to_svg_standalone_compact_with_diagnostics(
-            &self.compact.expr,
+            self.output_expr()?,
             options,
         )
     }
@@ -571,7 +602,7 @@ impl ConvertResult {
         &self,
         options: &crate::render::RenderOptions,
     ) -> Result<crate::render::PreparedRender> {
-        crate::render::prepare_render_compact(&self.compact.expr, options)
+        crate::render::prepare_render_compact(self.output_expr()?, options)
     }
 
     /// Render to a text-based SVG that relies on client-side fonts (`<text>`
@@ -580,14 +611,15 @@ impl ConvertResult {
     #[cfg(feature = "render")]
     pub fn to_svg_text(&self) -> Result<String> {
         let options = crate::render::RenderOptions::default();
-        crate::render::render_to_svg_compact(&self.compact.expr, &options)
+        let expr = self.output_expr()?;
+        crate::render::render_to_svg_compact(expr, &options)
     }
 
     /// Render a text-based SVG and report glyphs absent from the embedded fonts.
     #[cfg(feature = "render")]
     pub fn to_svg_text_with_diagnostics(&self) -> Result<(String, Vec<Diagnostic>)> {
         crate::render::render_to_svg_compact_with_diagnostics(
-            &self.compact.expr,
+            self.output_expr()?,
             &crate::render::RenderOptions::default(),
         )
     }
@@ -595,14 +627,16 @@ impl ConvertResult {
     /// Render a text-based (client-font) SVG using custom [`RenderOptions`](crate::render::RenderOptions).
     #[cfg(feature = "render")]
     pub fn to_svg_text_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
-        crate::render::render_to_svg_compact(&self.compact.expr, options)
+        let expr = self.output_expr()?;
+        crate::render::render_to_svg_compact(expr, options)
     }
 
     /// Render the expression to PNG image bytes.
     #[cfg(feature = "raster")]
     pub fn to_png(&self) -> Result<Vec<u8>> {
         let options = crate::render::raster::RasterOptions::default();
-        crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
+        let expr = self.output_expr()?;
+        crate::render::raster::render_to_image_compact(expr, &options)
     }
 
     /// Render to PNG and report missing glyphs and unsupported raster colors.
@@ -610,7 +644,7 @@ impl ConvertResult {
     pub fn to_png_with_diagnostics(&self) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
         let options = crate::render::raster::RasterOptions::default();
         crate::render::raster::render_to_image_compact_with_diagnostics(
-            &self.compact.expr,
+            self.output_expr()?,
             &options,
         )
     }
@@ -618,7 +652,8 @@ impl ConvertResult {
     /// Render to PNG image bytes using custom [`RasterOptions`](crate::render::raster::RasterOptions).
     #[cfg(feature = "raster")]
     pub fn to_png_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
-        crate::render::raster::render_to_image_compact(&self.compact.expr, options)
+        let expr = self.output_expr()?;
+        crate::render::raster::render_to_image_compact(expr, options)
     }
 
     /// Render PNG bytes with custom options and report glyph and color diagnostics.
@@ -627,7 +662,10 @@ impl ConvertResult {
         &self,
         options: &crate::render::raster::RasterOptions,
     ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
-        crate::render::raster::render_to_image_compact_with_diagnostics(&self.compact.expr, options)
+        crate::render::raster::render_to_image_compact_with_diagnostics(
+            self.output_expr()?,
+            options,
+        )
     }
 
     /// Render the expression to JPEG image bytes.
@@ -637,7 +675,8 @@ impl ConvertResult {
             format: crate::render::raster::ImageFormat::Jpeg,
             ..crate::render::raster::RasterOptions::default()
         };
-        crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
+        let expr = self.output_expr()?;
+        crate::render::raster::render_to_image_compact(expr, &options)
     }
 
     /// Render to JPEG and report missing glyphs and unsupported raster colors.
@@ -648,7 +687,7 @@ impl ConvertResult {
             ..crate::render::raster::RasterOptions::default()
         };
         crate::render::raster::render_to_image_compact_with_diagnostics(
-            &self.compact.expr,
+            self.output_expr()?,
             &options,
         )
     }
@@ -656,7 +695,8 @@ impl ConvertResult {
     /// Render to JPEG image bytes using custom [`RasterOptions`](crate::render::raster::RasterOptions).
     #[cfg(feature = "raster")]
     pub fn to_jpeg_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
-        crate::render::raster::render_to_image_compact(&self.compact.expr, options)
+        let expr = self.output_expr()?;
+        crate::render::raster::render_to_image_compact(expr, options)
     }
 
     /// Render JPEG bytes with custom options and report glyph and color diagnostics.
@@ -665,14 +705,16 @@ impl ConvertResult {
         &self,
         options: &crate::render::raster::RasterOptions,
     ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
-        crate::render::raster::render_to_image_compact_with_diagnostics(&self.compact.expr, options)
+        crate::render::raster::render_to_image_compact_with_diagnostics(
+            self.output_expr()?,
+            options,
+        )
     }
 
     /// Access the parsed AST as a legacy [`MathExpr`].
     ///
-    /// **Cost:** this *materializes* a full heap `Box`/`Vec`/`String` tree from
-    /// the compact arena representation and is measurably expensive — roughly
-    /// 60% of a full parse for a typical formula. Throughput-sensitive callers
+    /// Each call materializes a full heap `Box`/`Vec`/`String` tree. Its cost
+    /// depends on the expression's size and shape. Throughput-sensitive callers
     /// should prefer [`compact_expr`](Self::compact_expr) together with the
     /// `*_compact` writers/renderers (e.g. [`to_mathml`](Self::to_mathml), or
     /// `to_svg` with the `render` feature), which operate on the compact tree
@@ -733,6 +775,7 @@ pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = LatexReader::parse_compact(input, config)?;
     check_depth(&compact, config)?;
     Ok(ConvertResult {
+        with_leading_scripts: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -749,6 +792,7 @@ pub fn from_mathml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = MathmlReader::parse_compact(input, config)?;
     check_depth(&compact, config)?;
     Ok(ConvertResult {
+        with_leading_scripts: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -765,6 +809,7 @@ pub fn from_omml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = OmmlReader::parse_compact(input, config)?;
     check_depth(&compact, config)?;
     Ok(ConvertResult {
+        with_leading_scripts: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -834,6 +879,7 @@ fn finish_mtef(
     // Builder writes reuse this check on the normalized expression held by the result.
     check_depth(&compact, config)?;
     Ok(ConvertResult {
+        with_leading_scripts: OnceLock::new(),
         compact,
         config: *config,
         mtef,
@@ -850,6 +896,7 @@ pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertRes
     let compact = UnicodeMathReader::parse_compact(input, config)?;
     check_depth(&compact, config)?;
     Ok(ConvertResult {
+        with_leading_scripts: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
