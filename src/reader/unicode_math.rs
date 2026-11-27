@@ -61,57 +61,42 @@ fn unquoted_chars(source: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     })
 }
 
-/// Index balanced parentheses and curly braces by opening offset for lookups
-/// during parsing. Both indexes share one quote-aware scan so nested matching
-/// stays linear in the input length.
-///
-/// A legacy one-sided cases spelling starts with a brace but has no matching
-/// closing brace. Keeping this index lets that spelling coexist with an
-/// ordinary braced group whose body starts with a matrix, without consuming
-/// the group's trailing atoms as part of the legacy form.
-fn delimiter_ends(source: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+/// Opening offsets and exclusive ends of matched delimiters, ordered by opening.
+#[derive(Default)]
+struct DelimiterEnds {
+    parens: Vec<(usize, usize)>,
+    braces: Vec<(usize, usize)>,
+}
+
+/// Index pairs outside quoted text. An unmatched opening brace can introduce
+/// a legacy cases table, while a matched brace groups the whole expression.
+fn delimiter_ends(source: &str) -> DelimiterEnds {
+    let mut ends = DelimiterEnds::default();
     if !source
         .as_bytes()
         .iter()
         .any(|byte| matches!(*byte, b'(' | b'{'))
     {
-        return (Vec::new(), Vec::new());
+        return ends;
     }
-    let mut parens = Vec::new();
-    let mut braces = Vec::new();
-    let mut paren_open: Vec<usize> = Vec::new();
-    let mut brace_open: Vec<usize> = Vec::new();
-    for (index, character) in unquoted_chars(source) {
-        match character {
-            '(' => {
-                paren_open.push(parens.len());
-                parens.push((index, 0));
-            },
-            ')' => {
-                if let Some(at) = paren_open.pop() {
-                    parens[at].1 = index + 1;
-                }
-            },
-            '{' => {
-                brace_open.push(braces.len());
-                braces.push((index, 0));
-            },
-            '}' => {
-                if let Some(at) = brace_open.pop() {
-                    braces[at].1 = index + 1;
-                }
-            },
-            _ => {},
+    let mut open_parens = Vec::new();
+    let mut open_braces = Vec::new();
+    for (offset, ch) in unquoted_chars(source) {
+        let (pairs, stack) = match ch {
+            '(' | ')' => (&mut ends.parens, &mut open_parens),
+            '{' | '}' => (&mut ends.braces, &mut open_braces),
+            _ => continue,
+        };
+        if matches!(ch, '(' | '{') {
+            stack.push(pairs.len());
+            pairs.push((offset, 0));
+        } else if let Some(open) = stack.pop() {
+            pairs[open].1 = offset + 1;
         }
     }
-    parens.retain(|&(_, end)| end != 0);
-    braces.retain(|&(_, end)| end != 0);
-    (parens, braces)
-}
-
-#[cfg(test)]
-fn paren_ends(source: &str) -> Vec<(usize, usize)> {
-    delimiter_ends(source).0
+    ends.parens.retain(|&(_, end)| end != 0);
+    ends.braces.retain(|&(_, end)| end != 0);
+    ends
 }
 
 /// Find the top-level `&` in the body of an nth-root argument. UnicodeMath
@@ -284,10 +269,7 @@ struct CompactParser {
     failed: Vec<u8>,
     /// Bit per byte offset: a matrix content walk from there fails.
     dead_walk: Vec<u64>,
-    /// The balanced parentheses (see [`paren_ends`]).
-    paren_ends: Vec<(usize, usize)>,
-    /// The balanced curly braces (see [`brace_ends`]).
-    brace_ends: Vec<(usize, usize)>,
+    delimiters: DelimiterEnds,
     /// The paired bars and brackets (see [`bars`]).
     pairs: bars::Pairs,
     /// Offsets of pairs whose content does not parse.
@@ -350,13 +332,11 @@ fn abort_failure(input: &str) -> nom::Err<nom::error::Error<&str>> {
 
 impl CompactParser {
     fn new(source: &str, lead: usize, config: &Config) -> Self {
-        let (paren_ends, brace_ends) = delimiter_ends(source);
         Self {
             arena: AstArena::new(),
             source_len: source.len(),
             pairs: bars::pair_bars(source),
-            paren_ends,
-            brace_ends,
+            delimiters: delimiter_ends(source),
             failed_pairs: BTreeSet::new(),
             lead,
             strictness: config.strictness,
@@ -408,10 +388,11 @@ impl CompactParser {
         debug_assert!(input.starts_with('('));
         let at = self.offset(input);
         let found = self
-            .paren_ends
+            .delimiters
+            .parens
             .binary_search_by_key(&at, |&(open, _)| open)
             .ok()?;
-        Some(self.paren_ends[found].1 - at)
+        Some(self.delimiters.parens[found].1 - at)
     }
 
     /// The byte index just after the `}` that closes a brace at `input`.
@@ -419,10 +400,11 @@ impl CompactParser {
         debug_assert!(input.starts_with('{'));
         let at = self.offset(input);
         let found = self
-            .brace_ends
+            .delimiters
+            .braces
             .binary_search_by_key(&at, |&(open, _)| open)
             .ok()?;
-        Some(self.brace_ends[found].1 - at)
+        Some(self.delimiters.braces[found].1 - at)
     }
 
     /// Push a node, enforcing [`Config::max_nodes`]. Past the limit the node
@@ -1806,8 +1788,7 @@ impl CompactParser {
         self.parse_attached_scripts(rest, accented)
     }
 
-    /// UTN #28 sections 2.1 and 4.1: `/` before an operator negates it
-    /// (`a/=b` is `a≠b`, `a/∈B` is `a∉B`).
+    /// Read the legacy one-sided brace followed by a matrix.
     fn parse_legacy_cases<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let rest = input.strip_prefix('{').ok_or_else(|| {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
@@ -3491,10 +3472,10 @@ mod tests {
 
     #[test]
     fn parentheses_are_matched_however_far() {
-        assert_eq!(paren_ends("(x)y"), [(0, 3)]);
-        assert_eq!(paren_ends("((x))y"), [(0, 5), (1, 4)]);
-        assert_eq!(paren_ends("(x"), []);
-        assert_eq!(paren_ends(")(x)"), [(1, 4)]);
+        assert_eq!(delimiter_ends("(x)y").parens, [(0, 3)]);
+        assert_eq!(delimiter_ends("((x))y").parens, [(0, 5), (1, 4)]);
+        assert_eq!(delimiter_ends("(x").parens, []);
+        assert_eq!(delimiter_ends(")(x)").parens, [(1, 4)]);
         let terms = "x+".repeat(400) + "x";
         let result = crate::from_unicode_math(&format!("x^({terms})")).unwrap();
         let config = Config::default().with_display(DisplayStyle::Inline);
