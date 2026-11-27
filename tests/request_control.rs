@@ -588,3 +588,32 @@ fn controlled_svg_conversion_keeps_an_output_limit_request_control() {
     .expect_err("the output request cancellation must survive conversion composition");
     assert!(matches!(error, Error::RequestCancelled));
 }
+
+#[cfg(feature = "render")]
+#[test]
+fn controlled_svg_charges_layout_work_for_direct_and_prepared_outputs() {
+    let parsed = mathema::from_latex("x + y").unwrap();
+    let control = RequestControl::with_max_work(0);
+    let direct = control.scope(|| parsed.to_svg());
+    assert!(matches!(
+        direct,
+        Err(Error::LimitExceeded {
+            kind: mathema::LimitKind::Work,
+            limit: 0
+        })
+    ));
+
+    let prepared = parsed
+        .prepare_render(&mathema::RenderOptions::default())
+        .unwrap();
+    let control = RequestControl::with_max_work(0);
+    let prepared_result =
+        control.scope(|| prepared.to_svg_text(&mathema::RenderOptions::default()));
+    assert!(matches!(
+        prepared_result,
+        Err(Error::LimitExceeded {
+            kind: mathema::LimitKind::Work,
+            limit: 0
+        })
+    ));
+}

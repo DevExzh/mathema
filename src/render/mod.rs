@@ -407,6 +407,26 @@ pub struct PreparedRender {
     display_mode: bool,
 }
 
+/// Charge the work needed to traverse and lay out a compact expression. The
+/// AST node and child-reference counts provide a stable lower bound for the
+/// secondary layout tree without putting a checkpoint in every hot helper.
+fn charge_compact_render_work(expr: &CompactExpr) -> Result<()> {
+    let units = expr
+        .arena
+        .node_count()
+        .saturating_add(expr.arena.children_count())
+        .max(1);
+    crate::error::request_checkpoint(units)
+}
+
+fn charge_heap_render_work(expr: &MathExpr) -> Result<()> {
+    crate::error::request_checkpoint(expr.nodes.len().max(1))
+}
+
+fn charge_prepared_render_work(arena: &arena::LayoutArena) -> Result<()> {
+    crate::error::request_checkpoint(arena.len().max(1))
+}
+
 impl Default for RenderOptions {
     fn default() -> Self {
         Self {
@@ -455,6 +475,7 @@ pub fn prepare_render_compact(
     options: &RenderOptions,
 ) -> Result<PreparedRender> {
     options.validate()?;
+    charge_compact_render_work(expr)?;
     crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
     let display_mode = options
         .display_mode
@@ -476,6 +497,7 @@ pub fn prepare_render_compact(
 impl PreparedRender {
     fn validate_options(&self, options: &RenderOptions) -> Result<()> {
         options.validate()?;
+        charge_prepared_render_work(&self.layout_arena)?;
         if let Some(display_mode) = options.display_mode
             && display_mode != self.display_mode
         {
@@ -528,6 +550,7 @@ impl PreparedRender {
         options: &RenderOptions,
         limits: &SvgLimits,
     ) -> Result<String> {
+        reject_if_cancelled(limits)?;
         self.svg_geometry(options)?;
         emit::emit_svg_arena_with_limits(&self.layout_arena, self.root, options, limits)
     }
@@ -590,6 +613,7 @@ impl PreparedRender {
         options: &SvgOptions,
         limits: &SvgLimits,
     ) -> Result<String> {
+        reject_if_cancelled(limits)?;
         self.svg_geometry(&options.render)?;
         let (metadata, limits) = options.limits_for_metadata(limits)?;
         let output = match options.mode {
@@ -644,6 +668,7 @@ impl PreparedRender {
         options: &RenderOptions,
         limits: &SvgLimits,
     ) -> Result<String> {
+        reject_if_cancelled(limits)?;
         self.svg_geometry(options)?;
         let chars = subset::collect_chars_arena(&self.layout_arena, self.root);
         let mut glyphs = subset::build_glyph_set(&chars);
@@ -885,6 +910,7 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
     if crate::ast::has_attributes(expr) {
         return render_to_svg_compact(&CompactExpr::from_math_expr(expr)?, options);
     }
+    charge_heap_render_work(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -952,6 +978,7 @@ pub fn render_to_svg_with_options_and_limits(
     options: &SvgOptions,
     limits: &SvgLimits,
 ) -> Result<String> {
+    reject_if_cancelled(limits)?;
     let compact = CompactExpr::from_math_expr(expr)?;
     render_to_svg_compact_with_options_and_limits(&compact, options, limits)
 }
@@ -1067,6 +1094,7 @@ pub fn render_to_svg_with_limits(
     limits: &SvgLimits,
 ) -> Result<String> {
     options.validate()?;
+    reject_if_cancelled(limits)?;
     crate::ast::validate_ast_depth(expr)?;
     if crate::ast::has_attributes(expr) {
         return render_to_svg_compact_with_limits(
@@ -1075,6 +1103,7 @@ pub fn render_to_svg_with_limits(
             limits,
         );
     }
+    charge_heap_render_work(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -1114,6 +1143,7 @@ pub fn render_to_svg_with_diagnostics(
             options,
         );
     }
+    charge_heap_render_work(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -1157,6 +1187,7 @@ fn render_compact_svg_with_limits<T>(
 ) -> Result<T> {
     options.validate()?;
     reject_if_cancelled(limits)?;
+    charge_compact_render_work(expr)?;
     crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
     let style = if options
         .display_mode
@@ -1269,6 +1300,7 @@ fn render_compact_svg_with<T>(
     diagnostics: impl FnOnce(&arena::LayoutArena, arena::LayoutBoxId) -> Vec<Diagnostic>,
 ) -> Result<(T, Vec<Diagnostic>)> {
     options.validate()?;
+    charge_compact_render_work(expr)?;
     // Rendering follows auxiliary compact references (strings, column spans,
     // boundary metadata) in addition to the reachable node graph. Validate
     // the complete caller-owned arena before the layout traversal so malformed
@@ -1320,6 +1352,7 @@ fn render_to_svg_standalone_with_prefix(
             id_prefix,
         );
     }
+    charge_heap_render_work(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -1378,6 +1411,7 @@ fn render_to_svg_standalone_with_prefix_and_limits(
             id_prefix,
         );
     }
+    charge_heap_render_work(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -1428,6 +1462,7 @@ pub fn render_to_svg_standalone_with_diagnostics(
             options,
         );
     }
+    charge_heap_render_work(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -1515,6 +1550,7 @@ fn render_standalone_compact_svg_with_limits<T>(
 ) -> Result<T> {
     options.validate()?;
     reject_if_cancelled(limits)?;
+    charge_compact_render_work(expr)?;
     crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
     let style = if options
         .display_mode
