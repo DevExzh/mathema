@@ -2318,11 +2318,20 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     let nodes = marker
                         .and_then(|value| super::cell_after_style(arena, cell_id, value))
                         .unwrap_or(nodes);
+                    let contains_break = nodes
+                        .iter()
+                        .any(|&node| matches!(arena.node(node), CompactNode::Newline));
+                    if contains_break {
+                        buf.push('{');
+                    }
                     if alignment.is_some() {
                         write_aligned_cell_content(buf, arena, nodes);
                         buf.push('}');
                     } else {
                         write_node_slice(buf, arena, nodes, false);
+                    }
+                    if contains_break {
+                        buf.push('}');
                     }
                     col_idx = col_idx.saturating_add(cell_span);
                     authored_count += 1;

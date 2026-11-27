@@ -168,6 +168,29 @@ fn latex_cases_keep_authored_ragged_rows_across_text_writers() {
 }
 
 #[test]
+fn matrix_cell_line_breaks_reach_a_two_pass_fixed_point() {
+    let source = r"\begin{matrix}a{\\}b & {c\\d}e & {\\}\end{matrix}";
+    let first = mathema::from_latex(source).unwrap().to_latex().unwrap();
+    let second = mathema::from_latex(&first).unwrap().to_latex().unwrap();
+    assert_eq!(first, second, "{first}");
+
+    for text in [source.to_owned(), first, second] {
+        let expression = mathema::from_latex(&text).unwrap().expr();
+        let (MathNode::Matrix { rows, .. } | MathNode::Array { rows, .. }) = &expression.nodes[0]
+        else {
+            panic!("expected matrix: {text}")
+        };
+        assert_eq!(rows.len(), 1, "{text}");
+        assert_eq!(rows[0].len(), 3, "{text}");
+        assert!(
+            rows[0]
+                .iter()
+                .any(|cell| { cell.iter().any(|node| matches!(node, MathNode::LineBreak)) })
+        );
+    }
+}
+
+#[test]
 fn portable_latex_profile_keeps_authored_stretch() {
     let heap = ragged_table(Some(1.234));
     let compact = CompactExpr::from_math_expr(&heap).unwrap();

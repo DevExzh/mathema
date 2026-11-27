@@ -1552,7 +1552,15 @@ impl<'a> Emitter<'a> {
                 self.close("m:bar");
             },
             // A group character has no size: a mark that has one is a limit.
-            Some(chr) if !movable && chr.chars().count() <= 1 && !self.has_size(script) => {
+            Some(chr)
+                if !movable
+                    && chr.chars().count() <= 1
+                    && !self.has_size(script)
+                    && chr
+                        .chars()
+                        .next()
+                        .is_some_and(crate::unicode::symbols::is_accent_glyph) =>
+            {
                 // CT_GroupChrPr: chr, pos, vertJc.
                 self.open("m:groupChr");
                 self.open("m:groupChrPr");

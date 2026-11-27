@@ -11,6 +11,7 @@ use mathema::reader::omml::OmmlReader;
 use mathema::writer::omml::OmmlWriter;
 use mathema::{
     Config, DiagnosticKind, OmmlJustification, OmmlOptions, OmmlParagraph, OmmlRunProperties,
+    from_omml,
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/omml");
@@ -274,6 +275,126 @@ fn plurimath_word_equations_round_trip() {
         let (_, out) = round_trip("plurimath_075_func.omml", &options);
         assert!(out.contains("<m:func><m:fName>"), "{out}");
     }
+}
+
+#[test]
+fn native_fixed_limits_stay_fixed_across_all_host_dialects() {
+    let source = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:limLow><m:e><m:r><m:t>lim</m:t></m:r></m:e><m:lim><m:r><m:t>x</m:t></m:r></m:lim></m:limLow></m:oMath>"#;
+    for options in dialects() {
+        let parsed = from_omml(source).unwrap();
+        let parsed_nodes = parsed.expr().nodes;
+        assert!(matches!(
+            parsed_nodes.as_slice(),
+            [MathNode::Subscript {
+                base,
+                ..
+            }] if matches!(base.as_ref(), MathNode::Operator(attr) if attr.limit_style == mathema::ast::LimitStyle::AboveBelow)
+        ));
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(
+            mathml.contains(r#"<munder><mo movablelimits="false">lim</mo>"#),
+            "{mathml}"
+        );
+        let (written, diagnostics) = parsed.to_omml_with_options(&options).unwrap();
+        assert!(written.contains("<m:limLow>"), "{written}");
+        assert!(
+            diagnostics.is_empty(),
+            "native named limit is representable: {diagnostics:?}"
+        );
+        let back = from_omml(&written).unwrap();
+        assert!(matches!(
+            back.expr().nodes.as_slice(),
+            [MathNode::Subscript {
+                base,
+                ..
+            }] if matches!(base.as_ref(), MathNode::Operator(attr) if attr.limit_style == mathema::ast::LimitStyle::AboveBelow)
+        ));
+    }
+}
+
+#[test]
+fn native_max_limit_stays_fixed_across_all_host_dialects() {
+    let source = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:limLow><m:e><m:r><m:t>max</m:t></m:r></m:e><m:lim><m:r><m:t>x</m:t></m:r></m:lim></m:limLow></m:oMath>"#;
+    for options in dialects() {
+        let parsed = from_omml(source).unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(
+            mathml.contains(r#"<munder><mo movablelimits="false">max</mo>"#),
+            "{mathml}"
+        );
+        let (written, diagnostics) = parsed.to_omml_with_options(&options).unwrap();
+        assert!(written.contains("<m:limLow>"), "{written}");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(
+            from_omml(&written)
+                .unwrap()
+                .to_mathml()
+                .unwrap()
+                .contains("movablelimits=\"false\"")
+        );
+    }
+}
+
+#[test]
+fn native_side_limit_stays_side_limit() {
+    let source = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:sSub><m:e><m:r><m:t>lim</m:t></m:r></m:e><m:sub><m:r><m:t>x</m:t></m:r></m:sub></m:sSub></m:oMath>"#;
+    for options in dialects() {
+        let parsed = from_omml(source).unwrap();
+        assert!(parsed.to_mathml().unwrap().contains("<msub><mo>lim</mo>"));
+        let (written, diagnostics) = parsed.to_omml_with_options(&options).unwrap();
+        assert!(written.contains("<m:sSub>"), "{written}");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(
+            from_omml(&written)
+                .unwrap()
+                .to_mathml()
+                .unwrap()
+                .contains("<msub><mo>lim</mo>")
+        );
+    }
+}
+
+#[test]
+fn empty_side_limit_attaches_to_a_preceding_named_operator() {
+    for operator in ["lim", "max"] {
+        let source = format!(
+            r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>{operator}</m:t></m:r><m:sSub><m:e></m:e><m:sub><m:r><m:t>x</m:t></m:r></m:sub></m:sSub></m:oMath>"#
+        );
+        let parsed = from_omml(&source).unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(
+            mathml.contains(&format!("<msub><mo>{operator}</mo>")),
+            "{mathml}"
+        );
+        for options in dialects() {
+            let (written, diagnostics) = parsed.to_omml_with_options(&options).unwrap();
+            assert!(written.contains("<m:sSub>"), "{written}");
+            assert!(diagnostics.is_empty(), "{operator}: {diagnostics:?}");
+            assert!(
+                from_omml(&written)
+                    .unwrap()
+                    .to_mathml()
+                    .unwrap()
+                    .contains(&format!("<msub><mo>{operator}</mo>"))
+            );
+        }
+    }
+}
+
+#[test]
+fn fixed_general_omml_limit_reports_target_approximation() {
+    let source = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:limLow><m:e><m:r><m:t>x</m:t></m:r></m:e><m:lim><m:r><m:t>y</m:t></m:r></m:lim></m:limLow></m:oMath>"#;
+    let parsed = from_omml(source).unwrap();
+    let (written, diagnostics) = parsed
+        .to_omml_with_options(&OmmlOptions::default())
+        .unwrap();
+    assert!(written.contains("<m:limLow>"), "{written}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("fixed over/under")),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]

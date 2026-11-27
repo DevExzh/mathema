@@ -1500,6 +1500,9 @@ impl<'i> Parser<'i> {
                     .set_source_range(id, crate::error::Span::new(source_start, source_end));
             }
         }
+        if result.is_ok() {
+            self.mark_empty_script_side(out);
+        }
         result
     }
 
@@ -1602,6 +1605,42 @@ impl<'i> Parser<'i> {
             }
         }
         Ok(out)
+    }
+
+    /// `m:sSub`/`m:sSup` with an empty `m:e` is a side-script attachment to
+    /// the preceding operator in real Office output. The shared AST stores
+    /// the empty base until normalization, so record the operator's explicit
+    /// side-limit choice before that later pass attaches the script.
+    fn mark_empty_script_side(&mut self, ids: &mut Ids) {
+        if ids.len() < 2 {
+            return;
+        }
+        let script = *ids.last().unwrap_or(&NodeId::NONE);
+        let previous = ids[ids.len() - 2];
+        let base = match *self.arena.node(script) {
+            CompactNode::Subscript { base, .. }
+            | CompactNode::Superscript { base, .. }
+            | CompactNode::SubSup { base, .. } => base,
+            _ => return,
+        };
+        if !self.is_empty_row(base) {
+            return;
+        }
+        match *self.arena.node(previous) {
+            CompactNode::Operator { name, .. } => {
+                *self.arena.node_mut_in_place(previous) = CompactNode::Operator {
+                    name,
+                    limits: LimitStyle::SubSup,
+                };
+            },
+            CompactNode::StructuredOperator { content, .. } => {
+                *self.arena.node_mut_in_place(previous) = CompactNode::StructuredOperator {
+                    content,
+                    form: OperatorNameForm::Starred(LimitStyle::SubSup),
+                };
+            },
+            _ => {},
+        }
     }
 
     fn arg_id(&mut self, name: &'static str) -> Result<NodeId> {
@@ -2698,13 +2737,20 @@ impl<'i> Parser<'i> {
             CompactNode::Overscript {
                 base,
                 over: lim,
-                movable_limits: true,
+                // `m:limUpp` is a native fixed-position limit object. Keep
+                // that placement when it is represented through the shared
+                // AST, even though a generic overscript has no exact OMML
+                // counterpart on write.
+                movable_limits: false,
             }
         } else {
             CompactNode::Underscript {
                 base,
                 under: lim,
-                movable_limits: true,
+                // See the upper-limit case above. A subsequent writer emits
+                // another native `m:limLow` and reports the generic-content
+                // limitation when that distinction cannot be recovered.
+                movable_limits: false,
             }
         }))
     }
