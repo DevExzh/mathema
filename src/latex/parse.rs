@@ -7068,19 +7068,22 @@ impl LatexCompactParser {
     }
 
     /// `\fcolorbox{framecolor}{bgcolor}{content}` or
-    /// `\fcolorbox[model]{frame}{bg}{content}` — consume an optional color model
-    /// and two color args, emit content in a colored box.
+    /// `\fcolorbox[frame-model]{frame}[bg-model]{bg}{content}` — consume one
+    /// optional color model before each color. With no second model, the first
+    /// model applies to both colors as in xcolor.
     fn parse_fcolorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, model) = parse_optional_model(input)?;
+        let (input, frame_model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, frame_color) = braced_text(input)?;
+        let (input, _) = ws(input)?;
+        let (input, bg_model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, bg_color) = braced_text(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
         let content_id = self.color_content(content_id, bg_color);
-        let bg = self.resolve_box_color(model.as_deref(), bg_color);
-        let frame = self.resolve_box_color(model.as_deref(), frame_color);
+        let bg = self.resolve_box_color(bg_model.as_deref().or(frame_model.as_deref()), bg_color);
+        let frame = self.resolve_box_color(frame_model.as_deref(), frame_color);
         let bg_sid = self.arena.push_str(&bg);
         let border_sid = self.arena.push_str(&frame);
         Ok((

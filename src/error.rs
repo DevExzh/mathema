@@ -316,6 +316,18 @@ pub enum TypesettingPolicy {
     Preserve,
 }
 
+/// The consumer profile for LaTeX output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum LatexProfile {
+    /// Keep the existing KaTeX-oriented fragment spelling.
+    #[default]
+    KaTeX,
+    /// Emit a portable pdfLaTeX fragment. Colored boxes protect their math
+    /// body with `\ensuremath`, and hexadecimal colors use xcolor models.
+    PdfLaTeX,
+}
+
 /// Default upper bound on reader input size (4 MiB). Math formulas are
 /// kilobytes at most; this guards against adversarial multi-megabyte inputs
 /// that would otherwise be fully tokenized and parsed.
@@ -365,6 +377,9 @@ pub struct Config {
     /// What the LaTeX and UnicodeMath writers do with typesetting (default:
     /// [`TypesettingPolicy::Semantic`]).
     pub typesetting: TypesettingPolicy,
+    /// Which LaTeX consumer profile the writer targets (default:
+    /// [`LatexProfile::KaTeX`]).
+    pub latex_profile: LatexProfile,
 }
 
 impl Default for Config {
@@ -377,6 +392,7 @@ impl Default for Config {
             max_depth: DEFAULT_MAX_DEPTH,
             undefined_commands: UndefinedCommands::Escape,
             typesetting: TypesettingPolicy::Semantic,
+            latex_profile: LatexProfile::KaTeX,
         }
     }
 }
@@ -431,6 +447,13 @@ impl Config {
     #[must_use]
     pub fn with_typesetting(mut self, typesetting: TypesettingPolicy) -> Self {
         self.typesetting = typesetting;
+        self
+    }
+
+    /// Builder: choose the LaTeX output consumer profile.
+    #[must_use]
+    pub fn with_latex_profile(mut self, latex_profile: LatexProfile) -> Self {
+        self.latex_profile = latex_profile;
         self
     }
 

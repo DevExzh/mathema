@@ -81,8 +81,8 @@ pub use convert::{
     from_unicode_math, from_unicode_math_with,
 };
 pub use error::{
-    Config, Diagnostic, DiagnosticKind, Error, Format, LimitKind, ParseResult, Result, Strictness,
-    TypesettingPolicy, UndefinedCommands,
+    Config, Diagnostic, DiagnosticKind, Error, Format, LatexProfile, LimitKind, ParseResult,
+    Result, Strictness, TypesettingPolicy, UndefinedCommands,
 };
 pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
 pub use reader::omml::{OmmlJustification, OmmlParagraph};

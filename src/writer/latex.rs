@@ -1,7 +1,7 @@
 use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
+use crate::error::{Config, Diagnostic, DiagnosticKind, LatexProfile, Result, TypesettingPolicy};
 use crate::unicode::fonts::style_to_latex_font;
 use crate::unicode::symbols::{
     UNNAMED_NARY, is_latex_nary, latex_to_unicode, mapped_symbol_kind, nary_op_to_latex,
@@ -177,6 +177,7 @@ fn write_lowered(
     let mut buf = LatexBuffer::new(
         config.undefined_commands == crate::UndefinedCommands::Keep,
         report,
+        config.latex_profile,
     );
     write_sequence(
         &mut buf,
@@ -2260,29 +2261,98 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         } => {
             // A spec that would not read back as the same braced argument
             // is dropped, so the box keeps whichever color still reads back.
-            let [bg, border] = [bg_color, border_color].map(|spec| {
+            let portable = buf.latex_profile == LatexProfile::PdfLaTeX;
+            let [bg_spec, border_spec] = [bg_color, border_color].map(|spec| {
                 let spec = arena.str_val(spec);
-                let color = colors::box_color(spec);
-                if color.is_empty() {
+                let color = if portable {
+                    colors::box_color(spec)
+                } else {
+                    colors::legacy_box_color(spec)
+                };
+                if color.is_none() {
                     buf.report.color(spec);
                 }
                 color
             });
-            if !bg.is_empty() && !border.is_empty() {
-                // \fcolorbox{border}{bg}{content}
-                buf.push_str("\\fcolorbox{");
-                buf.push_str(border);
-                buf.push_str("}{");
+            if let (Some((bg_model, bg)), Some((border_model, border))) =
+                (bg_spec.as_ref(), border_spec.as_ref())
+            {
+                // xcolor accepts a second optional model after the frame
+                // color. Use it for a hexadecimal fill next to a named frame,
+                // or the `named` model for a literal named fill next to a
+                // hexadecimal frame. A mix expression has no such model, so
+                // define the hexadecimal side in a local group instead.
+                if !bg_model.is_empty() || !border_model.is_empty() {
+                    let bg_model = if border_model.is_empty() {
+                        *bg_model
+                    } else if bg_model.is_empty() && colors::is_named(bg) {
+                        "[named]"
+                    } else {
+                        *bg_model
+                    };
+                    if border_model.is_empty() || !bg_model.is_empty() || colors::is_named(bg) {
+                        buf.push_str("\\fcolorbox");
+                        buf.push_str(border_model);
+                        buf.push('{');
+                        buf.push_str(border);
+                        buf.push('}');
+                        buf.push_str(bg_model);
+                        buf.push('{');
+                        buf.push_str(bg);
+                        buf.push_str("}{");
+                        write_box_content(buf, arena, inner);
+                        buf.push('}');
+                    } else {
+                        buf.push('{');
+                        let bg_name = if !bg_model.is_empty() {
+                            let name = format!("mathemaHex{bg}");
+                            buf.push_str("\\definecolor{");
+                            buf.push_str(&name);
+                            buf.push_str("}{HTML}{");
+                            buf.push_str(bg);
+                            buf.push('}');
+                            name
+                        } else {
+                            bg.clone()
+                        };
+                        let border_name = if !border_model.is_empty() {
+                            let name = format!("mathemaHex{border}");
+                            buf.push_str("\\definecolor{");
+                            buf.push_str(&name);
+                            buf.push_str("}{HTML}{");
+                            buf.push_str(border);
+                            buf.push('}');
+                            name
+                        } else {
+                            border.clone()
+                        };
+                        buf.push_str("\\fcolorbox{");
+                        buf.push_str(&border_name);
+                        buf.push_str("}{");
+                        buf.push_str(&bg_name);
+                        buf.push_str("}{");
+                        write_box_content(buf, arena, inner);
+                        buf.push_str("}}");
+                    }
+                } else {
+                    // \fcolorbox{border}{bg}{content}
+                    buf.push_str("\\fcolorbox{");
+                    buf.push_str(border);
+                    buf.push_str("}{");
+                    buf.push_str(bg);
+                    buf.push_str("}{");
+                    write_box_content(buf, arena, inner);
+                    buf.push('}');
+                }
+            } else if let Some((model, bg)) = bg_spec.as_ref() {
+                // \colorbox{bg}{content}; hexadecimal values carry the
+                // model explicitly because `#` is a TeX parameter marker.
+                buf.push_str("\\colorbox");
+                buf.push_str(model);
+                buf.push('{');
                 buf.push_str(bg);
                 buf.push_str("}{");
-                write_wrapped_content(buf, arena, inner);
-                buf.push('}');
-            } else if !bg.is_empty() {
-                // \colorbox{bg}{content}
-                buf.push_str("\\colorbox{");
-                buf.push_str(bg);
-                buf.push_str("}{");
-                write_wrapped_content(buf, arena, inner);
+                write_box_content(buf, arena, inner);
                 buf.push('}');
             } else {
                 buf.push_str("\\boxed{");
@@ -3644,6 +3714,25 @@ fn write_wrapped_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeI
     }
 }
 
+/// Write a colored-box body in math mode. xcolor builds the body in a text
+/// `\hbox`, even when the surrounding fragment is already in math mode, so a
+/// plain `x^2` body would either fail or lose its mathematical styling.
+#[inline]
+fn write_math_wrapped_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
+    buf.push_str(r"\ensuremath{");
+    write_wrapped_content(buf, arena, content);
+    buf.push('}');
+}
+
+#[inline]
+fn write_box_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
+    if buf.latex_profile == LatexProfile::PdfLaTeX {
+        write_math_wrapped_content(buf, arena, content);
+    } else {
+        write_wrapped_content(buf, arena, content);
+    }
+}
+
 fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> bool {
     if depth > crate::ast::MAX_AST_DEPTH {
         return false;
@@ -4270,6 +4359,12 @@ mod tests {
         LatexWriter::write(&parsed.expr, &config).unwrap()
     }
 
+    fn portable_roundtrip(input: &str) -> String {
+        let config = Config::default().with_latex_profile(LatexProfile::PdfLaTeX);
+        let parsed = LatexReader::parse(input, &config).unwrap();
+        LatexWriter::write(&parsed.expr, &config).unwrap()
+    }
+
     #[test]
     fn text_that_is_no_box_color_is_dropped() {
         // A box color is an argument TeX expands, so text that is no color
@@ -4320,6 +4415,35 @@ mod tests {
             assert_eq!(out, want, "{bg:?} {border:?}");
             LatexReader::parse(&out, &Config::default())
                 .unwrap_or_else(|e| panic!("{out:?} does not re-parse: {e}"));
+        }
+    }
+
+    #[test]
+    fn portable_box_profile_protects_math_content() {
+        let config = Config::default().with_latex_profile(LatexProfile::PdfLaTeX);
+        for (input, expected) in [
+            (
+                r"\colorbox{red}{x^2+\frac{a}{b}}",
+                r"\colorbox{red}{\ensuremath{x^{2}+ \frac{a}{b}}}",
+            ),
+            (
+                r"\fcolorbox{red}{#ff0000}{x^2+\frac{a}{b}}",
+                r"\fcolorbox{red}[HTML]{ff0000}{\ensuremath{x^{2}+ \frac{a}{b}}}",
+            ),
+            (
+                r"\fcolorbox{#ff0000}{green}{x^2}",
+                r"\fcolorbox[HTML]{ff0000}[named]{green}{\ensuremath{x^{2}}}",
+            ),
+        ] {
+            let parsed = LatexReader::parse(input, &config).unwrap();
+            let first = LatexWriter::write(&parsed.expr, &config).unwrap();
+            assert_eq!(first, expected, "{input}");
+            let reparsed = LatexReader::parse(&first, &config).unwrap();
+            assert_eq!(
+                LatexWriter::write(&reparsed.expr, &config).unwrap(),
+                first,
+                "{input}"
+            );
         }
     }
 
@@ -5596,14 +5720,41 @@ mod tests {
 
     #[test]
     fn colorbox_roundtrip() {
-        assert_eq!(roundtrip("\\colorbox{teal}{B}"), "\\colorbox{teal}{B}");
+        assert_eq!(roundtrip("\\colorbox{teal}{B}"), r"\colorbox{teal}{B}");
+        assert_eq!(
+            roundtrip("\\colorbox{#ff0000}{B}"),
+            r"\colorbox{#ff0000}{B}"
+        );
+        assert_eq!(roundtrip(r"\colorbox{#f00}{B}"), r"\colorbox{#f00}{B}");
+        assert_eq!(
+            portable_roundtrip(r"\colorbox{#ff0000}{B}"),
+            r"\colorbox[HTML]{ff0000}{\ensuremath{B}}"
+        );
     }
 
     #[test]
     fn fcolorbox_roundtrip() {
         assert_eq!(
             roundtrip("\\fcolorbox{blue}{red}{C}"),
-            "\\fcolorbox{blue}{red}{C}"
+            r"\fcolorbox{blue}{red}{C}"
+        );
+        for (input, expected) in [
+            (
+                r"\fcolorbox{red}{#ff0000}{C}",
+                r"\fcolorbox{red}{#ff0000}{C}",
+            ),
+            (
+                r"\fcolorbox{#ff0000}{red}{C}",
+                r"\fcolorbox{#ff0000}{red}{C}",
+            ),
+        ] {
+            let first = roundtrip(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(roundtrip(&first), first, "{input}");
+        }
+        assert_eq!(
+            portable_roundtrip(r"\fcolorbox{red}{#ff0000}{C}"),
+            r"\fcolorbox{red}[HTML]{ff0000}{\ensuremath{C}}"
         );
     }
 

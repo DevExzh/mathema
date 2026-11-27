@@ -6,6 +6,7 @@
 
 use super::LossReport;
 use crate::ast::Rational;
+use crate::error::LatexProfile;
 use crate::unicode::tex_letters::is_tex_letter;
 
 /// A named operator gives literal punctuation different TeX math codes.
@@ -23,6 +24,8 @@ pub(super) struct LatexBuffer {
     command_ends: Vec<usize>,
     /// What the output does not keep.
     pub(super) report: LossReport,
+    /// The intended LaTeX consumer.
+    pub(super) latex_profile: LatexProfile,
     /// Every control word the writer wrote.
     #[cfg(debug_assertions)]
     words: std::collections::HashSet<String>,
@@ -90,7 +93,11 @@ fn excerpt<'a>(text: &'a str, word: &str) -> &'a str {
 }
 
 impl LatexBuffer {
-    pub(super) fn new(keep_undefined: bool, report: LossReport) -> Self {
+    pub(super) fn new(
+        keep_undefined: bool,
+        report: LossReport,
+        latex_profile: LatexProfile,
+    ) -> Self {
         Self {
             text: String::with_capacity(256),
             word_end: usize::MAX,
@@ -98,6 +105,7 @@ impl LatexBuffer {
             keep_undefined,
             command_ends: Vec::new(),
             report,
+            latex_profile,
             #[cfg(debug_assertions)]
             words: std::collections::HashSet::new(),
         }
@@ -281,7 +289,7 @@ mod tests {
     use super::*;
 
     fn buffer() -> LatexBuffer {
-        LatexBuffer::new(false, LossReport::default())
+        LatexBuffer::new(false, LossReport::default(), LatexProfile::KaTeX)
     }
 
     #[test]
@@ -361,7 +369,7 @@ mod tests {
 
     /// A buffer with the undefined command `\foo` after `before`.
     fn undefined(before: &str) -> LatexBuffer {
-        let mut buf = LatexBuffer::new(true, LossReport::default());
+        let mut buf = LatexBuffer::new(true, LossReport::default(), LatexProfile::KaTeX);
         buf.push_str(before);
         buf.command("foo");
         buf.end_undefined_command();

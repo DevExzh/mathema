@@ -85,6 +85,32 @@ SVG output is **self-contained** by default: glyph outlines from Latin Modern Ma
 
 Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg`, `png`, `jpeg` (`jpg`).
 
+### LaTeX output profile
+
+LaTeX output is a math fragment. The default profile keeps the existing
+KaTeX-oriented spelling. Select `LatexProfile::PdfLaTeX` with
+`Config::with_latex_profile` when compiling with pdfLaTeX. It protects colored
+box bodies with `\ensuremath` and emits hexadecimal colors with xcolor models.
+The portable baseline for ordinary formulas, colors, and the writer's common
+structures is:
+
+```tex
+\documentclass{article}
+\usepackage{amsmath,amssymb,xcolor}
+\begin{document}
+$ x^2 + y^2 = z^2 $
+\end{document}
+```
+
+Replace the sample expression between the dollar signs with the generated
+fragment.
+
+Some optional writer features require additional packages. `cancel` enables
+cancel marks, `graphicx` enables reflection, `mathtools` enables selected
+bracket accents, and `arydshln` enables dashed table rules. Add those packages
+only when the corresponding constructs are present. Hexadecimal box colors
+are emitted with xcolor's `HTML` model, so they remain valid in this profile.
+
 ## Features
 
 | Feature | Description |

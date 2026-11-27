@@ -26,11 +26,49 @@ pub(super) fn text_color(spec: &str) -> (&'static str, &str) {
     }
 }
 
-/// The argument of `\colorbox`/`\fcolorbox` for a color, `""` for none. A
-/// `#hex` color is written as it is: TeX needs the `HTML` model for it, which
-/// KaTeX does not accept, and KaTeX is where such colors come from.
-pub(super) fn box_color(spec: &str) -> &str {
-    if is_color(spec) { spec } else { "" }
+/// A color argument suitable for `\colorbox` or `\fcolorbox`.
+///
+/// xcolor treats `#` as a parameter marker in an ordinary color argument, so
+/// a hexadecimal color has to use the `HTML` model. The reader normally stores
+/// six-digit colors, but a caller can construct an AST directly with the
+/// three-digit CSS spelling, which is expanded here. Alpha-bearing CSS hex
+/// values have no equivalent in xcolor and are rejected by returning `None`.
+pub(super) fn box_color(spec: &str) -> Option<(&'static str, String)> {
+    if let Some(hex) = spec.strip_prefix('#') {
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let expanded = match hex.len() {
+            3 => {
+                let mut out = String::with_capacity(6);
+                for byte in hex.bytes() {
+                    out.push(byte as char);
+                    out.push(byte as char);
+                }
+                out
+            },
+            6 => hex.to_ascii_lowercase(),
+            _ => return None,
+        };
+        return Some(("[HTML]", expanded));
+    }
+    is_color(spec).then(|| ("", spec.to_owned()))
+}
+
+/// The historical spelling used by KaTeX-oriented output. It leaves a
+/// hexadecimal argument bare because KaTeX accepts that spelling, while
+/// pdfLaTeX requires the explicit HTML model.
+pub(super) fn legacy_box_color(spec: &str) -> Option<(&'static str, String)> {
+    is_color(spec).then(|| ("", spec.to_owned()))
+}
+
+/// Whether a color can be passed to xcolor's `named` model. Mixes and model
+/// expressions need their own model or a temporary definition.
+pub(super) fn is_named(spec: &str) -> bool {
+    !spec.is_empty()
+        && spec
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 /// The content of a node that is written as its content alone: a color, or a
