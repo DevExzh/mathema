@@ -1951,6 +1951,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             let cmd = match kind {
                 FractionKind::Normal => "\\frac{",
                 FractionKind::Display => "\\dfrac{",
+                FractionKind::Continued => "\\cfrac{",
                 FractionKind::Inline => "\\tfrac{",
                 FractionKind::NoBar => "\\genfrac{}{}{0pt}{}{",
                 FractionKind::Skewed => "\\frac{",

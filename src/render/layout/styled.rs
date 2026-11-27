@@ -337,22 +337,25 @@ pub(super) fn layout_rule(
     }
 }
 
-/// The text face of an identifier. A bold italic letter is the Math font's
-/// (`\boldsymbol`), which has the metrics of a math letter.
-fn letter_font(style: TextStyle, text: &str) -> Option<FontId> {
-    let mut chars = text.chars();
-    if style == TextStyle::BoldItalic
-        && let (Some(ch), None) = (chars.next(), chars.next())
-        && crate::unicode::fonts::styled_char(ch, style).is_some()
-    {
-        return None;
+/// Select the face for an identifier. Mathematical BoldItalic stays in the
+/// Math font's Unicode bold-italic design (`\symbfit` in unicode-math), which
+/// has the metrics and ink of a genuinely weighted math letter. LuaLaTeX's
+/// legacy `\boldsymbol` can resolve to ordinary italic CIDs under a particular
+/// font profile, so that profile's measured width is not a generic BoldItalic
+/// contract.
+fn letter_font(style: TextStyle, _text: &str) -> Option<FontId> {
+    // BoldItalic is a mathematical alphabet, not the Roman text face. Keep
+    // every mapped Latin/Greek letter in the Math font's Unicode bold-italic
+    // design (`\symbfit`), so a multi-letter run cannot silently fall back to
+    // ordinary/weakly weighted text glyphs.
+    if style == TextStyle::BoldItalic {
+        None
+    } else {
+        fonts_registry::text_font_for_style(style)
     }
-    fonts_registry::text_font_for_style(style)
 }
 
 pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
-    use crate::unicode::fonts::styled_char;
-
     match node {
         MathNode::Identifier(s) => {
             if let Some(font) = letter_font(style, s) {
@@ -365,7 +368,7 @@ pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &Layout
             } else {
                 let mapped: String = s
                     .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .map(|c| crate::unicode::fonts::styled_char(c, style).unwrap_or(c))
                     .collect();
                 layout_node(&MathNode::Identifier(mapped), &ctx.without_styled_face())
             }
@@ -376,7 +379,7 @@ pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &Layout
             } else {
                 let mapped: String = s
                     .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .map(|c| crate::unicode::fonts::styled_char(c, style).unwrap_or(c))
                     .collect();
                 layout_node(&MathNode::Number(mapped), &ctx.without_styled_face())
             }
@@ -779,8 +782,6 @@ pub(super) fn layout_styled_node_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    use crate::unicode::fonts::styled_char;
-
     let sized;
     let ctx = match ast.attrs(id) {
         Some(attrs) => {
@@ -803,7 +804,7 @@ pub(super) fn layout_styled_node_arena(
             } else {
                 let mapped: String = s
                     .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .map(|c| crate::unicode::fonts::styled_char(c, style).unwrap_or(c))
                     .collect();
                 if mapped.chars().count() == 1 {
                     let ch = mapped.chars().next().expect("non-empty checked");
@@ -822,7 +823,7 @@ pub(super) fn layout_styled_node_arena(
             } else {
                 let mapped: String = s
                     .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .map(|c| crate::unicode::fonts::styled_char(c, style).unwrap_or(c))
                     .collect();
                 layout_text_run_arena(&mapped, arena, ctx, false, None)
             }
@@ -917,8 +918,9 @@ pub(super) fn layout_styled_arena(
         max_depth = max_depth.max(b.depth);
         let mut w = b.width;
         if style == TextStyle::Italic
-            && let Some(&next) = ids.get(index + 1)
-            && matches!(ast.node(next), CompactNode::Identifier(_))
+            && ids
+                .get(index + 1)
+                .is_some_and(|&next| matches!(ast.node(next), CompactNode::Identifier(_)))
         {
             w -= italic_correction_arena(layout_id, arena);
         }

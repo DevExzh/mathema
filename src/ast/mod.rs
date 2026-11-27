@@ -625,6 +625,9 @@ pub enum FractionKind {
     Normal,
     /// `\dfrac`: forced display-style sizing.
     Display,
+    /// `\cfrac`: display-style fraction with TeX's continued-fraction strut
+    /// and null-delimiter correction.
+    Continued,
     /// `\tfrac`: forced text (inline) sizing.
     Inline,
     /// `\binom`-style fraction with no fraction bar.

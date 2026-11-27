@@ -138,6 +138,7 @@ fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
     let frac_cases = [
         (r"x_{\dfrac{a}{b}}", crate::ast::FractionKind::Display),
         (r"x_{\tfrac{a}{b}}", crate::ast::FractionKind::Inline),
+        (r"x_{\cfrac{a}{b}}", crate::ast::FractionKind::Continued),
     ];
     for (source, kind) in frac_cases {
         let expr = LatexReader::parse_compact(source, &config).unwrap().expr;

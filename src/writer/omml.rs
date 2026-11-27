@@ -1207,7 +1207,7 @@ impl<'a> Emitter<'a> {
                 self.open("m:f");
                 let ty = match kind {
                     FractionKind::Normal => None,
-                    FractionKind::Display => {
+                    FractionKind::Display | FractionKind::Continued => {
                         self.loss("OMML has no display-style fraction; written as a bar fraction");
                         None
                     },
@@ -1221,7 +1221,7 @@ impl<'a> Emitter<'a> {
                     self.close("m:fPr");
                 }
                 let host = self.host_style;
-                if kind != FractionKind::Display
+                if !matches!(kind, FractionKind::Display | FractionKind::Continued)
                     && let Some(style) = kind.forced_style()
                 {
                     self.host_style = style;

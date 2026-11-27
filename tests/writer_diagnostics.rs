@@ -10,7 +10,7 @@ use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::mtef::MtefWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
-use mathema::{MathExpr, MathNode, OmmlOptions, OmmlRunProperties};
+use mathema::{MathExpr, MathNode, OmmlOptions, OmmlRunProperties, from_latex};
 
 fn compact(tex: &str) -> mathema::CompactExpr {
     LatexReader::parse_compact(tex, &Config::default())
@@ -135,6 +135,31 @@ fn mtef_reports_structured_operator_source_loss() {
         MtefWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
     assert!(
         has_warning(&diagnostics, "structuredoperator"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn mtef_reports_continued_fraction_spacing_loss() {
+    let expr = compact(r"\cfrac{1}{1+\cfrac{1}{x}}");
+    let (_, diagnostics) =
+        MtefWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(
+        has_warning(&diagnostics, "continued-fraction"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn continued_fraction_routes_keep_structure_and_report_mtef_loss() {
+    let result = from_latex(r"\cfrac{1}{1+\cfrac{1}{x}}").unwrap();
+    assert!(result.to_latex().unwrap().contains(r"\cfrac"));
+    assert!(result.to_mathml().unwrap().contains("<mfrac"));
+    assert!(result.to_omml().unwrap().contains("<m:f"));
+    assert!(result.to_unicode_math().unwrap().contains('/'));
+    let (_, diagnostics) = result.to_mtef_with_diagnostics().unwrap();
+    assert!(
+        has_warning(&diagnostics, "continued-fraction"),
         "{diagnostics:?}"
     );
 }

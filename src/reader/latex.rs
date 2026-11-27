@@ -744,7 +744,7 @@ mod tests {
         assert!(matches!(
             node,
             MathNode::Fraction {
-                kind: FractionKind::Display,
+                kind: FractionKind::Continued,
                 ..
             }
         ));
@@ -754,13 +754,13 @@ mod tests {
     fn cfrac_nested() {
         let node = parse_one("\\cfrac{1}{1+\\cfrac{1}{2}}");
         if let MathNode::Fraction { kind, den, .. } = &node {
-            assert_eq!(*kind, FractionKind::Display);
+            assert_eq!(*kind, FractionKind::Continued);
             // den should be a Row containing "1 + cfrac{1}{2}"
             if let MathNode::Row(children) = den.as_ref() {
                 assert!(children.iter().any(|n| matches!(
                     n,
                     MathNode::Fraction {
-                        kind: FractionKind::Display,
+                        kind: FractionKind::Continued,
                         ..
                     }
                 )));
@@ -768,6 +768,29 @@ mod tests {
         } else {
             panic!("expected Display fraction, got {node:?}");
         }
+    }
+
+    #[test]
+    fn cfrac_optional_alignment_is_consumed_with_a_specific_loss() {
+        let config = Config::default();
+        for alignment in ["l", "r"] {
+            let result =
+                LatexReader::parse_compact(&format!(r"\cfrac[{alignment}]{{a}}{{bc}}"), &config)
+                    .unwrap();
+            assert!(result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains("continued-fraction alignment")
+                    && diagnostic.message.contains(alignment)
+            }));
+            let output =
+                crate::writer::latex::LatexWriter::write_compact(&result.expr, &config).unwrap();
+            assert!(output.contains(r"\cfrac"), "{output}");
+        }
+        let centered = LatexReader::parse_compact(r"\cfrac[c]{a}{bc}", &config).unwrap();
+        assert!(
+            centered.diagnostics.is_empty(),
+            "{:?}",
+            centered.diagnostics
+        );
     }
 
     #[test]

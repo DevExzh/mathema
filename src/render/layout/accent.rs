@@ -39,6 +39,45 @@ fn is_centred_accent(accent: char, wide: bool) -> bool {
     }
 }
 
+/// Whether a layout box is the two-child wrapper emitted for an accent. The
+/// wrapper owns the horizontal advance after applying TeX's italic correction,
+/// so scripts must use its width directly instead of subtracting the nucleus
+/// correction a second time.
+pub(super) fn is_accent_layout_box(base: &LayoutBox) -> bool {
+    let BoxKind::HBox { children } = &base.kind else {
+        return false;
+    };
+    children.len() == 2
+        && (matches!(children[0].layout.kind, BoxKind::Glyph { italic: true, .. })
+            || is_accent_layout_box(&children[0].layout))
+        && matches!(
+            children[1].layout.kind,
+            BoxKind::SvgPath(_) | BoxKind::Rule { .. } | BoxKind::Glyph { .. }
+        )
+}
+
+/// Italic correction retained for a superscript attached to a fixed accent.
+/// The accent box's public width excludes this correction, but Rule 18 places
+/// superscripts after the original glyph advance.
+pub(super) fn accent_italic_correction(base: &LayoutBox) -> f64 {
+    let BoxKind::HBox { children } = &base.kind else {
+        return 0.0;
+    };
+    let Some(first) = children.first() else {
+        return 0.0;
+    };
+    match &first.layout.kind {
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } if *italic => glyph_italic(*ch, *size, *italic, *font, first.layout.width),
+        _ if is_accent_layout_box(&first.layout) => accent_italic_correction(&first.layout),
+        _ => 0.0,
+    }
+}
+
 /// The width an accent is drawn at: over a single character that of the
 /// accent itself, which is then centred on the character's attachment point.
 fn accent_width(accent: char, wide: bool, single: bool, base: f64, size: f64) -> f64 {
@@ -626,7 +665,14 @@ pub(super) fn layout_accent(
     } else {
         accent
     };
-    let base_width = base_box.width;
+    // TeX's fixed accents use the glyph advance, excluding italic correction;
+    // the MATH top-accent attachment still uses that correction. Wide accents
+    // span the complete operand box and therefore retain its advance.
+    let base_width = if !wide && is_centred_accent(accent, wide) {
+        (base_box.width - italic_correction(&base_box)).max(0.0)
+    } else {
+        base_box.width
+    };
     if let Some((symbol, spacing)) = wide_bracket(accent, position, wide) {
         let size = ctx.size();
         let bracket = make_stretchy_overunder_box(symbol, base_width.max(0.5 * size), size);
@@ -942,6 +988,43 @@ fn accent_skew_arena(base: LayoutBoxId, arena: &LayoutArena) -> f64 {
     }
 }
 
+pub(super) fn is_accent_layout_box_arena(base: LayoutBoxId, arena: &LayoutArena) -> bool {
+    let ArenaBoxKind::HBox { children } = arena.get(base).kind else {
+        return false;
+    };
+    let children = arena.children(children);
+    children.len() == 2
+        && (matches!(
+            arena.get(children[0].id).kind,
+            ArenaBoxKind::Glyph { italic: true, .. }
+        ) || is_accent_layout_box_arena(children[0].id, arena))
+        && matches!(
+            arena.get(children[1].id).kind,
+            ArenaBoxKind::SvgPath(_) | ArenaBoxKind::Rule { .. } | ArenaBoxKind::Glyph { .. }
+        )
+}
+
+pub(super) fn accent_italic_correction_arena(base: LayoutBoxId, arena: &LayoutArena) -> f64 {
+    let ArenaBoxKind::HBox { children } = arena.get(base).kind else {
+        return 0.0;
+    };
+    let Some(first) = arena.children(children).first() else {
+        return 0.0;
+    };
+    match arena.get(first.id).kind {
+        ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } if italic => glyph_italic(ch, size, italic, font, arena.get(first.id).width),
+        _ if is_accent_layout_box_arena(first.id, arena) => {
+            accent_italic_correction_arena(first.id, arena)
+        },
+        _ => 0.0,
+    }
+}
+
 // ==========================================================================
 // Arena-based layout functions
 // ==========================================================================
@@ -964,7 +1047,12 @@ pub(super) fn layout_accent_arena(
         accent
     };
 
-    let base_w = arena.get(base_id).width;
+    // Keep the same fixed-versus-wide advance rule as the heap path.
+    let base_w = if !wide && is_centred_accent(accent, wide) {
+        (arena.get(base_id).width - italic_correction_arena(base_id, arena)).max(0.0)
+    } else {
+        arena.get(base_id).width
+    };
     if let Some((symbol, spacing)) = wide_bracket(accent, position, wide) {
         let size = ctx.size();
         let width = base_w.max(0.5 * size);

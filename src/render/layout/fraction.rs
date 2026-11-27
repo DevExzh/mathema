@@ -1,5 +1,11 @@
 use super::*;
 
+// amsmath's `\cfrac` wraps its numerator in TeX's math strut before applying
+// `\displaystyle\frac`. These are the 10pt Latin Modern Math strut extents
+// (0.84em above and 0.36em below the baseline), scaled with the current size.
+const CONTINUED_STRUT_HEIGHT: f64 = 0.84;
+const CONTINUED_STRUT_DEPTH: f64 = 0.36;
+
 /// TeXBook Rule 15: fraction layout.
 pub(super) fn layout_fraction(
     kind: FractionKind,
@@ -22,8 +28,14 @@ pub(super) fn layout_fraction(
     let den_style = num_style.cramped();
     let num_ctx = ctx.with_style(num_style);
     let den_ctx = ctx.with_style(den_style);
-    let num_box = layout_node(num, &num_ctx);
+    let mut num_box = layout_node(num, &num_ctx);
     let den_box = layout_node(den, &den_ctx);
+
+    let continued = kind == FractionKind::Continued;
+    if continued {
+        num_box.height = num_box.height.max(CONTINUED_STRUT_HEIGHT * size);
+        num_box.depth = num_box.depth.max(CONTINUED_STRUT_DEPTH * size);
+    }
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
@@ -78,8 +90,12 @@ pub(super) fn layout_fraction(
 
     let frac_width = num_box.width.max(den_box.width);
     // TeX's null delimiters, outside of the bar.
+    // `amsmath` appends `\kern-\nulldelimiterspace` on the right of
+    // `\cfrac`. Keep the ordinary left null-delimiter kern and remove only
+    // the right one; half-padding on both sides shifts nested ink.
     let side_padding = NULL_DELIMITER_SPACE_EM * ctx.text_size();
-    let padded_frac_width = frac_width + 2.0 * side_padding;
+    let right_padding = if continued { 0.0 } else { side_padding };
+    let padded_frac_width = frac_width + side_padding + right_padding;
     let total_height = num_up + num_box.height;
     let total_depth = den_down + den_box.depth;
 
@@ -140,6 +156,18 @@ pub(super) fn layout_fraction_arena(
     let den_h = arena.get(den_id).height;
     let den_d = arena.get(den_id).depth;
 
+    let continued = kind == FractionKind::Continued;
+    let num_h = if continued {
+        num_h.max(CONTINUED_STRUT_HEIGHT * size)
+    } else {
+        num_h
+    };
+    let num_d = if continued {
+        num_d.max(CONTINUED_STRUT_DEPTH * size)
+    } else {
+        num_d
+    };
+
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
         _ => p.rule_thickness * size,
@@ -189,7 +217,8 @@ pub(super) fn layout_fraction_arena(
 
     let frac_width = num_w.max(den_w);
     let side_padding = NULL_DELIMITER_SPACE_EM * ctx.text_size();
-    let padded_frac_width = frac_width + 2.0 * side_padding;
+    let right_padding = if continued { 0.0 } else { side_padding };
+    let padded_frac_width = frac_width + side_padding + right_padding;
     let total_height = num_up + num_h;
     let total_depth = den_down + den_d;
 

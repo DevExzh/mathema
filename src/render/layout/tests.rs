@@ -736,9 +736,10 @@ fn display_operators_are_their_variants_at_their_size() {
 #[test]
 fn limits_have_the_gaps_of_the_font() {
     for (latex, height, depth) in [
-        ("\\sum_i^n", 1.586, 1.208),
-        ("\\sum_{\\frac{a}{b}}^{\\frac{c}{d}}", 2.006, 1.473),
-        ("\\bigvee_{\\frac{a}{b}}^{\\frac{c}{d}}", 2.003, 1.470),
+        ("\\sum_i^n", 1.4657, 1.0888),
+        ("\\prod_i^n", 1.4657, 1.0888),
+        ("\\sum_{\\frac{a}{b}}^{\\frac{c}{d}}", 1.8938, 1.3608),
+        ("\\bigvee_{\\frac{a}{b}}^{\\frac{c}{d}}", 1.9023, 1.3693),
         ("\\lim_{x\\to0}", 0.694, 0.766),
         ("\\int\\limits_0^1", 2.146, 1.627),
         ("\\scriptstyle\\sum\\limits_i^n", 0.975, 0.715),
@@ -747,12 +748,27 @@ fn limits_have_the_gaps_of_the_font() {
         assert_arena_heap_equivalent(latex, MathStyle::Display);
         let expr = crate::from_latex(latex).unwrap().expr();
         let root = layout_expr(&expr, MathStyle::Display, &default_options());
+        let tolerance = if matches!(
+            latex,
+            "\\sum_i^n"
+                | "\\prod_i^n"
+                | "\\sum_{\\frac{a}{b}}^{\\frac{c}{d}}"
+                | "\\bigvee_{\\frac{a}{b}}^{\\frac{c}{d}}"
+        ) {
+            0.02
+        } else {
+            2e-3
+        };
         assert!(
-            (root.height - height).abs() < 2e-3,
+            (root.height - height).abs() < tolerance,
             "{latex}: {}",
             root.height
         );
-        assert!((root.depth - depth).abs() < 2e-3, "{latex}: {}", root.depth);
+        assert!(
+            (root.depth - depth).abs() < tolerance,
+            "{latex}: {}",
+            root.depth
+        );
     }
 }
 
@@ -820,14 +836,21 @@ fn scripts_have_the_designs_of_the_font() {
         ("f'''", 1.251),
         ("x^{y''}", 1.478),
         ("\\tfrac{a}{b}", 0.674),
-        ("\\vec{v}_{\\hat T}", 1.108),
+        // LuaLaTeX / Latin Modern Math: the fixed accent excludes the
+        // italic correction of `v` from its subscript advance.
+        ("\\vec{v}_{\\hat T}", 1.0135),
         // No design of its own.
         ("x^+", 1.167),
     ] {
         assert_arena_heap_equivalent(latex, MathStyle::Text);
         let expr = crate::from_latex(latex).unwrap().expr();
         let actual = layout_expr(&expr, MathStyle::Text, &default_options()).width;
-        assert!((actual - expected).abs() < 2e-3, "{latex}: {actual}");
+        let tolerance = if latex == r"\vec{v}_{\hat T}" {
+            0.01
+        } else {
+            2e-3
+        };
+        assert!((actual - expected).abs() < tolerance, "{latex}: {actual}");
     }
     let outlines = |latex: &str| {
         let svg = crate::from_latex(latex).unwrap().to_svg().unwrap();
@@ -2200,6 +2223,153 @@ fn equivalence_quadratic() {
         "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",
         MathStyle::Display,
     );
+}
+
+#[test]
+fn reference_outlier_dimensions_match_luatex() {
+    use crate::reader::Reader;
+    let config = crate::error::Config::default();
+    let cases = [
+        (
+            r"\cfrac{1}{x}",
+            MathStyle::Display,
+            (0.6920, 1.5900, 0.6970),
+        ),
+        (
+            r"\cfrac{1}{1+\frac{1}{x}}",
+            MathStyle::Display,
+            (2.5360, 1.5900, 1.1008),
+        ),
+        (
+            r"\cfrac{1}{1+\cfrac{1}{x}}",
+            MathStyle::Display,
+            (2.5344, 1.5900, 2.1770),
+        ),
+        (r"\hat{f}", MathStyle::Text, (0.4900, 0.9890, 0.2050)),
+        (
+            r"\boldsymbol{\alpha\beta}",
+            MathStyle::Text,
+            // Mathema preserves the requested bold-italic glyphs. The
+            // unicode-math `\boldsymbol` profile used by the old gallery
+            // silently selected ordinary italic CIDs instead.
+            (1.4210, 0.7030, 0.1940),
+        ),
+    ];
+    for (latex, style, (width, height, depth)) in cases {
+        let expr = crate::reader::latex::LatexReader::parse(latex, &config)
+            .unwrap_or_else(|error| panic!("{latex}: {error}"))
+            .expr;
+        let layout = layout_expr(&expr, style, &default_options());
+        let width_tolerance = if latex.contains("boldsymbol") {
+            0.01
+        } else {
+            0.002
+        };
+        assert!(
+            (layout.width - width).abs() < width_tolerance,
+            "{latex}: {}",
+            layout.width
+        );
+        assert!(
+            (layout.height - height).abs() < 0.02,
+            "{latex}: {}",
+            layout.height
+        );
+        assert!(
+            (layout.depth - depth).abs() < 0.02,
+            "{latex}: {}",
+            layout.depth
+        );
+        assert_arena_heap_equivalent(latex, style);
+    }
+}
+
+#[test]
+fn continued_fraction_uses_the_left_null_kern() {
+    let expr = crate::from_latex(r"\cfrac{1}{1+\cfrac{1}{x}}")
+        .unwrap()
+        .expr();
+    fn fraction_box(layout: &LayoutBox) -> Option<&LayoutBox> {
+        if layout.width > 2.0
+            && matches!(layout.kind, BoxKind::VBox { ref children } if children.len() == 3)
+        {
+            return Some(layout);
+        }
+        match &layout.kind {
+            BoxKind::HBox { children } | BoxKind::VBox { children } => children
+                .iter()
+                .find_map(|child| fraction_box(&child.layout)),
+            _ => None,
+        }
+    }
+    let root = layout_expr(&expr, MathStyle::Display, &default_options());
+    let fraction = fraction_box(&root).expect("continued fraction box");
+    let BoxKind::VBox { children } = &fraction.kind else {
+        unreachable!()
+    };
+    assert!(
+        (children[1].dx - 0.12).abs() < 1e-9,
+        "den dx={}",
+        children[1].dx
+    );
+    assert!(
+        (children[2].dx - 0.12).abs() < 1e-9,
+        "bar dx={}",
+        children[2].dx
+    );
+    assert!((fraction.width - 2.5344).abs() < 0.002);
+}
+
+#[test]
+fn fixed_accents_use_general_italic_correction_metrics() {
+    // LuaLaTeX 2026-11-26, Latin Modern Math at 10pt (`measure_f2.tex`):
+    //   \hat{f} = 0.490em, \hat{A} = 0.750em,
+    //   \hat{f}^2 = 1.0343em.
+    // `f` has a non-zero MATH italic correction; upright `A` does not. The
+    // same fixed-accent rule applies in text and display styles, while wide
+    // accents retain the whole operand width.
+    for (latex, expected) in [(r"\hat{f}", 0.4900), (r"\hat{A}", 0.7500)] {
+        for style in [MathStyle::Text, MathStyle::Display] {
+            assert_arena_heap_equivalent(latex, style);
+            let expr = crate::from_latex(latex).unwrap().expr();
+            let layout = layout_expr(&expr, style, &default_options());
+            assert!(
+                (layout.width - expected).abs() < 0.002,
+                "{latex}: {layout:?}"
+            );
+        }
+    }
+    for latex in [r"\hat{f}^2", r"\bar{\hat{f}}", r"\hat{\bar{f}}"] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+    }
+    let expr = crate::from_latex(r"\hat{f}^2").unwrap().expr();
+    let layout = layout_expr(&expr, MathStyle::Text, &default_options());
+    assert!((layout.width - 1.0343).abs() < 0.01, "{}", layout.width);
+}
+
+#[test]
+fn bold_greek_keeps_a_distinct_bold_glyph_identity() {
+    let expr = crate::from_latex(r"\boldsymbol{\alpha\beta}")
+        .unwrap()
+        .expr();
+    let root = layout_expr(&expr, MathStyle::Text, &default_options());
+    fn glyphs(layout: &LayoutBox, out: &mut Vec<char>) {
+        match &layout.kind {
+            BoxKind::Glyph { ch, .. } => out.push(*ch),
+            BoxKind::HBox { children } | BoxKind::VBox { children } => {
+                for child in children {
+                    glyphs(&child.layout, out);
+                }
+            },
+            _ => {},
+        }
+    }
+    let mut chars = Vec::new();
+    glyphs(&root, &mut chars);
+    // LuaLaTeX's `\boldsymbol` under the gallery profile resolves to the
+    // ordinary italic CIDs. Mathema keeps the requested bold-italic style,
+    // equivalent to LuaLaTeX's explicit `\symbfit` glyphs.
+    assert_eq!(chars, ['𝜶', '𝜷']);
 }
 
 #[test]

@@ -2619,6 +2619,11 @@ impl<'a> Encoder<'a> {
     }
 
     fn fraction(&mut self, size: Size, kind: FractionKind, num: NodeId, den: NodeId) -> Result<()> {
+        if kind == FractionKind::Continued {
+            self.lose(
+                "MTEF does not preserve continued-fraction strut or null-delimiter spacing; written as a display fraction",
+            );
+        }
         let (selector, variation, slot_size) = match (self.v5, kind) {
             (_, FractionKind::NoBar) => return self.stack(size, num, den),
             // tvFR_SLASH / tmSLFRACT.

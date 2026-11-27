@@ -137,7 +137,8 @@ export type TextStyle =
   | "SansSerif" | "SansSerifBold" | "SansSerifItalic" | "SansSerifBoldItalic"
   | "DoubleStruck" | "Script" | "BoldScript" | "Fraktur" | "BoldFraktur";
 
-export type FractionKind = "Normal" | "Display" | "Inline" | "NoBar" | "Skewed";
+/** Fraction spelling. Continued is LaTeX `\cfrac`, including its display-style strut. */
+export type FractionKind = "Normal" | "Display" | "Continued" | "Inline" | "NoBar" | "Skewed";
 export type ColumnAlign = "Left" | "Center" | "Right";
 export type SpanBoundary = "SuppressGlue" | "Rule";
 export type AccentPosition = "Above" | "Below";

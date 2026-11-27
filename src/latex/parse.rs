@@ -3958,7 +3958,7 @@ impl LatexCompactParser {
             // --- Fractions ---
             "frac" => self.parse_frac(input, FractionKind::Normal, name),
             "dfrac" => self.parse_frac(input, FractionKind::Display, name),
-            "cfrac" => self.parse_frac(input, FractionKind::Display, name),
+            "cfrac" => self.parse_frac(input, FractionKind::Continued, name),
             "tfrac" => self.parse_frac(input, FractionKind::Inline, name),
             "binom" => self.parse_binom(input),
 
@@ -5334,12 +5334,38 @@ impl LatexCompactParser {
         ))
     }
 
+    #[inline(never)]
+    fn parse_continued_prefix<'a>(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+        let (input, _) = ws(input)?;
+        let Some(rest) = input.strip_prefix('[') else {
+            return Ok((input, ()));
+        };
+        let Some(end) = rest.find(']') else {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        let alignment = &rest[..end];
+        if !matches!(alignment, "" | "c") {
+            self.warn(format!(
+                "continued-fraction alignment `[{alignment}]` was dropped; the AST uses centered columns"
+            ));
+        }
+        Ok((&rest[end + 1..], ()))
+    }
+
     fn parse_frac<'a>(
         &mut self,
         input: &'a str,
         kind: FractionKind,
         name: &str,
     ) -> IResult<&'a str, NodeId> {
+        let input = if kind == FractionKind::Continued {
+            self.parse_continued_prefix(input)?.0
+        } else {
+            input
+        };
         let source = input;
         let (input, num_id) = match self.parse_required_group(input) {
             Ok(parsed) => parsed,

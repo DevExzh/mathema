@@ -203,7 +203,7 @@ pub(super) fn layout_big_op_limits_heap(
     let sub_gap = sub_box.as_ref().map_or(0.0, |sb| {
         (p.big_op_spacing[1] * size).max(p.big_op_spacing[3] * size - sb.height)
     });
-    let padding = p.big_op_spacing[4] * size;
+    let padding = limit_padding(op_ch, p, size, ctx.branch_style().is_display());
 
     if let Some(ref sb) = sup_box {
         max_w = max_w.max(sb.width);
@@ -387,7 +387,7 @@ pub(super) fn layout_nary(
         let sub_gap = sub_box.as_ref().map_or(0.0, |sb| {
             (p.big_op_spacing[1] * size).max(p.big_op_spacing[3] * size - sb.height)
         });
-        let padding = p.big_op_spacing[4] * size;
+        let padding = limit_padding(op, p, size, ctx.branch_style().is_display());
 
         if let Some(ref sb) = sup_box {
             max_w = max_w.max(sb.width);
@@ -505,6 +505,19 @@ fn side_script_frame(op: char, style: MathStyle, size: f64, height: f64, depth: 
     match metrics::display_script_frame(op).filter(|_| style.is_display()) {
         Some((h, d)) => (height.max(h * size), depth.max(d * size)),
         None => (height, depth),
+    }
+}
+
+/// Latin Modern Math's displayed sum/product-like operators already include
+/// the outside frame in their MATH glyph and limit gaps. Applying the generic
+/// TeX outside spacing adds 0.12em on each side. Integral limits use the
+/// separate side-limit frame and retain the ordinary spacing.
+#[inline]
+fn limit_padding(op: char, params: &TexParams, size: f64, display: bool) -> f64 {
+    if display && metrics::display_script_frame(op).is_some() {
+        0.0
+    } else {
+        params.big_op_spacing[4] * size
     }
 }
 
@@ -887,7 +900,7 @@ pub(super) fn layout_big_op_limits_arena(
     } else {
         0.0
     };
-    let padding = p.big_op_spacing[4] * size;
+    let padding = limit_padding(op_ch, p, size, ctx.branch_style().is_display());
 
     if sup_id_opt.is_some() {
         max_w = max_w.max(sup_w_opt);
@@ -1150,7 +1163,7 @@ pub(super) fn layout_nary_arena(
         } else {
             0.0
         };
-        let padding = p.big_op_spacing[4] * size;
+        let padding = limit_padding(op, p, size, ctx.branch_style().is_display());
 
         if sup_id_opt.is_some() {
             max_w = max_w.max(sup_w_opt);
