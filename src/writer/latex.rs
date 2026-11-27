@@ -185,8 +185,18 @@ fn write_lowered(
         expr.arena.children(expr.roots),
         false,
     );
-    let report = std::mem::take(&mut buf.report);
-    Ok((buf.finish(), report))
+    let mut report = std::mem::take(&mut buf.report);
+    let latex = buf.finish();
+    if config.latex_profile == LatexProfile::PdfLaTeX
+        && report.is_collecting()
+        && let Some(ch) = latex.chars().find(|ch| !ch.is_ascii())
+    {
+        report.add(|| format!(
+            "pdfLaTeX output retains literal U+{:04X}; a matching input definition and font may be required",
+            u32::from(ch)
+        ));
+    }
+    Ok((latex, report))
 }
 
 /// What the output does not keep, when the caller asked for it. Reports are
@@ -2787,6 +2797,13 @@ fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[
 }
 
 fn write_identifier_text(buf: &mut LatexBuffer, s: &str) {
+    if buf.latex_profile == LatexProfile::PdfLaTeX
+        && s.chars()
+            .any(|ch| crate::unicode::fonts::unstyled_char(ch).is_some())
+    {
+        write_pdf_latex_styled_identifier(buf, s);
+        return;
+    }
     if !s.chars().any(|ch| unicode_to_latex(ch).is_some()) {
         for ch in s.chars() {
             if needs_escape(ch, Place::Identifier) {
@@ -2817,6 +2834,76 @@ fn write_identifier_text(buf: &mut LatexBuffer, s: &str) {
             buf.push(ch);
             previous_was_command = false;
         }
+    }
+}
+
+/// Convert mathematical-alphanumeric Unicode glyphs to commands understood by
+/// pdfLaTeX. The KaTeX profile keeps literal Unicode so existing web-oriented
+/// output and round trips are unchanged.
+fn write_pdf_latex_styled_identifier(buf: &mut LatexBuffer, text: &str) {
+    let mut rest = text;
+    while let Some(ch) = rest.chars().next() {
+        let width = ch.len_utf8();
+        let Some((base, style)) = crate::unicode::fonts::unstyled_char(ch) else {
+            write_identifier_text(buf, &rest[..width]);
+            rest = &rest[width..];
+            continue;
+        };
+        let mut bases = String::new();
+        bases.push(base);
+        let mut end = width;
+        let mut tail = &rest[width..];
+        while let Some(next) = tail.chars().next() {
+            let next_width = next.len_utf8();
+            let Some((next_base, next_style)) = crate::unicode::fonts::unstyled_char(next) else {
+                break;
+            };
+            if next_style != style {
+                break;
+            }
+            bases.push(next_base);
+            end += next_width;
+            tail = &tail[next_width..];
+        }
+        let wrappers: smallvec::SmallVec<[&str; 2]> = match style {
+            TextStyle::Bold => smallvec::smallvec![r"\mathbf"],
+            TextStyle::Italic => smallvec::smallvec![r"\mathit"],
+            TextStyle::BoldItalic => smallvec::smallvec![r"\boldsymbol"],
+            TextStyle::Monospace => smallvec::smallvec![r"\mathtt"],
+            TextStyle::SansSerif => smallvec::smallvec![r"\mathsf"],
+            TextStyle::SansSerifItalic => smallvec::smallvec![r"\mathit", r"\mathsf"],
+            TextStyle::SansSerifBold => smallvec::smallvec![r"\mathbf", r"\mathsf"],
+            TextStyle::SansSerifBoldItalic => {
+                smallvec::smallvec![r"\boldsymbol", r"\mathsf"]
+            },
+            TextStyle::DoubleStruck => smallvec::smallvec![r"\mathbb"],
+            TextStyle::Script => smallvec::smallvec![r"\mathcal"],
+            TextStyle::BoldScript => smallvec::smallvec![r"\mathbf", r"\mathcal"],
+            TextStyle::Fraktur => smallvec::smallvec![r"\mathfrak"],
+            TextStyle::BoldFraktur => smallvec::smallvec![r"\mathbf", r"\mathfrak"],
+            TextStyle::Normal => smallvec::smallvec![r"\mathrm"],
+        };
+        for wrapper in &wrappers {
+            buf.push_str(wrapper);
+            buf.push('{');
+        }
+        let mut previous_command = false;
+        for base in bases.chars() {
+            if let Some(command) = unicode_to_latex(base) {
+                if previous_command && command.chars().next().is_some_and(char::is_alphabetic) {
+                    buf.push(' ');
+                }
+                buf.command(command);
+                previous_command = true;
+            } else {
+                buf.push(base);
+                previous_command = false;
+            }
+        }
+        for _ in &wrappers {
+            buf.push('}');
+        }
+        rest = &rest[end..];
     }
 }
 
@@ -3014,6 +3101,25 @@ fn write_symbol(buf: &mut LatexBuffer, arena: &AstArena, kind: SymbolKind, sid: 
 }
 
 fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
+    if buf.latex_profile == LatexProfile::PdfLaTeX
+        && single_char(s)
+            .and_then(crate::unicode::fonts::unstyled_char)
+            .is_some()
+    {
+        let wrapper = if kind == SymbolKind::LargeOp {
+            Some("\\mathop{")
+        } else {
+            explicit_class_wrapper(kind)
+        };
+        if let Some(wrapper) = wrapper {
+            buf.push_str(wrapper);
+        }
+        write_pdf_latex_styled_identifier(buf, s);
+        if wrapper.is_some() {
+            buf.push('}');
+        }
+        return;
+    }
     // The reader knows a large operator by its command only; any other glyph
     // needs an explicit operator atom.
     if kind == SymbolKind::LargeOp
@@ -4061,6 +4167,14 @@ fn is_dropped_text(text: &str) -> bool {
 
 fn write_styled_text(buf: &mut LatexBuffer, style: TextStyle, text: &str) {
     use TextStyle::*;
+    if buf.latex_profile == LatexProfile::PdfLaTeX
+        && text
+            .chars()
+            .any(|ch| crate::unicode::fonts::unstyled_char(ch).is_some())
+    {
+        write_pdf_latex_styled_identifier(buf, text);
+        return;
+    }
     let wrappers: &[&str] = match style {
         Bold => &[r"\textbf{"],
         Italic => &[r"\textit{"],
@@ -4291,7 +4405,15 @@ fn write_script_base_token(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) 
             if text.is_ascii() {
                 // Identifier spelling is independent of the math class
                 // carried by an explicit Symbol from the character primitive.
-                write_symbol_spelling(buf, SymbolKind::Ordinary, text);
+                if buf.latex_profile == LatexProfile::PdfLaTeX
+                    && single_char(text)
+                        .and_then(crate::unicode::fonts::unstyled_char)
+                        .is_some()
+                {
+                    write_pdf_latex_styled_identifier(buf, text);
+                } else {
+                    write_symbol_spelling(buf, SymbolKind::Ordinary, text);
+                }
             } else {
                 write_identifier(buf, arena, sid);
             }

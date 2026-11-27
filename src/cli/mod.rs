@@ -46,6 +46,23 @@ enum OmmlDialect {
     Drawing,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LatexOutputProfile {
+    /// Historical KaTeX-oriented fragment spelling.
+    Katex,
+    /// A fragment intended for pdfLaTeX with amsmath, amssymb and xcolor.
+    Pdflatex,
+}
+
+impl LatexOutputProfile {
+    fn config(self, config: mathema::Config) -> mathema::Config {
+        config.with_latex_profile(match self {
+            Self::Katex => mathema::LatexProfile::KaTeX,
+            Self::Pdflatex => mathema::LatexProfile::PdfLaTeX,
+        })
+    }
+}
+
 impl OmmlDialect {
     fn options(self) -> mathema::OmmlOptions {
         let run_properties = match self {
@@ -82,6 +99,10 @@ pub struct ConvertArgs {
     /// Select the OMML host dialect: pure, word, or drawing.
     #[arg(long, value_enum)]
     omml_dialect: Option<OmmlDialect>,
+
+    /// Select the emitted LaTeX consumer profile.
+    #[arg(long, value_enum)]
+    latex_profile: Option<LatexOutputProfile>,
 
     /// Read input as raw binary MTEF from a file or stdin. Implies `--from mtef`.
     #[arg(long = "mtef-binary", visible_alias = "binary")]
@@ -212,7 +233,15 @@ pub fn run() -> Result<(), CliError> {
 }
 
 fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
-    let config = make_config(args.lenient);
+    let mut config = make_config(args.lenient);
+    if let Some(profile) = args.latex_profile {
+        if args.to != Format::LaTeX {
+            return Err(CliError::Unsupported(
+                "--latex-profile requires --to latex".into(),
+            ));
+        }
+        config = profile.config(config);
+    }
     let inputs = resolve_inputs(args.input)?;
     validate_mtef_binary(args.mtef_binary, args.from, &inputs)?;
     validate_omml_dialect(args.omml_dialect, args.to)?;

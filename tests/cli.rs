@@ -8,12 +8,49 @@ fn mathema() -> Command {
 }
 
 #[test]
+fn latex_output_profile_requires_a_latex_target() {
+    mathema()
+        .args([
+            "convert",
+            "-f",
+            "latex",
+            "-t",
+            "mathml",
+            "--latex-profile",
+            "pdflatex",
+            "x",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--to latex"));
+}
+
+#[test]
 fn convert_inline_latex_to_mathml() {
     mathema()
         .args(["convert", "--from", "latex", "--to", "mathml", "x^2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("<math"));
+}
+
+#[test]
+fn convert_latex_profile_selects_pdf_latex_box_spelling() {
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "latex",
+            "--latex-profile",
+            "pdflatex",
+            r"\colorbox{#f00}{x^2}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r"\colorbox[HTML]{ff0000}"))
+        .stdout(predicate::str::contains(r"\ensuremath"));
 }
 
 #[test]

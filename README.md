@@ -117,6 +117,11 @@ $ x^2 + y^2 = z^2 $
 Replace the sample expression between the dollar signs with the generated
 fragment.
 
+Select this profile in the CLI with `mathema convert -f unicodemath -t latex
+--latex-profile pdflatex`. It spells supported mathematical Unicode alphabets
+using TeX commands. Writer diagnostics identify any remaining literal Unicode
+characters that depend on the document's input definitions or fonts.
+
 Some optional writer features require additional packages. `cancel` enables
 cancel marks, `graphicx` enables reflection, `mathtools` enables selected
 bracket accents, and `arydshln` enables dashed table rules. Add those packages

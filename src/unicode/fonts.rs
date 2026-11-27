@@ -69,7 +69,31 @@ pub fn unstyled_char(ch: char) -> Option<(char, TextStyle)> {
         0x211A => return Some(('Q', TextStyle::DoubleStruck)),
         0x211D => return Some(('R', TextStyle::DoubleStruck)),
         0x2124 => return Some(('Z', TextStyle::DoubleStruck)),
+        // Mathematical partial/nabla variants are outside the contiguous
+        // Greek ranges, but TeX has stable command spellings for them.
+        0x1D6DB => return Some(('\u{2202}', TextStyle::Bold)),
+        0x1D715 => return Some(('\u{2202}', TextStyle::Italic)),
+        0x1D74F => return Some(('\u{2202}', TextStyle::BoldItalic)),
+        0x1D6C1 => return Some(('\u{2207}', TextStyle::Bold)),
+        0x1D73F => return Some(('\u{2207}', TextStyle::BoldItalic)),
         _ => {},
+    }
+
+    // Greek mathematical-alphanumeric glyphs are interleaved with reserved
+    // code points, so they cannot be represented by the contiguous ranges
+    // below. Use the forward table as the source of truth for these sparse
+    // mappings.
+    let greek = '\u{0391}'..='\u{03A9}';
+    let greek_lower = '\u{03B1}'..='\u{03C9}';
+    for style in [TextStyle::Bold, TextStyle::Italic, TextStyle::BoldItalic] {
+        for base in greek.clone().chain(greek_lower.clone()).chain([
+            '\u{03F5}', '\u{03D1}', '\u{03F0}', '\u{03D5}', '\u{03F1}', '\u{03D6}', '\u{2202}',
+            '\u{2207}',
+        ]) {
+            if styled_char(base, style) == Some(ch) {
+                return Some((base, style));
+            }
+        }
     }
 
     // Contiguous SMP ranges: (start, end_inclusive, ascii_base, style).
