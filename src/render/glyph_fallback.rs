@@ -173,6 +173,13 @@ pub(crate) fn resolve(ch: char, italic: bool) -> Resolution {
     }
 }
 
+/// Whether a character has no embedded-font or vector fallback and therefore
+/// reaches the backend's missing-glyph handling.
+#[inline]
+pub(crate) fn is_notdef(ch: char, font: FontId, italic: bool) -> bool {
+    needs_fallback(ch, font) && matches!(resolve(ch, italic), Resolution::Notdef)
+}
+
 /// Must a text run be rewritten because `ch` (uncovered in the run's `font`)
 /// has a substitute or a recipe? Notdef and text-face characters need no
 /// rewrite: the run's per-character emitters already handle them.

@@ -116,6 +116,15 @@ fn every_svg_is_well_formed() {
             &mathema::render::render_to_svg_standalone_compact(&compact, &options).unwrap(),
             &chars,
         );
+        let prepared = mathema::render::prepare_render_compact(&compact, &options).unwrap();
+        for svg in [
+            prepared.to_svg(&options).unwrap(),
+            prepared.to_svg_text(&options).unwrap(),
+            prepared.to_svg_with_diagnostics(&options).unwrap().0,
+            prepared.to_svg_text_with_diagnostics(&options).unwrap().0,
+        ] {
+            parse("prepared SVG", &svg, &chars);
+        }
     }
 }
 

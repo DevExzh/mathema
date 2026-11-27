@@ -577,9 +577,16 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
 
     match args.format {
         Format::Svg => {
-            let svg = conv
-                .to_svg_with(&render_opts)
-                .map_err(|e| CliError::Render(e.to_string()))?;
+            let svg = if args.diagnostics {
+                let (svg, diagnostics) = conv
+                    .to_svg_with_options_and_diagnostics(&render_opts)
+                    .map_err(|e| CliError::Render(e.to_string()))?;
+                print_diagnostics(&source_name, &diagnostics, true);
+                svg
+            } else {
+                conv.to_svg_with(&render_opts)
+                    .map_err(|e| CliError::Render(e.to_string()))?
+            };
             match &args.output {
                 Some(p) => std::fs::write(p, &svg)
                     .map_err(|e| CliError::Io(format!("{}: {e}", p.display())))?,
@@ -593,9 +600,16 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
                 format: mathema::ImageFormat::Png,
                 ..mathema::RasterOptions::default()
             };
-            let bytes = conv
-                .to_png_with(&raster_opts)
-                .map_err(|e| CliError::Render(e.to_string()))?;
+            let bytes = if args.diagnostics {
+                let (bytes, diagnostics) = conv
+                    .to_png_with_options_and_diagnostics(&raster_opts)
+                    .map_err(|e| CliError::Render(e.to_string()))?;
+                print_diagnostics(&source_name, &diagnostics, true);
+                bytes
+            } else {
+                conv.to_png_with(&raster_opts)
+                    .map_err(|e| CliError::Render(e.to_string()))?
+            };
             write_binary(&bytes, args.output.as_deref())?;
         },
         #[cfg(feature = "raster")]
@@ -605,9 +619,16 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
                 format: mathema::ImageFormat::Jpeg,
                 ..mathema::RasterOptions::default()
             };
-            let bytes = conv
-                .to_jpeg_with(&raster_opts)
-                .map_err(|e| CliError::Render(e.to_string()))?;
+            let bytes = if args.diagnostics {
+                let (bytes, diagnostics) = conv
+                    .to_jpeg_with_options_and_diagnostics(&raster_opts)
+                    .map_err(|e| CliError::Render(e.to_string()))?;
+                print_diagnostics(&source_name, &diagnostics, true);
+                bytes
+            } else {
+                conv.to_jpeg_with(&raster_opts)
+                    .map_err(|e| CliError::Render(e.to_string()))?
+            };
             write_binary(&bytes, args.output.as_deref())?;
         },
         _ => {
@@ -725,12 +746,9 @@ fn convert_binary_input(
             .to_unicode_math_with_diagnostics()
             .map_err(|e| CliError::from_mathema(e, "", source_name))?,
         #[cfg(feature = "render")]
-        Format::Svg => (
-            parsed
-                .to_svg_text()
-                .map_err(|e| CliError::from_mathema(e, "", source_name))?,
-            Vec::new(),
-        ),
+        Format::Svg => parsed
+            .to_svg_text_with_diagnostics()
+            .map_err(|e| CliError::from_mathema(e, "", source_name))?,
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => {
             return Err(CliError::Unsupported(
@@ -837,14 +855,21 @@ fn run_render_batch(
             None => path.with_extension(ext),
         };
 
-        let write_result = match render_format {
-            Format::Svg => conv
-                .to_svg_with(render_opts)
-                .map_err(|e| CliError::Render(e.to_string()))
-                .and_then(|svg| {
-                    std::fs::write(&out_path, &svg)
-                        .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))
-                }),
+        let rendered = match render_format {
+            Format::Svg => {
+                let svg = if input_options.include_info {
+                    conv.to_svg_with_options_and_diagnostics(render_opts)
+                        .map_err(|e| CliError::Render(e.to_string()))
+                        .map(|(svg, diagnostics)| {
+                            print_diagnostics(&source_name, &diagnostics, true);
+                            svg
+                        })
+                } else {
+                    conv.to_svg_with(render_opts)
+                        .map_err(|e| CliError::Render(e.to_string()))
+                };
+                svg.map(String::into_bytes)
+            },
             #[cfg(feature = "raster")]
             _ => {
                 let raster_fmt = match render_format {
@@ -856,16 +881,28 @@ fn run_render_batch(
                     format: raster_fmt,
                     ..mathema::RasterOptions::default()
                 };
-                let bytes_result = match raster_fmt {
-                    mathema::ImageFormat::Png => conv.to_png_with(&raster_opts),
-                    mathema::ImageFormat::Jpeg => conv.to_jpeg_with(&raster_opts),
-                };
-                bytes_result
-                    .map_err(|e| CliError::Render(e.to_string()))
-                    .and_then(|bytes| {
-                        std::fs::write(&out_path, &bytes)
-                            .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))
-                    })
+                if input_options.include_info {
+                    let result = match raster_fmt {
+                        mathema::ImageFormat::Png => {
+                            conv.to_png_with_options_and_diagnostics(&raster_opts)
+                        },
+                        mathema::ImageFormat::Jpeg => {
+                            conv.to_jpeg_with_options_and_diagnostics(&raster_opts)
+                        },
+                    };
+                    result.map_err(|e| CliError::Render(e.to_string())).map(
+                        |(bytes, diagnostics)| {
+                            print_diagnostics(&source_name, &diagnostics, true);
+                            bytes
+                        },
+                    )
+                } else {
+                    let result = match raster_fmt {
+                        mathema::ImageFormat::Png => conv.to_png_with(&raster_opts),
+                        mathema::ImageFormat::Jpeg => conv.to_jpeg_with(&raster_opts),
+                    };
+                    result.map_err(|e| CliError::Render(e.to_string()))
+                }
             },
             #[cfg(not(feature = "raster"))]
             _ => Err(CliError::Unsupported(format!(
@@ -873,6 +910,10 @@ fn run_render_batch(
             ))),
         };
 
+        let write_result = rendered.and_then(|bytes| {
+            std::fs::write(&out_path, bytes)
+                .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))
+        });
         match write_result {
             Ok(()) => success_count += 1,
             Err(e) => failures.push((source_name, e)),

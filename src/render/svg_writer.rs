@@ -149,7 +149,7 @@ pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &G
     emit_box_embedded(&mut svg, root, 0.0, baseline_y, em, options, glyphs);
 
     svg.push_str("</svg>");
-    svg
+    crate::writer::xml_chars::replace_non_xml_chars(svg)
 }
 
 /// Write `<defs>` block with glyph path definitions, sorted for determinism.
@@ -729,7 +729,7 @@ pub fn emit_svg_with_fonts_arena(
     emit_box_arena_embedded(&mut svg, arena, root, 0.0, baseline_y, em, options, glyphs);
 
     svg.push_str("</svg>");
-    svg
+    crate::writer::xml_chars::replace_non_xml_chars(svg)
 }
 
 #[allow(clippy::too_many_arguments)]

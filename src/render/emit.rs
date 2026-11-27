@@ -2,6 +2,45 @@
 use super::RenderOptions;
 use super::fonts_registry::FontId;
 use super::layout::{BoxKind, LayoutBox};
+use crate::error::Result;
+
+/// Largest finite value that [`push_f3`] can serialize without entering its
+/// saturation path. Keep a little headroom for the multiplication and
+/// rounding performed by the formatter.
+const SVG_F3_MAX: f64 = (u64::MAX as f64 / 1000.0) * 0.999;
+
+/// Validate the finite geometry shared by all high-level SVG entry points.
+///
+/// SVG dimensions are formatted to three decimal places by [`push_f3`]. A
+/// value that rounds to zero would produce a zero-sized output, while a value
+/// beyond `SVG_F3_MAX` would be silently saturated by the formatter. Reject
+/// both cases before emission so prepared geometry and direct rendering agree.
+pub(crate) fn validate_svg_geometry(
+    view_box_x_px: f64,
+    width_px: f64,
+    height_px: f64,
+    baseline_px: f64,
+    depth_px: f64,
+) -> Result<()> {
+    for value in [view_box_x_px, width_px, height_px, baseline_px, depth_px] {
+        if !value.is_finite() || value.abs() > SVG_F3_MAX {
+            return Err(crate::error::Error::Render {
+                message: "SVG geometry is outside the representable finite range".into(),
+            });
+        }
+    }
+
+    if width_px <= 0.0
+        || height_px <= 0.0
+        || (width_px.abs() * 1000.0).round() < 1.0
+        || (height_px.abs() * 1000.0).round() < 1.0
+    {
+        return Err(crate::error::Error::Render {
+            message: "SVG geometry would produce a zero-sized output".into(),
+        });
+    }
+    Ok(())
+}
 
 /// Mirror local x coordinates about the right edge of the layout box.
 pub(super) fn open_reflected_group(svg: &mut String, right_edge: f64) {
@@ -312,7 +351,7 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     emit_box(&mut svg, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
-    svg
+    crate::writer::xml_chars::replace_non_xml_chars(svg)
 }
 
 /// The font size and baseline of a glyph drawn as text. A client font has no
@@ -699,7 +738,7 @@ pub fn emit_svg_arena(arena: &LayoutArena, root: LayoutBoxId, options: &RenderOp
     emit_box_arena(&mut svg, arena, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
-    svg
+    crate::writer::xml_chars::replace_non_xml_chars(svg)
 }
 
 fn emit_box_arena(

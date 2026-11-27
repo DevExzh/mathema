@@ -87,13 +87,18 @@ pub use error::{
 pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
 pub use reader::omml::{OmmlJustification, OmmlParagraph};
 #[cfg(feature = "raster")]
-pub use render::raster::{ImageFormat, RasterOptions, render_to_image};
+pub use render::raster::{
+    ImageFormat, RasterOptions, render_to_image, render_to_image_with_diagnostics,
+};
 #[cfg(feature = "render")]
-pub use render::{RenderOptions, render_to_svg};
+pub use render::{
+    PreparedRender, RenderGeometry, RenderOptions, prepare_render, prepare_render_compact,
+    render_to_svg, render_to_svg_with_diagnostics,
+};
 #[cfg(feature = "render")]
 pub use render::{
     render_to_svg_standalone, render_to_svg_standalone_compact,
-    render_to_svg_standalone_compact_arena,
+    render_to_svg_standalone_compact_arena, render_to_svg_standalone_with_diagnostics,
 };
 pub use writer::mathml::{MathmlOptions, MathmlProfile};
 pub use writer::mtef::MtefWriteOptions;

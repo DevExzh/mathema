@@ -2,7 +2,7 @@
 //!
 //! Pipeline: MathExpr → LayoutBox tree → tiny_skia::Pixmap → PNG/JPEG bytes.
 //! Glyphs are rasterized with `fontdue` using an embedded Latin Modern Math font.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use fontdue::{Font, FontSettings};
@@ -15,7 +15,7 @@ use super::layout::{BoxKind, LayoutBox};
 use super::style::MathStyle;
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
-use crate::error::Result;
+use crate::error::{Diagnostic, DiagnosticKind, Result};
 
 // ---------------------------------------------------------------------------
 // Embedded font (Latin Modern Math, GUST Font License)
@@ -110,6 +110,13 @@ impl RasterOptions {
                 message: "scale must be finite and greater than zero".into(),
             });
         }
+        let effective_scale = self.render.font_size_px * self.scale;
+        if !effective_scale.is_finite() || effective_scale <= 0.0 {
+            return Err(crate::error::Error::Render {
+                message: "font_size_px multiplied by scale must be finite and greater than zero"
+                    .into(),
+            });
+        }
         Ok(())
     }
 }
@@ -157,6 +164,192 @@ pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> R
         let root = builder.layout(layout_arena, expr);
         rasterize_layout_arena(layout_arena, root, options)
     })
+}
+
+/// Render a math expression to raster bytes and report missing glyphs and
+/// unsupported raster colors.
+///
+/// The image bytes are identical to [`render_to_image`]. The diagnostic route
+/// keeps the historical black fallback for an invalid CSS color while making
+/// that fallback visible to callers. SVG accepts arbitrary CSS color strings
+/// and therefore reports only missing embedded glyphs.
+pub fn render_to_image_with_diagnostics(
+    expr: &MathExpr,
+    options: &RasterOptions,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    options.validate()?;
+    crate::ast::validate_ast_depth(expr)?;
+    if crate::ast::has_attributes(expr) {
+        return render_to_image_compact_with_diagnostics(
+            &CompactExpr::from_math_expr(expr)?,
+            options,
+        );
+    }
+    let style = if options.render.is_display(expr) {
+        MathStyle::Display
+    } else {
+        MathStyle::Text
+    };
+    let root = super::layout::layout_expr(expr, style, &options.render);
+    let diagnostics = raster_diagnostics(&root, &options.render.fg_color);
+    let image = rasterize_layout(&root, options)?;
+    Ok((image, diagnostics))
+}
+
+/// Render a compact math expression to raster bytes and report missing glyphs
+/// and unsupported raster colors.
+///
+/// The image bytes are identical to [`render_to_image_compact`].
+pub fn render_to_image_compact_with_diagnostics(
+    expr: &CompactExpr,
+    options: &RasterOptions,
+) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+    options.validate()?;
+    crate::ast::validate_compact_for_write(&expr.arena, expr.roots, crate::ast::MAX_AST_DEPTH)?;
+    let style = if options
+        .render
+        .display_mode
+        .unwrap_or(expr.display == crate::ast::DisplayStyle::Block)
+    {
+        MathStyle::Display
+    } else {
+        MathStyle::Text
+    };
+    crate::render::with_pooled_arena(|layout_arena| {
+        let builder = super::layout::LayoutBuilder::new(style, &options.render);
+        layout_arena.clear();
+        let root = builder.layout(layout_arena, expr);
+        let diagnostics = raster_diagnostics_arena(layout_arena, root, &options.render.fg_color);
+        let image = rasterize_layout_arena(layout_arena, root, options)?;
+        Ok((image, diagnostics))
+    })
+}
+
+fn invalid_color_diagnostic(role: &str, color: &str) -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::Warning,
+        message: format!(
+            "unsupported raster {role} color {color:?}; raster output falls back to black"
+        ),
+        span: None,
+    }
+}
+
+fn record_color(
+    role: &str,
+    color: &str,
+    seen: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if parse_color_checked(color).is_none() {
+        let key = format!("{role}\0{color}");
+        if seen.insert(key) {
+            diagnostics.push(invalid_color_diagnostic(role, color));
+        }
+    }
+}
+
+fn raster_diagnostics(root: &LayoutBox, foreground: &str) -> Vec<Diagnostic> {
+    let mut diagnostics = super::missing_glyph_diagnostics(root);
+    let mut seen = HashSet::new();
+    record_color("foreground", foreground, &mut seen, &mut diagnostics);
+    collect_raster_colors(root, &mut seen, &mut diagnostics);
+    diagnostics
+}
+
+fn collect_raster_colors(
+    layout: &LayoutBox,
+    seen: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match &layout.kind {
+        BoxKind::Color { color, child } => {
+            record_color("expression", color, seen, diagnostics);
+            collect_raster_colors(&child.layout, seen, diagnostics);
+        },
+        BoxKind::Boxed {
+            bg_color,
+            border_color,
+            child,
+            ..
+        } => {
+            if let Some(color) = bg_color {
+                record_color("box background", color, seen, diagnostics);
+            }
+            if let Some(color) = border_color {
+                record_color("box border", color, seen, diagnostics);
+            }
+            collect_raster_colors(&child.layout, seen, diagnostics);
+        },
+        BoxKind::HBox { children } | BoxKind::VBox { children } => {
+            for child in children {
+                collect_raster_colors(&child.layout, seen, diagnostics);
+            }
+        },
+        BoxKind::Reflected { child } => collect_raster_colors(&child.layout, seen, diagnostics),
+        BoxKind::Glyph { .. }
+        | BoxKind::Rule { .. }
+        | BoxKind::Kern
+        | BoxKind::Delimiter { .. }
+        | BoxKind::SvgPath(_)
+        | BoxKind::Phantom
+        | BoxKind::TextRun { .. } => {},
+    }
+}
+
+pub(crate) fn raster_diagnostics_arena(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    foreground: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = super::missing_glyph_diagnostics_arena(arena, root);
+    let mut seen = HashSet::new();
+    record_color("foreground", foreground, &mut seen, &mut diagnostics);
+    collect_raster_colors_arena(arena, root, &mut seen, &mut diagnostics);
+    diagnostics
+}
+
+fn collect_raster_colors_arena(
+    arena: &LayoutArena,
+    id: LayoutBoxId,
+    seen: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match &arena.get(id).kind {
+        ArenaBoxKind::Color { color, child } => {
+            record_color("expression", color, seen, diagnostics);
+            collect_raster_colors_arena(arena, *child, seen, diagnostics);
+        },
+        ArenaBoxKind::Boxed {
+            bg_color,
+            border_color,
+            child,
+            ..
+        } => {
+            if let Some(color) = bg_color {
+                record_color("box background", color, seen, diagnostics);
+            }
+            if let Some(color) = border_color {
+                record_color("box border", color, seen, diagnostics);
+            }
+            collect_raster_colors_arena(arena, *child, seen, diagnostics);
+        },
+        ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
+            for child in arena.children(*children) {
+                collect_raster_colors_arena(arena, child.id, seen, diagnostics);
+            }
+        },
+        ArenaBoxKind::Reflected { child } => {
+            collect_raster_colors_arena(arena, *child, seen, diagnostics);
+        },
+        ArenaBoxKind::Glyph { .. }
+        | ArenaBoxKind::Rule { .. }
+        | ArenaBoxKind::Kern
+        | ArenaBoxKind::Delimiter { .. }
+        | ArenaBoxKind::SvgPath(_)
+        | ArenaBoxKind::Phantom
+        | ArenaBoxKind::TextRun { .. } => {},
+    }
 }
 
 /// Recursively compute the horizontal extent of all visible content in a layout
@@ -279,7 +472,7 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
 /// Arena-based counterpart of [`rasterize_layout`]. Produces byte-identical
 /// output for the same layout geometry, traversing the arena instead of the
 /// heap `LayoutBox` tree.
-fn rasterize_layout_arena(
+pub(crate) fn rasterize_layout_arena(
     arena: &LayoutArena,
     root: LayoutBoxId,
     options: &RasterOptions,
@@ -1881,21 +2074,31 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
 // ---------------------------------------------------------------------------
 
 pub(crate) fn parse_color(s: &str) -> [u8; 3] {
+    parse_color_checked(s).unwrap_or([0, 0, 0])
+}
+
+/// Parse the subset of CSS colors supported by the raster backend.
+///
+/// The unchecked [`parse_color`] entry point retains its historical black
+/// fallback. Diagnostic rendering uses this checked form so unsupported CSS
+/// functions such as `rgba()` and `hsl()` are reported instead of disappearing
+/// into a black pixel.
+pub(crate) fn parse_color_checked(s: &str) -> Option<[u8; 3]> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix('#') {
         return parse_hex_color(hex);
     }
     if s.eq_ignore_ascii_case("currentcolor") {
-        return [0, 0, 0];
+        return Some([0, 0, 0]);
     }
     if let Some(rgb) = parse_rgb_function(s) {
-        return rgb;
+        return Some(rgb);
     }
     // Full CSS named colors (148 colors)
     if let Some(rgb) = crate::css_colors::lookup_css_color(s) {
-        return rgb;
+        return Some(rgb);
     }
-    [0, 0, 0] // fallback to black
+    None
 }
 
 fn parse_rgb_function(s: &str) -> Option<[u8; 3]> {
@@ -1926,33 +2129,41 @@ fn css_function(s: &str) -> Option<(&str, &str)> {
 fn parse_rgb_component(s: &str) -> Option<u8> {
     let s = s.trim();
     if let Some(percent) = s.strip_suffix('%') {
-        let pct = percent.trim().parse::<f64>().ok()?.clamp(0.0, 100.0);
+        let pct = percent.trim().parse::<f64>().ok()?;
+        if !pct.is_finite() {
+            return None;
+        }
+        let pct = pct.clamp(0.0, 100.0);
         return Some((pct * 255.0 / 100.0).round() as u8);
     }
-    Some(s.parse::<f64>().ok()?.clamp(0.0, 255.0).round() as u8)
+    let value = s.parse::<f64>().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    Some(value.clamp(0.0, 255.0).round() as u8)
 }
 
-fn parse_hex_color(hex: &str) -> [u8; 3] {
+fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
     let hex = hex.trim();
     // Reject non-ASCII input to prevent byte-boundary panics on multi-byte chars
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return [0, 0, 0];
+        return None;
     }
     match hex.len() {
         3 => {
             // #RGB → #RRGGBB (safe to byte-slice: all chars are ASCII hex digits)
-            let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0);
-            [r * 17, g * 17, b * 17]
+            let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+            let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+            let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+            Some([r * 17, g * 17, b * 17])
         },
         6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            [r, g, b]
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            Some([r, g, b])
         },
-        _ => [0, 0, 0],
+        _ => None,
     }
 }
 
@@ -2334,6 +2545,28 @@ mod tests {
     }
 
     #[test]
+    fn raster_diagnostics_report_missing_glyphs_and_invalid_colors() {
+        let expr = MathExpr::inline(vec![MathNode::Color {
+            color: "rgba(255, 0, 0, 0.5)".into(),
+            content: Box::new(MathNode::Text(crate::ast::TextStyle::Normal, "中".into())),
+        }]);
+        let options = RasterOptions::default();
+        let (png, diagnostics) = render_to_image_with_diagnostics(&expr, &options).unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        assert_eq!(png, render_to_image(&expr, &options).unwrap());
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("U+4E2D")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("unsupported raster expression color")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn default_options() {
         let opts = RasterOptions::default();
         assert_eq!(opts.format, ImageFormat::Png);
@@ -2413,6 +2646,9 @@ mod tests {
     fn color_parse_rgba_is_unsupported_without_alpha_pipeline() {
         assert_eq!(parse_rgb_function("rgba(255, 0, 0, 0.5)"), None);
         assert_eq!(parse_color("rgba(255, 0, 0, 0.5)"), [0, 0, 0]);
+        assert_eq!(parse_color_checked("rgba(255, 0, 0, 0.5)"), None);
+        assert_eq!(parse_color_checked("hsl(0, 100%, 50%)"), None);
+        assert_eq!(parse_color_checked("#12345"), None);
     }
 
     // --- SVG path parser ---

@@ -253,7 +253,10 @@ fn write_compact_with_diagnostics(
             UnicodeMathWriter::write_compact_with_diagnostics_trusted(expr, config)
         },
         #[cfg(feature = "render")]
-        Format::Svg => Ok((write_compact(expr, format, config)?, Vec::new())),
+        Format::Svg => {
+            let options = crate::render::RenderOptions::default();
+            crate::render::render_to_svg_compact_with_diagnostics(expr, &options)
+        },
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
             "raster formats produce binary output; use render_to_image() instead".into(),
@@ -519,20 +522,56 @@ impl ConvertResult {
 
     /// Render to a standalone SVG with embedded glyph outlines.
     ///
-    /// This is the default for [`to_svg`](Self::to_svg): the output embeds
-    /// Latin Modern Math glyph outlines as `<path>`/`<use>` elements, so it
-    /// renders identically everywhere (no client-side fonts required) and
-    /// visually matches the PNG/JPEG raster output.
+    /// This is the default for [`to_svg`](Self::to_svg): covered characters
+    /// use Latin Modern Math glyph outlines as `<path>`/`<use>` elements.
+    /// Characters without embedded coverage remain `<text>` fallbacks and may
+    /// depend on a client font. Use [`to_svg_with_diagnostics`](Self::to_svg_with_diagnostics)
+    /// to report those fallbacks.
     #[cfg(feature = "render")]
     pub fn to_svg(&self) -> Result<String> {
         let options = crate::render::RenderOptions::default();
         crate::render::render_to_svg_standalone_compact(&self.compact.expr, &options)
     }
 
+    /// Render to a standalone SVG and report missing embedded glyphs.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        let options = crate::render::RenderOptions::default();
+        crate::render::render_to_svg_standalone_compact_with_diagnostics(
+            &self.compact.expr,
+            &options,
+        )
+    }
+
     /// Render a standalone SVG using custom [`RenderOptions`](crate::render::RenderOptions).
     #[cfg(feature = "render")]
     pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
         crate::render::render_to_svg_standalone_compact(&self.compact.expr, options)
+    }
+
+    /// Render a standalone SVG with custom options and report glyph fallbacks.
+    #[cfg(feature = "render")]
+    pub fn to_svg_with_options_and_diagnostics(
+        &self,
+        options: &crate::render::RenderOptions,
+    ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        crate::render::render_to_svg_standalone_compact_with_diagnostics(
+            &self.compact.expr,
+            options,
+        )
+    }
+
+    /// Prepare this parsed expression for repeated SVG or raster rendering.
+    ///
+    /// Layout is performed once and retained by the returned value. Use its
+    /// rendering methods when an application needs more than one output for
+    /// the same expression, such as both SVG and PNG.
+    #[cfg(feature = "render")]
+    pub fn prepare_render(
+        &self,
+        options: &crate::render::RenderOptions,
+    ) -> Result<crate::render::PreparedRender> {
+        crate::render::prepare_render_compact(&self.compact.expr, options)
     }
 
     /// Render to a text-based SVG that relies on client-side fonts (`<text>`
@@ -542,6 +581,15 @@ impl ConvertResult {
     pub fn to_svg_text(&self) -> Result<String> {
         let options = crate::render::RenderOptions::default();
         crate::render::render_to_svg_compact(&self.compact.expr, &options)
+    }
+
+    /// Render a text-based SVG and report glyphs absent from the embedded fonts.
+    #[cfg(feature = "render")]
+    pub fn to_svg_text_with_diagnostics(&self) -> Result<(String, Vec<Diagnostic>)> {
+        crate::render::render_to_svg_compact_with_diagnostics(
+            &self.compact.expr,
+            &crate::render::RenderOptions::default(),
+        )
     }
 
     /// Render a text-based (client-font) SVG using custom [`RenderOptions`](crate::render::RenderOptions).
@@ -557,10 +605,29 @@ impl ConvertResult {
         crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
     }
 
+    /// Render to PNG and report missing glyphs and unsupported raster colors.
+    #[cfg(feature = "raster")]
+    pub fn to_png_with_diagnostics(&self) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
+        let options = crate::render::raster::RasterOptions::default();
+        crate::render::raster::render_to_image_compact_with_diagnostics(
+            &self.compact.expr,
+            &options,
+        )
+    }
+
     /// Render to PNG image bytes using custom [`RasterOptions`](crate::render::raster::RasterOptions).
     #[cfg(feature = "raster")]
     pub fn to_png_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
         crate::render::raster::render_to_image_compact(&self.compact.expr, options)
+    }
+
+    /// Render PNG bytes with custom options and report glyph and color diagnostics.
+    #[cfg(feature = "raster")]
+    pub fn to_png_with_options_and_diagnostics(
+        &self,
+        options: &crate::render::raster::RasterOptions,
+    ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
+        crate::render::raster::render_to_image_compact_with_diagnostics(&self.compact.expr, options)
     }
 
     /// Render the expression to JPEG image bytes.
@@ -573,10 +640,32 @@ impl ConvertResult {
         crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
     }
 
+    /// Render to JPEG and report missing glyphs and unsupported raster colors.
+    #[cfg(feature = "raster")]
+    pub fn to_jpeg_with_diagnostics(&self) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
+        let options = crate::render::raster::RasterOptions {
+            format: crate::render::raster::ImageFormat::Jpeg,
+            ..crate::render::raster::RasterOptions::default()
+        };
+        crate::render::raster::render_to_image_compact_with_diagnostics(
+            &self.compact.expr,
+            &options,
+        )
+    }
+
     /// Render to JPEG image bytes using custom [`RasterOptions`](crate::render::raster::RasterOptions).
     #[cfg(feature = "raster")]
     pub fn to_jpeg_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
         crate::render::raster::render_to_image_compact(&self.compact.expr, options)
+    }
+
+    /// Render JPEG bytes with custom options and report glyph and color diagnostics.
+    #[cfg(feature = "raster")]
+    pub fn to_jpeg_with_options_and_diagnostics(
+        &self,
+        options: &crate::render::raster::RasterOptions,
+    ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
+        crate::render::raster::render_to_image_compact_with_diagnostics(&self.compact.expr, options)
     }
 
     /// Access the parsed AST as a legacy [`MathExpr`].
@@ -1641,6 +1730,18 @@ mod tests {
         let result = from_latex("x^2").unwrap();
         let svg = result.to_svg().unwrap();
         assert!(svg.starts_with("<svg"));
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn builder_to_svg_with_diagnostics_reports_missing_glyphs() {
+        let result = from_latex(r"\text{中}").unwrap();
+        let (svg, diagnostics) = result.to_svg_with_diagnostics().unwrap();
+        assert!(svg.starts_with("<svg"));
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("U+4E2D")),
+            "{diagnostics:?}"
+        );
     }
 
     #[cfg(feature = "render")]

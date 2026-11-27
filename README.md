@@ -93,7 +93,7 @@ explicit `--from` may still be used. The binary mode accepts files and stdin,
 including streams that are not valid UTF-8. File and stdin reads are bounded
 by the library's configured input-size limit before parsing starts.
 
-SVG output is **self-contained** by default: glyph outlines from Latin Modern Math are embedded as `<path>`/`<use>` elements, so the SVG renders identically everywhere (no fonts to install). It is rasterized from the same glyph outlines as the PNG/JPEG output and uses the same layout, so the two match closely (pixel-level luminance parity within ~8%, since SVG is rasterized via `resvg` and PNG/JPEG via `tiny-skia`).
+SVG output is **self-contained** for characters covered by the embedded Latin Modern Math faces: those glyph outlines are emitted as `<path>`/`<use>` elements. Characters without embedded coverage remain visible as `<text>` fallbacks and may depend on a client font. The diagnostic render routes report these fallbacks. SVG and PNG/JPEG share layout and covered glyph outlines, while rasterizer and fallback differences can affect pixel comparisons, so exact parity depends on the formula, scale, and renderer.
 
 Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg`, `png`, `jpeg` (`jpg`).
 
