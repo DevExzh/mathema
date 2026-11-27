@@ -62,6 +62,7 @@ export const OUTPUT_FORMATS: readonly OutputFormat[] = [
 export interface Diagnostic {
   kind: string;
   message: string;
+  span?: { start: number; end: number };
 }
 
 export interface ProcessOptions {
@@ -102,9 +103,16 @@ export function process(
     }
     let diagnostics: Diagnostic[] = [];
     try {
-      diagnostics = JSON.parse(parsed.diagnostics()) as Diagnostic[];
+      // The structured binding keeps source byte spans and avoids a JSON
+      // round-trip. Keep the string method as a compatibility fallback for
+      // older generated WASM packages.
+      diagnostics = parsed.diagnosticsStructured() as Diagnostic[];
     } catch {
-      diagnostics = [];
+      try {
+        diagnostics = JSON.parse(parsed.diagnostics()) as Diagnostic[];
+      } catch {
+        diagnostics = [];
+      }
     }
     return { svg, outputs, nodeCount: parsed.nodeCount(), diagnostics };
   } finally {

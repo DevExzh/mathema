@@ -48,8 +48,11 @@ console.log(result.toUnicodeMath());
 const ast = result.toAst();
 console.log(JSON.stringify(ast, null, 2));
 
-// Async parsing (for large formulas)
+// Async parsing (for Promise composition; parsing still runs on this thread)
 const asyncResult = await conv.parseAsync(largeFormula);
+
+// Native diagnostic objects, including source byte spans when available.
+const diagnostics = result.diagnosticsStructured();
 
 // Clean up WASM memory
 result.free();
@@ -70,5 +73,19 @@ python3 -m http.server 8080
 ## TypeScript
 
 wasm-pack generates `pkg/mathema.d.ts` with types for all exported functions
-and classes. For AST object shapes (returned by `toAst()`), see `mathema.d.ts`
-in this directory.
+and classes. For AST object shapes (returned by `toAst()`), diagnostic and
+span types, see `mathema.d.ts` in this directory. The generated declaration
+types `parseAsync()` as `Promise<ParsedMath>`.
+
+`parseAsync()` wraps synchronous parsing for Promise-based callers. It does
+not move work off the WebAssembly thread. Use a Web Worker when parsing must
+not block the browser main thread.
+
+The repository's web CI runs `wasm/check-generated-types.mjs` against the
+wasm-pack declaration and `wasm/smoke.mjs` against the generated package. The
+same checks can be run locally with `node` after a build:
+
+```bash
+node wasm/check-generated-types.mjs web/src/lib/wasm/mathema.d.ts
+node wasm/smoke.mjs web/src/lib/wasm
+```

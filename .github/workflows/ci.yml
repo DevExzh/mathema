@@ -28,6 +28,10 @@ jobs:
       - name: Build WASM bindings
         working-directory: ./web
         run: bun run wasm
+      - name: Check generated WASM declarations
+        run: node wasm/check-generated-types.mjs web/src/lib/wasm/mathema.d.ts
+      - name: Smoke test WASM bindings
+        run: node wasm/smoke.mjs web/src/lib/wasm
       - name: Install JS dependencies
         working-directory: ./web
         run: bun install --frozen-lockfile --registry https://registry.npmjs.org

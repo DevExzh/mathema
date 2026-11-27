@@ -1,15 +1,16 @@
 /**
  * mathema WASM TypeScript Definitions
  *
- * Supplementary types for the AST structure returned by ParsedMath.toAst().
- * The wasm-pack generated .d.ts covers MathemaConverter and ParsedMath methods;
- * this file types the AST object shape produced by serde-wasm-bindgen.
+ * Shared declarations for the AST and structured diagnostics returned by the
+ * WASM bindings. The Rust binding embeds this file into the wasm-bindgen
+ * generated declaration so the runtime API and these shapes stay together.
  */
 
 /** Top-level expression returned by toAst() */
 export interface MathExpr {
   nodes: MathNode[];
   display: "Block" | "Inline";
+  meta?: ExprMeta;
 }
 
 /**
@@ -75,6 +76,8 @@ export type MathNode =
         array_style: boolean;
         col_seps: number;
         row_seps: number;
+        dashed_col_seps: number;
+        dashed_row_seps: number;
       };
     }
   | { Phantom: [MathNode, PhantomKind] }
@@ -103,7 +106,11 @@ export type MathNode =
   | { StyleSwitch: number }
   | { MathAtom: { atom_type: MathAtomType; content: MathNode } }
   | { StructuredOperator: { content: MathNode; form: OperatorNameForm } }
-  | { Color: { color: string; content: MathNode } };
+  | { Color: { color: string; content: MathNode } }
+  | { UndefinedCommand: { name: string; arguments: MathNode[][] } }
+  | { SizeSwitch: number }
+  | "LineBreak"
+  | { Attributed: { attrs: NodeAttrs; content: MathNode } };
 
 export type FencedItem =
   | { Element: MathNode }
@@ -144,8 +151,39 @@ export type OperatorNameForm =
   | { Starred: LimitStyle };
 export type SpaceBasis = "TextEm" | "MathMu" | "Physical";
 
-/** Diagnostic message from lenient parsing */
+/** Typesetting attributes preserved by the heap AST. */
+export interface NodeAttrs {
+  size?: FontSize;
+  glyph_size?: FontSize;
+}
+
+/** Facts about an expression as a whole. */
+export interface ExprMeta {
+  base_size_pt?: Rational;
+}
+
+export type FontSize =
+  | { Points: Rational }
+  | { Logical: { level: TypeSize; delta_pt: Rational } };
+
+export type TypeSize =
+  | "Full"
+  | "Sub"
+  | "Sub2"
+  | "Sym"
+  | "SubSym"
+  | "User1"
+  | "User2";
+
+/** A source byte range associated with a diagnostic, when known. */
+export interface Span {
+  start: number;
+  end: number;
+}
+
+/** Diagnostic message from lenient parsing. */
 export interface Diagnostic {
   kind: string;
   message: string;
+  span?: Span;
 }
