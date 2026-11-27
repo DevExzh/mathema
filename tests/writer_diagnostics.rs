@@ -55,6 +55,14 @@ fn omml_preserves_color_in_host_run_properties() {
 }
 
 #[test]
+fn omml_reports_later_delimiter_separators() {
+    let expr = compact(r"\left(a\middle|b\middle;c\right)");
+    let (_, diagnostics) =
+        OmmlWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(has_warning(&diagnostics, "separator"), "{diagnostics:?}");
+}
+
+#[test]
 fn unicode_math_reports_color_loss() {
     // UnicodeMath has no portable color syntax, so color is dropped (with a
     // loss diagnostic) while the content is preserved.

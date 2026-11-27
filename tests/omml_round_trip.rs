@@ -189,6 +189,36 @@ fn word_run_color_survives_with_wordprocessing_properties() {
 }
 
 #[test]
+fn host_math_run_bold_and_italic_overrides_survive_reading() {
+    let source = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+        <m:r><w:rPr><w:b/></w:rPr><m:t>x</m:t></m:r>
+        <m:r><w:rPr><w:i w:val="0"/></w:rPr><m:t>y</m:t></m:r>
+        <m:r><m:rPr><m:scr m:val="sans-serif"/></m:rPr><w:rPr><w:b/></w:rPr><m:t>z</m:t></m:r>
+        <m:r><a:rPr b="1" i="0"/><m:t>q</m:t></m:r>
+        <m:r><w:rPr><w:b/></w:rPr><m:t>2</m:t></m:r>
+        <m:r><m:rPr><m:sty m:val="bi"/></m:rPr><w:rPr><w:i w:val="0"/></w:rPr><m:t>3</m:t></m:r>
+    </m:oMath>"#;
+    let nodes = mathema::from_omml(source).unwrap().expr().nodes;
+    assert_eq!(
+        nodes,
+        [
+            MathNode::Styled(
+                TextStyle::BoldItalic,
+                vec![MathNode::Identifier("x".into())]
+            ),
+            MathNode::Styled(TextStyle::Normal, vec![MathNode::Identifier("y".into())]),
+            MathNode::Styled(
+                TextStyle::SansSerifBold,
+                vec![MathNode::Identifier("z".into())]
+            ),
+            MathNode::Styled(TextStyle::Bold, vec![MathNode::Identifier("q".into())]),
+            MathNode::Styled(TextStyle::Bold, vec![MathNode::Number("2".into())]),
+            MathNode::Styled(TextStyle::Bold, vec![MathNode::Number("3".into())]),
+        ]
+    );
+}
+
+#[test]
 fn powerpoint_paragraph_round_trips() {
     for options in dialects() {
         let (para, out) = round_trip("powerpoint_paragraph.omml", &options);

@@ -342,8 +342,11 @@ impl MathRunProps {
 /// Host run properties (`w:rPr` or `a:rPr`) that the AST can hold.
 #[derive(Default)]
 struct HostRunProps {
-    bold: bool,
-    italic: bool,
+    /// `None` means that the host did not override the math run's style.
+    /// Keeping absence distinct from `false` matters for `w:b`/`w:i`, whose
+    /// explicit off value can override the math default.
+    bold: Option<bool>,
+    italic: Option<bool>,
     color: Option<[u8; 3]>,
     /// A host run size in hundredths of a point. Word's `w:sz` is converted
     /// from half points and DrawingML's `a:rPr@sz` is already in this unit.
@@ -352,12 +355,107 @@ struct HostRunProps {
 
 impl HostRunProps {
     fn text_style(&self) -> TextStyle {
-        match (self.bold, self.italic) {
+        match (self.bold.unwrap_or(false), self.italic.unwrap_or(false)) {
             (true, true) => TextStyle::BoldItalic,
             (true, false) => TextStyle::Bold,
             (false, true) => TextStyle::Italic,
             (false, false) => TextStyle::Normal,
         }
+    }
+
+    /// Apply host bold/italic overrides to a math run. A math identifier is
+    /// italic by default, so a host `w:b` on a run without `m:rPr` means bold
+    /// italic. Explicit `w:i w:val="0"` clears that default.
+    fn math_style(&self, base: Option<TextStyle>) -> Option<TextStyle> {
+        if self.bold.is_none() && self.italic.is_none() {
+            return base;
+        }
+        let style = base.unwrap_or(TextStyle::Italic);
+        let (family, default_bold, default_italic) = style_family(style);
+        let bold = self.bold.unwrap_or(default_bold);
+        let italic = self.italic.unwrap_or(default_italic);
+        Some(style_from_family(family, bold, italic))
+    }
+
+    /// Numeric tokens are upright by default, unlike identifier tokens. A
+    /// host bold override still applies to them, while a host italic flag
+    /// alone does not turn ordinary digits into italic math. Explicit `m:sty`
+    /// remains the base style and can be combined with host bold/italic.
+    fn number_style(&self, base: Option<TextStyle>) -> Option<TextStyle> {
+        if base.is_none() && !self.bold.is_some_and(|bold| bold) {
+            return None;
+        }
+        let style = base.unwrap_or(TextStyle::Normal);
+        let (family, default_bold, default_italic) = style_family(style);
+        let bold = self.bold.unwrap_or(default_bold);
+        let italic = if base.is_some() {
+            self.italic.unwrap_or(default_italic)
+        } else {
+            default_italic
+        };
+        Some(style_from_family(family, bold, italic))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StyleFamily {
+    Normal,
+    SansSerif,
+    Script,
+    Fraktur,
+    DoubleStruck,
+    Monospace,
+}
+
+fn style_family(style: TextStyle) -> (StyleFamily, bool, bool) {
+    match style {
+        TextStyle::Normal => (StyleFamily::Normal, false, false),
+        TextStyle::Bold => (StyleFamily::Normal, true, false),
+        TextStyle::Italic => (StyleFamily::Normal, false, true),
+        TextStyle::BoldItalic => (StyleFamily::Normal, true, true),
+        TextStyle::SansSerif => (StyleFamily::SansSerif, false, false),
+        TextStyle::SansSerifBold => (StyleFamily::SansSerif, true, false),
+        TextStyle::SansSerifItalic => (StyleFamily::SansSerif, false, true),
+        TextStyle::SansSerifBoldItalic => (StyleFamily::SansSerif, true, true),
+        TextStyle::Script => (StyleFamily::Script, false, false),
+        TextStyle::BoldScript => (StyleFamily::Script, true, false),
+        TextStyle::Fraktur => (StyleFamily::Fraktur, false, false),
+        TextStyle::BoldFraktur => (StyleFamily::Fraktur, true, false),
+        TextStyle::DoubleStruck => (StyleFamily::DoubleStruck, false, false),
+        TextStyle::Monospace => (StyleFamily::Monospace, false, false),
+    }
+}
+
+fn style_from_family(family: StyleFamily, bold: bool, italic: bool) -> TextStyle {
+    match family {
+        StyleFamily::Normal => match (bold, italic) {
+            (true, true) => TextStyle::BoldItalic,
+            (true, false) => TextStyle::Bold,
+            (false, true) => TextStyle::Italic,
+            (false, false) => TextStyle::Normal,
+        },
+        StyleFamily::SansSerif => match (bold, italic) {
+            (true, true) => TextStyle::SansSerifBoldItalic,
+            (true, false) => TextStyle::SansSerifBold,
+            (false, true) => TextStyle::SansSerifItalic,
+            (false, false) => TextStyle::SansSerif,
+        },
+        StyleFamily::Script => {
+            if bold {
+                TextStyle::BoldScript
+            } else {
+                TextStyle::Script
+            }
+        },
+        StyleFamily::Fraktur => {
+            if bold {
+                TextStyle::BoldFraktur
+            } else {
+                TextStyle::Fraktur
+            }
+        },
+        StyleFamily::DoubleStruck => TextStyle::DoubleStruck,
+        StyleFamily::Monospace => TextStyle::Monospace,
     }
 }
 
@@ -1562,8 +1660,8 @@ impl<'i> Parser<'i> {
                 continue;
             }
             match child.local() {
-                "b" => host.bold = self.on_off(&child)?,
-                "i" => host.italic = self.on_off(&child)?,
+                "b" => host.bold = Some(self.on_off(&child)?),
+                "i" => host.italic = Some(self.on_off(&child)?),
                 "sz" => {
                     let val = self.attr(&child, "val")?;
                     self.skip()?;
@@ -1605,8 +1703,8 @@ impl<'i> Parser<'i> {
     /// `a:rPr` (DrawingML text run properties, ECMA-376 §21.1.2.3.9).
     fn dml_run_props(&mut self, el: &Elem<'_>, host: &mut HostRunProps) -> Result<()> {
         let xsd_bool = |v: Option<String>| matches!(v.as_deref(), Some("1" | "true"));
-        host.bold = xsd_bool(self.attr(el, "b")?);
-        host.italic = xsd_bool(self.attr(el, "i")?);
+        host.bold = self.attr(el, "b")?.map(|v| xsd_bool(Some(v)));
+        host.italic = self.attr(el, "i")?.map(|v| xsd_bool(Some(v)));
         host.size = match self.attr(el, "sz")?.as_deref() {
             None => None,
             Some(value) => match drawing_points(value) {
@@ -1671,7 +1769,13 @@ impl<'i> Parser<'i> {
                     .push_node(CompactNode::Text(host.text_style(), sid)),
             );
         } else {
-            self.tokenize(text, props.style(), &mut ids)?;
+            let style = props.style();
+            self.tokenize(
+                text,
+                host.number_style(style),
+                host.math_style(style),
+                &mut ids,
+            )?;
         }
         if self.in_name && host.color.is_none() {
             self.join_name(host.size, &mut ids, out)?;
@@ -1704,14 +1808,20 @@ impl<'i> Parser<'i> {
     /// Split the text of a math run into numbers, letter runs, symbols and
     /// spaces. Mathematical alphanumeric characters (U+1D400 block, as
     /// written by PowerPoint) are decoded into a base letter plus a style.
-    fn tokenize(&mut self, text: &str, style: Option<TextStyle>, out: &mut Ids) -> Result<()> {
+    fn tokenize(
+        &mut self,
+        text: &str,
+        number_style: Option<TextStyle>,
+        text_style: Option<TextStyle>,
+        out: &mut Ids,
+    ) -> Result<()> {
         // The OMML writer keeps compound limit names such as `lim\u{2009}sup`
         // in one math run.  The thin space is otherwise tokenized as an
         // ordinary `Space`, which splits the operator on reimport and loses
         // its movable-limit metadata.  Recognize only the canonical named
         // limit spellings here so an authored arbitrary identifier remains a
         // normal run.
-        if matches!(style, None | Some(TextStyle::Normal))
+        if matches!(text_style, None | Some(TextStyle::Normal))
             && text.contains('\u{2009}')
             && crate::unicode::symbols::operator_has_limits(text)
         {
@@ -1770,7 +1880,10 @@ impl<'i> Parser<'i> {
                 }
                 let sid = self.arena.push_str(&buf);
                 let number = self.arena.push_node(CompactNode::Number(sid));
-                let id = match cstyle.or(style) {
+                // Host math-run italics/bold apply to identifiers, while a
+                // numeric literal remains upright unless m:rPr explicitly
+                // styles the number.
+                let id = match cstyle.or(number_style) {
                     None | Some(TextStyle::Normal) => number,
                     Some(st) => self.styled(st, number)?,
                 };
@@ -1781,11 +1894,11 @@ impl<'i> Parser<'i> {
                     buf.push(chars[i].1);
                     i += 1;
                 }
-                self.letters(&buf, cstyle.or(style), out)?;
+                self.letters(&buf, cstyle.or(text_style), out)?;
             } else {
                 let mut tmp = [0u8; 4];
                 let sym = self.symbol(classify_op_char(orig), orig.encode_utf8(&mut tmp));
-                let id = match style {
+                let id = match text_style {
                     None | Some(TextStyle::Normal | TextStyle::Italic) => sym,
                     Some(st) => self.styled(st, sym)?,
                 };
