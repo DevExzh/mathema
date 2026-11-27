@@ -26,6 +26,21 @@ pub(crate) fn has_non_xml_char(text: &str) -> bool {
     })
 }
 
+/// Whether a UTF-8 string needs XML escaping or XML 1.0 character repair.
+/// This combines the two byte scans used by SVG's streaming escaper.
+#[inline]
+#[cfg(feature = "render")]
+pub(crate) fn needs_xml_sanitization(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(at, &byte)| match byte {
+        b'<' | b'>' | b'&' | b'"' | b'\'' => true,
+        b'\t' | b'\n' | b'\r' | 0x20..=0x7e => false,
+        0..0x20 => true,
+        0xEF => matches!(bytes.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])),
+        _ => false,
+    })
+}
+
 /// `text` with each character XML 1.0 cannot carry replaced by U+FFFD.
 pub(crate) fn replace_non_xml_chars(text: String) -> String {
     if !has_non_xml_char(&text) {

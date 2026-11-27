@@ -128,6 +128,52 @@ fn every_svg_is_well_formed() {
     }
 }
 
+#[test]
+fn unused_interned_controls_do_not_report_an_output_loss() {
+    let expr = MathExpr::inline(vec![MathNode::Identifier("x".into())]);
+    let mut compact = mathema::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+    compact.arena.push_str("unused\u{0013}");
+    let (xml, diagnostics) =
+        MathmlWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
+    assert!(xml.contains("<mi>x</mi>"));
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn inline_operator_and_accent_chars_are_repaired_without_invalid_interned_text() {
+    use mathema::ast::compact::CompactExpr;
+    use mathema::ast::{AccentPosition, LimitStyle};
+
+    let operand = || Box::new(MathNode::Identifier("x".into()));
+    for node in [
+        MathNode::Nary {
+            op: '\u{13}',
+            sub: None,
+            sup: None,
+            body: operand(),
+            limits: LimitStyle::Default,
+        },
+        MathNode::Accent {
+            base: operand(),
+            accent: '\u{FFFF}',
+            position: AccentPosition::Above,
+            wide: false,
+        },
+    ] {
+        let heap = MathExpr::inline(vec![node]);
+        let compact = CompactExpr::from_math_expr(&heap).unwrap();
+        let (xml, diagnostics) =
+            MathmlWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
+        roxmltree::Document::parse(&xml).unwrap();
+        assert!(xml.contains('\u{FFFD}'));
+        assert!(diagnostics.iter().any(|d| d.message.contains("U+FFFD")));
+        assert_eq!(
+            MathmlWriter::write_compact(&compact, &Config::default()).unwrap(),
+            xml
+        );
+    }
+}
+
 /// `\char'23` and other inputs that hold such characters, through the API.
 #[test]
 fn control_characters_from_latex_are_replaced() {
@@ -155,5 +201,42 @@ fn control_characters_from_latex_are_replaced() {
         for svg in [read.to_svg().unwrap(), read.to_svg_text().unwrap()] {
             roxmltree::Document::parse(&svg).unwrap_or_else(|e| panic!("{input}: {e}"));
         }
+    }
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn svg_options_and_leaf_strings_repair_xml_controls_while_writing() {
+    use mathema::render::RenderOptions;
+
+    let parsed = mathema::from_latex(r#"\text{a\char"13 b}x"#).unwrap();
+    let options = RenderOptions {
+        fg_color: "red\u{13}&".into(),
+        font_family: "serif\u{FFFF}<".into(),
+        ..RenderOptions::default()
+    };
+
+    let heap = parsed.expr();
+    let compact = parsed.compact_expr();
+    for (kind, svg) in [
+        (
+            "SVG",
+            mathema::render::render_to_svg(&heap, &options).unwrap(),
+        ),
+        (
+            "compact SVG",
+            mathema::render::render_to_svg_compact(compact, &options).unwrap(),
+        ),
+        (
+            "standalone SVG",
+            mathema::render::render_to_svg_standalone(&heap, &options).unwrap(),
+        ),
+        (
+            "compact standalone SVG",
+            mathema::render::render_to_svg_standalone_compact(compact, &options).unwrap(),
+        ),
+    ] {
+        parse(kind, &svg, &['\u{13}', '\u{FFFF}']);
+        assert!(svg.contains('\u{FFFD}'), "{kind}: {svg}");
     }
 }

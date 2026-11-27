@@ -3,6 +3,7 @@ use super::RenderOptions;
 use super::fonts_registry::FontId;
 use super::layout::{BoxKind, LayoutBox};
 use crate::error::Result;
+use crate::writer::xml_chars;
 
 /// Largest finite value that [`push_f3`] can serialize without entering its
 /// saturation path. Keep a little headroom for the multiplication and
@@ -54,15 +55,18 @@ pub(super) fn open_reflected_group(svg: &mut String, right_edge: f64) {
 /// injection, while avoiding the `std::fmt` machinery entirely.
 #[inline]
 pub(crate) fn push_xml_escaped(out: &mut String, s: &str) {
-    // Fast path: if the string contains no special chars, push it directly
-    if !s
-        .bytes()
-        .any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\''))
-    {
+    // Fast path: ordinary UTF-8 source strings need no XML work. The combined
+    // predicate also catches XML 1.0 controls before they reach the output.
+    if !xml_chars::needs_xml_sanitization(s) {
         out.push_str(s);
         return;
     }
     for ch in s.chars() {
+        let ch = if xml_chars::is_xml_char(ch) {
+            ch
+        } else {
+            '\u{FFFD}'
+        };
         match ch {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
@@ -351,7 +355,7 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     emit_box(&mut svg, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
-    crate::writer::xml_chars::replace_non_xml_chars(svg)
+    svg
 }
 
 /// The font size and baseline of a glyph drawn as text. A client font has no
@@ -738,7 +742,7 @@ pub fn emit_svg_arena(arena: &LayoutArena, root: LayoutBoxId, options: &RenderOp
     emit_box_arena(&mut svg, arena, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
-    crate::writer::xml_chars::replace_non_xml_chars(svg)
+    svg
 }
 
 fn emit_box_arena(
@@ -1070,6 +1074,11 @@ pub(super) fn push_box(
 
 /// Write an XML-escaped character directly to the buffer (zero allocation).
 pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
+    let ch = if xml_chars::is_xml_char(ch) {
+        ch
+    } else {
+        '\u{FFFD}'
+    };
     match ch {
         '<' => out.push_str("&lt;"),
         '>' => out.push_str("&gt;"),
@@ -1151,6 +1160,16 @@ fn push_delimiter_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xml_escape_repairs_xml_controls() {
+        assert!(!xml_chars::is_xml_char('\u{13}'));
+        assert!(!xml_chars::is_xml_char('\u{FFFF}'));
+        assert!(xml_chars::needs_xml_sanitization("red\u{13}\u{FFFF}&"));
+        let mut output = String::new();
+        push_xml_escaped(&mut output, "red\u{13}\u{FFFF}&");
+        assert_eq!(output, "red\u{FFFD}\u{FFFD}&amp;");
+    }
     use crate::ast::*;
     use crate::render::layout::{PositionedBox, layout_expr};
     use crate::render::style::MathStyle;

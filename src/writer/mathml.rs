@@ -250,9 +250,7 @@ fn write_with_options_validated(
     expr: &CompactExpr,
     options: &MathmlOptions,
 ) -> Result<(String, Vec<Diagnostic>)> {
-    let raw = write_compact_text(expr);
-    let replaced = xml_chars::has_non_xml_char(&raw);
-    let output = xml_chars::replace_non_xml_chars(raw);
+    let (output, replaced) = write_compact_text(expr);
     let mut diagnostics = super::collect_loss_diagnostics(expr, mathml_loss);
     if replaced {
         diagnostics.push(Diagnostic {
@@ -271,17 +269,22 @@ fn write_with_options_validated(
 
 /// Write an immutable expression whose arena and depth have already been checked.
 pub(crate) fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
-    Ok(xml_chars::replace_non_xml_chars(write_compact_text(expr)))
+    Ok(write_compact_text(expr).0)
 }
 
-/// The MathML of a compact tree, before XML 1.0 character replacement.
-fn write_compact_text(expr: &CompactExpr) -> String {
-    let buf = write_math_fast(expr, expr.arena.has_size_scale());
-    // A size declaration the arena did not count.
+/// Return the XML and whether any character in that output needed replacement.
+fn write_compact_text(expr: &CompactExpr) -> (String, bool) {
+    let mut buf = write_math_fast(expr, expr.arena.has_size_scale());
     if buf.missed_size {
-        return write_math_fast(expr, true).target;
+        buf = write_math_fast(expr, true);
     }
-    buf.target
+    // Strings can outlive their referring nodes. Check the actual output only
+    // when an interned string or an inline operator glyph could require repair.
+    let suspect = buf.invalid_glyph || xml_chars::has_non_xml_char(expr.arena.string_storage());
+    if suspect && xml_chars::has_non_xml_char(&buf.target) {
+        return (xml_chars::replace_non_xml_chars(buf.target), true);
+    }
+    (buf.target, false)
 }
 
 struct StandardizedMathml {
@@ -718,6 +721,8 @@ struct MathOutput<T> {
     met_attributes: bool,
     /// Whether a size declaration was met with `has_sizes` unset.
     missed_size: bool,
+    /// An emitted glyph stored directly on a compact node is invalid in XML.
+    invalid_glyph: bool,
 }
 
 impl<T> MathOutput<T> {
@@ -730,6 +735,7 @@ impl<T> MathOutput<T> {
             size_per_mille: 1000,
             has_sizes: false,
             missed_size: false,
+            invalid_glyph: false,
             met_attributes: false,
         }
     }
@@ -3078,8 +3084,7 @@ fn write_bare_node_fast(
                 buf.push_str("<mo stretchy=\"");
                 buf.push_str(if wide { "true" } else { "false" });
                 buf.push_str("\">");
-                let mut encoded = [0; 4];
-                xml_escape_into(buf, glyph.encode_utf8(&mut encoded));
+                write_inline_glyph(buf, glyph);
                 buf.push_str("</mo>");
             });
             close_tag(buf, tag);
@@ -3966,9 +3971,15 @@ fn write_mo_char_fast(buf: &mut XmlBuffer, ch: char, movable: Option<bool>) {
         Some(false) => "<mo movablelimits=\"false\">",
         None => "<mo>",
     });
+    write_inline_glyph(buf, ch);
+    buf.push_str("</mo>");
+}
+
+#[inline]
+fn write_inline_glyph(buf: &mut XmlBuffer, ch: char) {
+    buf.invalid_glyph |= !xml_chars::is_xml_char(ch);
     let mut glyph = [0; 4];
     xml_escape_into(buf, ch.encode_utf8(&mut glyph));
-    buf.push_str("</mo>");
 }
 
 /// Whether [`write_bare_limit_base`] writes the node's element itself, without

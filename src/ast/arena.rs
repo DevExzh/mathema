@@ -926,6 +926,11 @@ impl AstArena {
         self.str_starts.len() - 1
     }
 
+    /// All interned UTF-8 text in allocation order.
+    pub(crate) fn string_storage(&self) -> &str {
+        &self.strings
+    }
+
     /// Total heap bytes owned by this arena (excluding the `AstArena` struct itself).
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
