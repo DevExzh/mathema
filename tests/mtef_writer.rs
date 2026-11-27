@@ -2,7 +2,6 @@
 //! object, and LaTeX written as MTEF 5 and MTEF 3, must read back to the same
 //! AST.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use mathema::ast::normalize::normalize_compact_expr;
@@ -469,87 +468,46 @@ fn mtef_limits_include_the_ole_header() {
 
 #[test]
 fn every_mtef_byte_ceiling_is_a_typed_limit_or_exact_output() {
-    let result = from_latex("x").unwrap();
+    fn check_limits<T: AsRef<[u8]> + std::fmt::Debug>(
+        expected: T,
+        write: impl Fn(&OutputLimits) -> mathema::Result<T>,
+    ) {
+        let bytes = expected.as_ref();
+        for cap in 0..bytes.len() {
+            let error = write(&OutputLimits::with_max_bytes(cap)).unwrap_err();
+            assert!(
+                matches!(error, Error::OutputLimit { limit } if limit == cap),
+                "expected a {cap}-byte output limit, got {error}"
+            );
+        }
+        let actual = write(&OutputLimits::with_max_bytes(bytes.len())).unwrap();
+        assert_eq!(actual.as_ref(), bytes);
+    }
+
+    let parsed = from_latex("x").unwrap();
+    let expr = parsed.compact_expr();
     let config = Config::default();
-    let options = [
-        MtefWriteOptions::default(),
-        MtefWriteOptions::new(MtefVersion::V3),
-        MtefWriteOptions::default().with_ole_header(true),
-        MtefWriteOptions::new(MtefVersion::V3).with_ole_header(true),
-    ];
-
-    for options in options {
-        let expected = MtefWriter::write_bytes(result.compact_expr(), &config, &options).unwrap();
-        for cap in 0..=expected.len() {
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                MtefWriter::write_bytes_with_limits(
-                    result.compact_expr(),
-                    &config,
-                    &options,
-                    &OutputLimits::with_max_bytes(cap),
-                )
-            }))
-            .unwrap_or_else(|_| panic!("binary MTEF panicked at cap {cap} for {options:?}"));
-            match outcome {
-                Ok(bytes) => assert_eq!(bytes, expected, "binary cap {cap} for {options:?}"),
-                Err(Error::OutputLimit { limit }) => assert_eq!(
-                    limit, cap,
-                    "reported binary limit for cap {cap} ({options:?})"
-                ),
-                Err(error) => panic!("unexpected binary error at cap {cap}: {error:?}"),
-            }
-
-            let expected_hex = MtefWriter::write_compact_with_limits(
-                result.compact_expr(),
-                &config,
-                &options,
-                &OutputLimits::unlimited(),
-            )
-            .unwrap();
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                MtefWriter::write_compact_with_limits(
-                    result.compact_expr(),
-                    &config,
-                    &options,
-                    &OutputLimits::with_max_bytes(cap * 2),
-                )
-            }))
-            .unwrap_or_else(|_| panic!("hex MTEF panicked at cap {} for {options:?}", cap * 2));
-            match outcome {
-                Ok(hex) => assert_eq!(hex, expected_hex, "hex cap {} for {options:?}", cap * 2),
-                Err(Error::OutputLimit { limit }) => assert_eq!(limit, cap * 2),
-                Err(error) => panic!("unexpected hex error at cap {}: {error:?}", cap * 2),
-            }
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        for wrapped in [false, true] {
+            let options = MtefWriteOptions::new(version).with_ole_header(wrapped);
+            check_limits(
+                MtefWriter::write_bytes(expr, &config, &options).unwrap(),
+                |limits| MtefWriter::write_bytes_with_limits(expr, &config, &options, limits),
+            );
+            let hex = |limits: &OutputLimits| {
+                MtefWriter::write_compact_with_limits(expr, &config, &options, limits)
+            };
+            check_limits(hex(&OutputLimits::unlimited()).unwrap(), hex);
         }
     }
 
-    let expected_bytes = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
-    let expected_hex = result.to_mtef().unwrap();
-    for cap in 0..=expected_bytes.len() {
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            result.to_mtef_bytes_with_limits(
-                &MtefWriteOptions::default(),
-                &OutputLimits::with_max_bytes(cap),
-            )
-        }))
-        .unwrap_or_else(|_| panic!("builder binary MTEF panicked at cap {cap}"));
-        match outcome {
-            Ok(bytes) => assert_eq!(bytes, expected_bytes, "builder binary cap {cap}"),
-            Err(Error::OutputLimit { limit }) => assert_eq!(limit, cap),
-            Err(error) => panic!("unexpected builder binary error at cap {cap}: {error:?}"),
-        }
-    }
-    for cap in 0..=expected_hex.len() {
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            result.to_mtef_with_limits(&OutputLimits::with_max_bytes(cap))
-        }))
-        .unwrap_or_else(|_| panic!("builder hex MTEF panicked at cap {cap}"));
-        match outcome {
-            Ok(hex) => assert_eq!(hex, expected_hex, "builder hex cap {cap}"),
-            Err(Error::OutputLimit { limit }) => assert_eq!(limit, cap),
-            Err(error) => panic!("unexpected builder hex error at cap {cap}: {error:?}"),
-        }
-    }
+    let options = MtefWriteOptions::default();
+    check_limits(parsed.to_mtef_bytes(&options).unwrap(), |limits| {
+        parsed.to_mtef_bytes_with_limits(&options, limits)
+    });
+    check_limits(parsed.to_mtef().unwrap(), |limits| {
+        parsed.to_mtef_with_limits(limits)
+    });
 }
 
 #[test]
