@@ -401,6 +401,12 @@ pub(crate) fn request_checkpoint(units: usize) -> Result<()> {
     })
 }
 
+/// Whether the current thread is inside a controlled request. This lets
+/// optional work accounting avoid adding a tree walk to ordinary rendering.
+pub(crate) fn request_control_active() -> bool {
+    ACTIVE_CONTROL.with(|slot| slot.borrow().is_some())
+}
+
 // `quick_xml` is an implementation detail of the MathML/OMML readers. Convert
 // its errors into an opaque message so the third-party type does not leak into
 // the public `Error` API (which would tie `mathema`'s semver to `quick-xml`'s).

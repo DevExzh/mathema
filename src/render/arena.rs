@@ -287,6 +287,12 @@ impl LayoutArena {
         self.boxes.len()
     }
 
+    /// Number of layout boxes and positioned child references traversed by an
+    /// output pass. This is used only for controlled-request accounting.
+    pub(crate) fn work_units(&self) -> usize {
+        self.boxes.len().saturating_add(self.children.len()).max(1)
+    }
+
     /// Whether the arena is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {

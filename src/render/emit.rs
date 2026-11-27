@@ -58,9 +58,10 @@ pub(crate) struct BoundedSvg {
     failure: Option<SvgFailure>,
 }
 
-#[derive(Clone, Copy)]
 enum SvgFailure {
     Cancelled,
+    WorkLimit(usize),
+    Error(crate::error::Error),
     OutputLimit,
 }
 
@@ -76,6 +77,11 @@ impl BoundedSvg {
     pub(crate) fn finish(self) -> Result<String> {
         match self.failure {
             Some(SvgFailure::Cancelled) => Err(crate::error::Error::RequestCancelled),
+            Some(SvgFailure::WorkLimit(limit)) => Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Work,
+                limit,
+            }),
+            Some(SvgFailure::Error(error)) => Err(error),
             Some(SvgFailure::OutputLimit) => Err(crate::error::Error::OutputLimit {
                 limit: self.limits.max_bytes.unwrap_or(usize::MAX),
             }),
@@ -91,6 +97,17 @@ impl BoundedSvg {
             self.failure = Some(SvgFailure::Cancelled);
             return false;
         }
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.failure = Some(match error {
+                crate::error::Error::RequestCancelled => SvgFailure::Cancelled,
+                crate::error::Error::LimitExceeded {
+                    kind: crate::error::LimitKind::Work,
+                    limit,
+                } => SvgFailure::WorkLimit(limit),
+                error => SvgFailure::Error(error),
+            });
+            return false;
+        }
         if let Some(limit) = self.limits.max_bytes
             && self.output.len().saturating_add(additional) > limit
         {
@@ -104,8 +121,29 @@ impl BoundedSvg {
 impl SvgSink for BoundedSvg {
     #[inline]
     fn push_str(&mut self, value: &str) {
-        if self.check(value.len()) {
-            self.output.push_str(value);
+        const CHUNK_BYTES: usize = 1024;
+        if value.len() <= CHUNK_BYTES {
+            if self.check(value.len()) {
+                self.output.push_str(value);
+            }
+            return;
+        }
+
+        // Font outlines and text attributes can be much larger than the
+        // ordinary markup fragments. Keep cancellation and work accounting
+        // responsive while retaining UTF-8 boundaries.
+        let mut start = 0;
+        for (index, _) in value.char_indices() {
+            if index > start && index - start >= CHUNK_BYTES {
+                if !self.check(index - start) {
+                    return;
+                }
+                self.output.push_str(&value[start..index]);
+                start = index;
+            }
+        }
+        if start < value.len() && self.check(value.len() - start) {
+            self.output.push_str(&value[start..]);
         }
     }
 

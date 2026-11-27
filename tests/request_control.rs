@@ -607,6 +607,13 @@ fn controlled_svg_charges_layout_work_for_direct_and_prepared_outputs() {
         .prepare_render(&mathema::RenderOptions::default())
         .unwrap();
     let control = RequestControl::with_max_work(0);
+    let geometry = control.scope(|| prepared.geometry(&mathema::RenderOptions::default()));
+    assert!(
+        geometry.is_ok(),
+        "geometry should not scan the layout under control"
+    );
+
+    let control = RequestControl::with_max_work(0);
     let prepared_result =
         control.scope(|| prepared.to_svg_text(&mathema::RenderOptions::default()));
     assert!(matches!(
@@ -616,4 +623,46 @@ fn controlled_svg_charges_layout_work_for_direct_and_prepared_outputs() {
             limit: 0
         })
     ));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn bounded_svg_limits_cover_flat_and_nested_prepared_equations() {
+    use std::sync::atomic::Ordering;
+
+    for input in ["x + y + z", r#"\frac{a+b}{\sqrt{c^2+d^2}}"#] {
+        let parsed = mathema::from_latex(input).unwrap();
+        let error = parsed
+            .to_svg_with_svg_options_and_limits(
+                &mathema::SvgOptions::default(),
+                &mathema::SvgLimits::with_max_bytes(1),
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::OutputLimit { limit: 1 }));
+
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let limits = mathema::SvgLimits::default().with_cancellation(cancelled.clone());
+        let error = parsed
+            .to_svg_with_svg_options_and_limits(&mathema::SvgOptions::default(), &limits)
+            .unwrap_err();
+        assert!(matches!(error, Error::RequestCancelled));
+        cancelled.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn controlled_one_shot_svg_completes_with_a_generous_budget() {
+    let control = RequestControl::with_max_work(100_000);
+    let output = convert_with_control_and_limits(
+        r#"\frac{a+b}{\sqrt{c^2+d^2}}"#,
+        Format::LaTeX,
+        Format::Svg,
+        &Config::default(),
+        &control,
+        &OutputLimits::unlimited(),
+    )
+    .unwrap();
+    assert!(output.starts_with("<svg "));
+    assert!(control.work() > 0);
 }
