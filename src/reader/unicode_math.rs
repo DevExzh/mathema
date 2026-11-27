@@ -61,59 +61,57 @@ fn unquoted_chars(source: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     })
 }
 
-/// Index balanced parentheses by opening offset for lookups during parsing.
-fn paren_ends(source: &str) -> Vec<(usize, usize)> {
-    if !source.as_bytes().contains(&b'(') {
-        return Vec::new();
-    }
-    let mut ends = Vec::new();
-    let mut open: Vec<usize> = Vec::new();
-    for (index, character) in unquoted_chars(source) {
-        match character {
-            '(' => {
-                open.push(ends.len());
-                ends.push((index, 0));
-            },
-            ')' => {
-                if let Some(at) = open.pop() {
-                    ends[at].1 = index + 1;
-                }
-            },
-            _ => {},
-        }
-    }
-    ends.retain(|&(_, end)| end != 0);
-    ends
-}
-
-/// Index balanced curly braces by opening offset for lookups during parsing.
+/// Index balanced parentheses and curly braces by opening offset for lookups
+/// during parsing. Both indexes share one quote-aware scan so nested matching
+/// stays linear in the input length.
 ///
 /// A legacy one-sided cases spelling starts with a brace but has no matching
 /// closing brace. Keeping this index lets that spelling coexist with an
 /// ordinary braced group whose body starts with a matrix, without consuming
 /// the group's trailing atoms as part of the legacy form.
-fn brace_ends(source: &str) -> Vec<(usize, usize)> {
-    if !source.as_bytes().contains(&b'{') {
-        return Vec::new();
+fn delimiter_ends(source: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    if !source
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(*byte, b'(' | b'{'))
+    {
+        return (Vec::new(), Vec::new());
     }
-    let mut ends = Vec::new();
-    let mut open: Vec<usize> = Vec::new();
+    let mut parens = Vec::new();
+    let mut braces = Vec::new();
+    let mut paren_open: Vec<usize> = Vec::new();
+    let mut brace_open: Vec<usize> = Vec::new();
     for (index, character) in unquoted_chars(source) {
         match character {
+            '(' => {
+                paren_open.push(parens.len());
+                parens.push((index, 0));
+            },
+            ')' => {
+                if let Some(at) = paren_open.pop() {
+                    parens[at].1 = index + 1;
+                }
+            },
             '{' => {
-                open.push(ends.len());
-                ends.push((index, 0));
+                brace_open.push(braces.len());
+                braces.push((index, 0));
             },
             '}' => {
-                if let Some(at) = open.pop() {
-                    ends[at].1 = index + 1;
+                if let Some(at) = brace_open.pop() {
+                    braces[at].1 = index + 1;
                 }
             },
             _ => {},
         }
     }
-    ends.retain(|&(_, end)| end != 0);
-    ends
+    parens.retain(|&(_, end)| end != 0);
+    braces.retain(|&(_, end)| end != 0);
+    (parens, braces)
+}
+
+#[cfg(test)]
+fn paren_ends(source: &str) -> Vec<(usize, usize)> {
+    delimiter_ends(source).0
 }
 
 /// Find the top-level `&` in the body of an nth-root argument. UnicodeMath
@@ -352,12 +350,13 @@ fn abort_failure(input: &str) -> nom::Err<nom::error::Error<&str>> {
 
 impl CompactParser {
     fn new(source: &str, lead: usize, config: &Config) -> Self {
+        let (paren_ends, brace_ends) = delimiter_ends(source);
         Self {
             arena: AstArena::new(),
             source_len: source.len(),
             pairs: bars::pair_bars(source),
-            paren_ends: paren_ends(source),
-            brace_ends: brace_ends(source),
+            paren_ends,
+            brace_ends,
             failed_pairs: BTreeSet::new(),
             lead,
             strictness: config.strictness,

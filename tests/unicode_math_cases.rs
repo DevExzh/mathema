@@ -263,6 +263,19 @@ fn braced_matrix_keeps_trailing_atoms_inside_the_group() {
 }
 
 #[test]
+fn quoted_brace_does_not_close_legacy_cases() {
+    let source = "{■(x&x)\"}\"";
+    let parsed = from_unicode_math_with(source, &Config::default()).expect("parse");
+    assert!(parsed.to_mathml().unwrap().contains("<mtable"));
+    assert!(
+        parsed
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("legacy one-sided"))
+    );
+}
+
+#[test]
 fn unparsed_structured_input_reports_literal_text_recovery() {
     let result = from_unicode_math_with(
         "■(a#b)",
