@@ -382,7 +382,11 @@ fn fences_and_radicals_are_those_of_the_font() {
             0.850,
             0.350,
         ),
-        ("\\binom nk", Display, 2.072, 1.446, 0.946),
+        // LuaLaTeX/Latin Modern Math measures this at 2.350em ×
+        // (1.745em + 1.245em). The synthetic path's rounded layout box is
+        // 2.3553em × (1.7495em + 1.2495em), which the public SVG reference
+        // test checks with a 0.02em tolerance.
+        ("\\binom nk", Display, 2.355, 1.7495, 1.2495),
         ("\\genfrac[]{0pt}{}{a}{b}", Display, 1.585, 1.450, 0.950),
         ("\\sqrt x", Display, 1.405, 0.849, 0.191),
         ("\\sqrt x", Text, 1.405, 0.801, 0.239),
@@ -680,11 +684,17 @@ fn delimiters_of_binomials_have_fixed_sizes() {
         (
             "\\binom{\\frac{a}{b}}{\\frac{c}{d}}",
             MathStyle::Display,
-            2.146,
-            1.446,
-            1.038,
+            // LuaLaTeX measures 2.424em × (1.745em + 1.245em). The two
+            // synthetic parens add the same 3em target and round to the
+            // deterministic 2.4293em × (1.7495em + 1.2495em) box here.
+            2.429,
+            1.7495,
+            1.2495,
         ),
-        ("\\binom{n}{k}", MathStyle::Display, 2.072, 1.446, 0.946),
+        ("\\binom{n}{k}", MathStyle::Display, 2.355, 1.7495, 1.2495),
+        // Explicit style commands override the surrounding style, as in TeX.
+        ("\\dbinom{n}{k}", MathStyle::Text, 2.355, 1.7495, 1.2495),
+        ("\\tbinom{n}{k}", MathStyle::Display, 1.3382, 0.797, 0.352),
         (
             "\\left(\\frac{a}{b}\\right)",
             MathStyle::Display,

@@ -1,4 +1,9 @@
 use super::*;
+
+/// Display `\binom`/round `\genfrac` delimiters use TeX's size-3 glyphs.
+/// Other fenced zero-rule fractions keep the ordinary display delimiter
+/// minimum from [`TexParams`], as square-bracket `\genfrac` does.
+const DISPLAY_ROUND_GENFRAC_HEIGHT: f64 = 3.0;
 use crate::render::delimiter_paths;
 
 /// Returns true if `ch` is an extensible arrow character used by \xrightarrow etc.
@@ -658,8 +663,16 @@ pub(super) fn layout_fenced(
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
-        // TeX Rule 15e: fixed minimum delimiter height for fractions
-        if ctx.branch_style().is_display() {
+        // TeX Rule 15e: fixed minimum delimiter height for fractions. The
+        // round delimiters selected by `\binom`/round `\genfrac` use the
+        // display size-3 glyph in display style. Other delimiter characters
+        // retain their ordinary display minimum.
+        if ctx.branch_style().is_display()
+            && fence_char(open) == Some('(')
+            && fence_char(close) == Some(')')
+        {
+            DISPLAY_ROUND_GENFRAC_HEIGHT * ctx.size()
+        } else if ctx.branch_style().is_display() {
             ctx.params.delim1 * ctx.size()
         } else {
             ctx.params.delim2 * ctx.size()
@@ -824,7 +837,12 @@ pub(super) fn layout_fenced_arena(
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
-        if ctx.branch_style().is_display() {
+        if ctx.branch_style().is_display()
+            && fence_char(ast.str_val(open)) == Some('(')
+            && fence_char(ast.str_val(close)) == Some(')')
+        {
+            DISPLAY_ROUND_GENFRAC_HEIGHT * ctx.size()
+        } else if ctx.branch_style().is_display() {
             ctx.params.delim1 * ctx.size()
         } else {
             ctx.params.delim2 * ctx.size()

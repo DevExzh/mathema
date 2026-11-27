@@ -65,10 +65,9 @@ const SIGMA_NUM2: [f64; 3] = [0.394, 0.384, 0.387];
 const SIGMA_NUM3: [f64; 3] = [0.444, 0.471, 0.504];
 const SIGMA_DENOM1: [f64; 3] = [0.686, 0.752, 1.025];
 const SIGMA_DENOM2: [f64; 3] = [0.345, 0.344, 0.532];
-// The display delimiter minimum is 3em for amsmath's display `\binom` and
-// `\genfrac` fences. The smaller 2.39em value used here previously clipped
-// those delimiters against the LuaLaTeX/Latin Modern Math reference geometry.
-const SIGMA_DELIM1: [f64; 3] = [3.000, 1.700, 1.980];
+// TeX's ordinary display delimiter minimum. `\binom`'s round delimiters use
+// a separate 3em minimum in the fenced fraction layout.
+const SIGMA_DELIM1: [f64; 3] = [2.390, 1.700, 1.980];
 const SIGMA_DELIM2: [f64; 3] = [1.010, 1.157, 1.420];
 const XI_RULE: [f64; 3] = [0.040, 0.049, 0.049];
 const SIGMA_QUAD: [f64; 3] = [1.000, 1.171, 1.472];
