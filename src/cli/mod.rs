@@ -1140,6 +1140,7 @@ enum Input {
     File(PathBuf),
 }
 
+#[cfg(feature = "render")]
 #[derive(Clone, Copy)]
 struct InputOptions {
     from: Option<Format>,
