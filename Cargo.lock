@@ -1006,6 +1006,7 @@ dependencies = [
  "proptest",
  "quick-xml",
  "resvg",
+ "roxmltree 0.21.2",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

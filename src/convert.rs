@@ -334,6 +334,33 @@ impl ConvertResult {
         crate::writer::mathml::write_compact_validated(&self.compact.expr)
     }
 
+    /// Serialize to Presentation MathML using an explicit output profile.
+    ///
+    /// [`MathmlOptions::default`](crate::writer::mathml::MathmlOptions::default)
+    /// keeps Mathema's private round-trip attributes. Use
+    /// [`MathmlOptions::standard`](crate::writer::mathml::MathmlOptions::standard)
+    /// for schema-oriented MathML 3 output.
+    pub fn to_mathml_with_options(
+        &self,
+        options: &crate::writer::mathml::MathmlOptions,
+    ) -> Result<String> {
+        self.to_mathml_with_options_and_diagnostics(options)
+            .map(|(output, _)| output)
+    }
+
+    /// Serialize to Presentation MathML with an explicit output profile and
+    /// return diagnostics for information the profile cannot preserve.
+    pub fn to_mathml_with_options_and_diagnostics(
+        &self,
+        options: &crate::writer::mathml::MathmlOptions,
+    ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        crate::writer::mathml::MathmlWriter::write_with_options_trusted(
+            &self.compact.expr,
+            &self.config,
+            options,
+        )
+    }
+
     /// Serialize to LaTeX, also returning writer-side loss diagnostics: text
     /// that is no color in a color, control characters in text, font sizes.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).

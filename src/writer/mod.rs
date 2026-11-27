@@ -4,6 +4,7 @@ pub mod mtef;
 pub mod omml;
 mod sizes;
 pub mod unicode_math;
+pub(crate) mod xml_chars;
 
 use crate::ast::MathExpr;
 use crate::ast::arena::AstArena;

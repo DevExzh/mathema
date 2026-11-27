@@ -95,5 +95,6 @@ pub use render::{
     render_to_svg_standalone, render_to_svg_standalone_compact,
     render_to_svg_standalone_compact_arena,
 };
+pub use writer::mathml::{MathmlOptions, MathmlProfile};
 pub use writer::mtef::MtefWriteOptions;
 pub use writer::omml::{OmmlOptions, OmmlRunProperties};

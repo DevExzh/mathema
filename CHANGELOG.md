@@ -430,6 +430,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MathML and SVG: a character XML 1.0 cannot carry (a C0 control other than tab, line
+  feed and carriage return, or U+FFFE/U+FFFF; from `\char'23` for one) is written as
+  U+FFFD, with a diagnostic in MathML; the output was not well-formed XML. OMML
+  drops it with a diagnostic, as before.
 - Rendering: `to_svg_text` draws a displayed large operator at the size of the glyph
   the other outputs draw, in its box; it was 1.6 or 2 times the text glyph,
   over its limits and what followed.

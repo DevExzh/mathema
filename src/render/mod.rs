@@ -39,6 +39,7 @@ pub(crate) mod svg_writer;
 /// Embedded Latin Modern Math font data, shared between font-embed and raster features.
 pub(crate) static FONT_DATA: &[u8] = include_bytes!("fonts/LatinModernMath-Regular.otf");
 
+use crate::writer::xml_chars;
 use std::cell::RefCell;
 
 use crate::ast::compact::CompactExpr;
@@ -136,7 +137,9 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
         style::MathStyle::Text
     };
     let root = layout::layout_expr(expr, style, options);
-    Ok(emit::emit_svg(&root, options))
+    Ok(xml_chars::replace_non_xml_chars(emit::emit_svg(
+        &root, options,
+    )))
 }
 
 /// Render a compact math expression to an SVG string.
@@ -184,7 +187,7 @@ fn render_compact_svg(
     let render = |arena: &mut arena::LayoutArena| {
         arena.clear();
         let root = layout::LayoutBuilder::new(style, options).layout(arena, expr);
-        Ok(emit(arena, root, options))
+        Ok(xml_chars::replace_non_xml_chars(emit(arena, root, options)))
     };
     match arena {
         Some(arena) => render(arena),
@@ -213,7 +216,9 @@ pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Res
     let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants(&root);
     subset::add_variants(&mut glyphs, &variant_ids);
-    Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
+    Ok(xml_chars::replace_non_xml_chars(
+        svg_writer::emit_svg_with_fonts(&root, options, &glyphs),
+    ))
 }
 
 /// Render a compact expression to a standalone SVG with embedded font glyph paths.

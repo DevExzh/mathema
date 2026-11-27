@@ -77,6 +77,7 @@ tempfile = "3"
 serde_json = "1"
 resvg = "0.50"
 png = "0.18"
+roxmltree = "0.21"
 
 [features]
 default = ["cli"]

@@ -12,6 +12,7 @@
 //! default; such formatting is dropped with a diagnostic), WordprocessingML
 //! (`w:rPr`) or DrawingML (`a:rPr`).
 
+use super::xml_chars::is_xml_char;
 use std::collections::HashSet;
 
 use crate::ast::arena::AstArena;
@@ -1738,12 +1739,6 @@ struct Host {
     bold: bool,
     italic: bool,
     color: Option<[u8; 3]>,
-}
-
-/// XML 1.0 `Char` production (XML 1.0 §2.2).
-fn is_xml_char(c: char) -> bool {
-    matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}')
-        || c >= '\u{10000}'
 }
 
 /// Whether a lone glyph reads back from a plain OMML run with an operator

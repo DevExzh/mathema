@@ -4,10 +4,11 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::borrow::Cow;
 use std::io::Cursor;
 
+use super::xml_chars;
 use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
 use crate::writer::Writer as MathWriter;
 
@@ -93,6 +94,53 @@ fn mathml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     }
 }
 
+/// The amount of MathML metadata emitted by the writer.
+///
+/// [`RoundTrip`](Self::RoundTrip) keeps Mathema and MathJax metadata used to
+/// recover TeX spacing classes, sizes, and table provenance. [`Standard`](Self::Standard)
+/// removes that private metadata and canonicalizes colors that are outside the
+/// MathML 3 color grammar, making the result suitable for schema-oriented
+/// consumers. Standard output can lose formatting details that round-trip
+/// output preserves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum MathmlProfile {
+    /// Preserve Mathema's private round-trip metadata (the default).
+    #[default]
+    RoundTrip,
+    /// Emit MathML 3 Presentation markup without private attributes.
+    Standard,
+}
+
+/// Options for [`MathmlWriter`] and
+/// [`crate::convert::ConvertResult::to_mathml_with_options`].
+///
+/// The default retains the historical round-trip output. Use
+/// [`MathmlOptions::standard`] for a schema-oriented document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub struct MathmlOptions {
+    /// Output profile selected for the document.
+    pub profile: MathmlProfile,
+}
+
+impl MathmlOptions {
+    /// Return options for standard MathML 3 Presentation output.
+    #[must_use]
+    pub const fn standard() -> Self {
+        Self {
+            profile: MathmlProfile::Standard,
+        }
+    }
+
+    /// Select an output profile.
+    #[must_use]
+    pub const fn with_profile(mut self, profile: MathmlProfile) -> Self {
+        self.profile = profile;
+        self
+    }
+}
+
 pub struct MathmlWriter;
 
 impl MathWriter for MathmlWriter {
@@ -127,9 +175,13 @@ impl MathWriter for MathmlWriter {
             .map_err(to_err)?;
 
         let buf = writer.target.into_inner().into_inner();
-        String::from_utf8(buf).map_err(|e| {
-            crate::error::Error::Unsupported(format!("MathML output contained invalid UTF-8: {e}"))
-        })
+        String::from_utf8(buf)
+            .map(xml_chars::replace_non_xml_chars)
+            .map_err(|e| {
+                crate::error::Error::Unsupported(format!(
+                    "MathML output contained invalid UTF-8: {e}"
+                ))
+            })
     }
 
     fn write_compact_with_diagnostics(
@@ -154,6 +206,29 @@ impl MathmlWriter {
         write_compact_validated(expr)
     }
 
+    /// Write a compact expression with an explicit MathML output profile.
+    ///
+    /// The returned diagnostics include both ordinary AST-to-MathML loss and
+    /// details removed by the standard profile.
+    pub fn write_with_options(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MathmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_for_write(expr, config)?;
+        write_with_options_validated(expr, options)
+    }
+
+    /// Trusted counterpart of [`MathmlWriter::write_with_options`].
+    pub(crate) fn write_with_options_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MathmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        write_with_options_validated(expr, options)
+    }
+
     /// Trusted counterpart of [`Writer::write_compact_with_diagnostics`].
     pub(crate) fn write_compact_with_diagnostics_trusted(
         expr: &CompactExpr,
@@ -168,19 +243,244 @@ impl MathmlWriter {
 pub(crate) fn write_with_diagnostics_validated(
     expr: &CompactExpr,
 ) -> Result<(String, Vec<Diagnostic>)> {
-    let out = write_compact_validated(expr)?;
-    let diagnostics = super::collect_loss_diagnostics(expr, mathml_loss);
-    Ok((out, diagnostics))
+    write_with_options_validated(expr, &MathmlOptions::default())
+}
+
+fn write_with_options_validated(
+    expr: &CompactExpr,
+    options: &MathmlOptions,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let raw = write_compact_text(expr);
+    let replaced = xml_chars::has_non_xml_char(&raw);
+    let output = xml_chars::replace_non_xml_chars(raw);
+    let mut diagnostics = super::collect_loss_diagnostics(expr, mathml_loss);
+    if replaced {
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: xml_chars::REPLACED.into(),
+            span: None,
+        });
+    }
+    if options.profile == MathmlProfile::Standard {
+        let standardized = standardize_mathml(&output)?;
+        diagnostics.extend(standardized.diagnostics);
+        return Ok((standardized.output, diagnostics));
+    }
+    Ok((output, diagnostics))
 }
 
 /// Write an immutable expression whose arena and depth have already been checked.
 pub(crate) fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
+    Ok(xml_chars::replace_non_xml_chars(write_compact_text(expr)))
+}
+
+/// The MathML of a compact tree, before XML 1.0 character replacement.
+fn write_compact_text(expr: &CompactExpr) -> String {
     let buf = write_math_fast(expr, expr.arena.has_size_scale());
     // A size declaration the arena did not count.
     if buf.missed_size {
-        return Ok(write_math_fast(expr, true).target);
+        return write_math_fast(expr, true).target;
     }
-    Ok(buf.target)
+    buf.target
+}
+
+struct StandardizedMathml {
+    output: String,
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// Remove private attributes and repair values outside MathML 3's color type.
+/// Parsing the writer's own output through quick-xml keeps this cleanup tied
+/// to XML syntax rather than to fragile string matching.
+fn standardize_mathml(input: &str) -> Result<StandardizedMathml> {
+    let mut reader = quick_xml::Reader::from_str(input);
+    reader.config_mut().trim_text(false);
+    let mut writer = Writer::new(Cursor::new(Vec::with_capacity(input.len())));
+    let mut private = 0usize;
+    let mut scriptlevel = 0usize;
+    let mut colors = 0usize;
+    let mut wrapped_scriptlevel = Vec::new();
+    loop {
+        match reader.read_event().map_err(crate::error::Error::from)? {
+            Event::Start(start) => {
+                let (start, counts, wrapper) = standardize_start(&start)?;
+                private += counts.private;
+                scriptlevel += counts.scriptlevel;
+                colors += counts.colors;
+                if let Some(level) = wrapper.as_deref() {
+                    let mut style = BytesStart::new("mstyle");
+                    style.push_attribute(("scriptlevel", level));
+                    writer
+                        .write_event(Event::Start(style))
+                        .map_err(crate::error::Error::from)?;
+                }
+                writer
+                    .write_event(Event::Start(start))
+                    .map_err(crate::error::Error::from)?;
+                wrapped_scriptlevel.push(wrapper.is_some());
+            },
+            Event::Empty(start) => {
+                let (start, counts, wrapper) = standardize_start(&start)?;
+                private += counts.private;
+                scriptlevel += counts.scriptlevel;
+                colors += counts.colors;
+                if let Some(level) = wrapper.as_deref() {
+                    let mut style = BytesStart::new("mstyle");
+                    style.push_attribute(("scriptlevel", level));
+                    writer
+                        .write_event(Event::Start(style))
+                        .map_err(crate::error::Error::from)?;
+                }
+                writer
+                    .write_event(Event::Empty(start))
+                    .map_err(crate::error::Error::from)?;
+                if wrapper.is_some() {
+                    writer
+                        .write_event(Event::End(BytesEnd::new("mstyle")))
+                        .map_err(crate::error::Error::from)?;
+                }
+            },
+            Event::Eof => break,
+            Event::End(end) => {
+                writer
+                    .write_event(Event::End(end))
+                    .map_err(crate::error::Error::from)?;
+                if wrapped_scriptlevel.pop().unwrap_or(false) {
+                    writer
+                        .write_event(Event::End(BytesEnd::new("mstyle")))
+                        .map_err(crate::error::Error::from)?;
+                }
+            },
+            event => writer
+                .write_event(event)
+                .map_err(crate::error::Error::from)?,
+        }
+    }
+    let output = String::from_utf8(writer.into_inner().into_inner()).map_err(|error| {
+        crate::error::Error::Unsupported(format!("MathML output contained invalid UTF-8: {error}"))
+    })?;
+    let mut diagnostics = Vec::new();
+    if private != 0 {
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Info,
+            message: format!(
+                "standard MathML profile removed {private} private round-trip attribute{}",
+                if private == 1 { "" } else { "s" }
+            ),
+            span: None,
+        });
+    }
+    if scriptlevel != 0 {
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!(
+                "standard MathML profile removed {scriptlevel} scriptlevel attribute{} from non-mstyle elements",
+                if scriptlevel == 1 { "" } else { "s" }
+            ),
+            span: None,
+        });
+    }
+    if colors != 0 {
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!(
+                "standard MathML profile dropped {colors} unsupported mathcolor value{}",
+                if colors == 1 { "" } else { "s" }
+            ),
+            span: None,
+        });
+    }
+    Ok(StandardizedMathml {
+        output,
+        diagnostics,
+    })
+}
+
+#[derive(Default)]
+struct StandardizeCounts {
+    private: usize,
+    scriptlevel: usize,
+    colors: usize,
+}
+
+fn standardize_start(
+    start: &quick_xml::events::BytesStart<'_>,
+) -> Result<(
+    quick_xml::events::BytesStart<'static>,
+    StandardizeCounts,
+    Option<String>,
+)> {
+    let name = start.local_name().into_inner();
+    let mut output = quick_xml::events::BytesStart::new(name).into_owned();
+    let mut counts = StandardizeCounts::default();
+    let mut wrapper = None;
+    for attr in start.attributes().with_checks(false) {
+        let attr = attr.map_err(|error| crate::error::Error::Xml {
+            message: error.to_string(),
+        })?;
+        let key = attr.key.into_inner();
+        if key.starts_with("data-") {
+            counts.private += 1;
+            continue;
+        }
+        let value = attr
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+            .map_err(|error| crate::error::Error::Xml {
+                message: error.to_string(),
+            })?;
+        if key == "scriptlevel" {
+            if name == "mtable" {
+                if value.trim().parse::<i64>().is_ok() {
+                    wrapper = Some(value.into_owned());
+                } else {
+                    counts.scriptlevel += 1;
+                }
+                continue;
+            }
+            if name != "mstyle" {
+                counts.scriptlevel += 1;
+                continue;
+            }
+        }
+        if key == "mathcolor" && !is_mathml_color(&value) {
+            if let Some(rgb) = crate::css_colors::resolve_named_or_hex(&value) {
+                let canonical = crate::css_colors::rgb_to_hex(rgb);
+                output.push_attribute((key, canonical.as_str()));
+            } else {
+                counts.colors += 1;
+            }
+            continue;
+        }
+        output.push_attribute((key, value.as_ref()));
+    }
+    Ok((output, counts, wrapper))
+}
+
+fn is_mathml_color(value: &str) -> bool {
+    let value = value.trim_matches(|character| matches!(character, ' ' | '\t' | '\n' | '\r'));
+    let hex = value.strip_prefix('#');
+    if let Some(hex) = hex {
+        return matches!(hex.len(), 3 | 6) && hex.bytes().all(|byte| byte.is_ascii_hexdigit());
+    }
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "aqua"
+            | "black"
+            | "blue"
+            | "fuchsia"
+            | "gray"
+            | "green"
+            | "lime"
+            | "maroon"
+            | "navy"
+            | "olive"
+            | "purple"
+            | "red"
+            | "silver"
+            | "teal"
+            | "white"
+            | "yellow"
+    )
 }
 
 /// Sizes in points are seen against the size of ordinary text: say that on
