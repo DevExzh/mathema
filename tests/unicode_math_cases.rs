@@ -252,6 +252,17 @@ fn nested_and_adjacent_cases_remain_structured() {
 }
 
 #[test]
+fn braced_matrix_keeps_trailing_atoms_inside_the_group() {
+    for source in ["{■(x&x)xx}xxx", "{■(x&{y})xx}xxx", "x{■(a&b)}y"] {
+        let parsed = from_unicode_math_with(source, &Config::default()).expect("parse");
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(mathml.contains("<mtable"), "{source}: {mathml}");
+        assert!(!mathml.contains("<mtext>"), "{source}: {mathml}");
+        assert_eq!(parsed.to_unicode_math().unwrap(), source);
+    }
+}
+
+#[test]
 fn unparsed_structured_input_reports_literal_text_recovery() {
     let result = from_unicode_math_with(
         "■(a#b)",

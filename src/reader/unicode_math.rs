@@ -86,6 +86,36 @@ fn paren_ends(source: &str) -> Vec<(usize, usize)> {
     ends
 }
 
+/// Index balanced curly braces by opening offset for lookups during parsing.
+///
+/// A legacy one-sided cases spelling starts with a brace but has no matching
+/// closing brace. Keeping this index lets that spelling coexist with an
+/// ordinary braced group whose body starts with a matrix, without consuming
+/// the group's trailing atoms as part of the legacy form.
+fn brace_ends(source: &str) -> Vec<(usize, usize)> {
+    if !source.as_bytes().contains(&b'{') {
+        return Vec::new();
+    }
+    let mut ends = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for (index, character) in unquoted_chars(source) {
+        match character {
+            '{' => {
+                open.push(ends.len());
+                ends.push((index, 0));
+            },
+            '}' => {
+                if let Some(at) = open.pop() {
+                    ends[at].1 = index + 1;
+                }
+            },
+            _ => {},
+        }
+    }
+    ends.retain(|&(_, end)| end != 0);
+    ends
+}
+
 /// Find the top-level `&` in the body of an nth-root argument. UnicodeMath
 /// uses the same separator inside matrix and other grouped constructs, so only
 /// an ampersand outside all nested delimiters belongs to the root itself.
@@ -258,6 +288,8 @@ struct CompactParser {
     dead_walk: Vec<u64>,
     /// The balanced parentheses (see [`paren_ends`]).
     paren_ends: Vec<(usize, usize)>,
+    /// The balanced curly braces (see [`brace_ends`]).
+    brace_ends: Vec<(usize, usize)>,
     /// The paired bars and brackets (see [`bars`]).
     pairs: bars::Pairs,
     /// Offsets of pairs whose content does not parse.
@@ -325,6 +357,7 @@ impl CompactParser {
             source_len: source.len(),
             pairs: bars::pair_bars(source),
             paren_ends: paren_ends(source),
+            brace_ends: brace_ends(source),
             failed_pairs: BTreeSet::new(),
             lead,
             strictness: config.strictness,
@@ -380,6 +413,17 @@ impl CompactParser {
             .binary_search_by_key(&at, |&(open, _)| open)
             .ok()?;
         Some(self.paren_ends[found].1 - at)
+    }
+
+    /// The byte index just after the `}` that closes a brace at `input`.
+    fn matching_brace_end(&self, input: &str) -> Option<usize> {
+        debug_assert!(input.starts_with('{'));
+        let at = self.offset(input);
+        let found = self
+            .brace_ends
+            .binary_search_by_key(&at, |&(open, _)| open)
+            .ok()?;
+        Some(self.brace_ends[found].1 - at)
     }
 
     /// Push a node, enforcing [`Config::max_nodes`]. Past the limit the node
@@ -1769,13 +1813,17 @@ impl CompactParser {
         let rest = input.strip_prefix('{').ok_or_else(|| {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
         })?;
-        let (after, array) = self.parse_matrix(rest)?;
-        if after.starts_with('}') {
+        // A matching brace means this is an ordinary grouped expression. In
+        // particular, `{■(a&b)xy}z` must keep `xy` inside the group. The
+        // legacy one-sided cases spelling is only available when the opening
+        // brace is genuinely unmatched.
+        if self.matching_brace_end(input).is_some() {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Verify,
             )));
         }
+        let (after, array) = self.parse_matrix(rest)?;
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
         let content = self.arena.push_children_deferred(&[array]);
