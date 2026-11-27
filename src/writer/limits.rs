@@ -12,7 +12,7 @@ pub struct OutputLimits {
     /// Maximum UTF-8 bytes retained by a text writer. `None` is unbounded.
     pub max_bytes: Option<usize>,
     cancelled: Option<Arc<AtomicBool>>,
-    request_cancelled: Option<Arc<AtomicBool>>,
+    request_cancelled: Vec<Arc<AtomicBool>>,
 }
 
 impl OutputLimits {
@@ -22,7 +22,7 @@ impl OutputLimits {
         Self {
             max_bytes: None,
             cancelled: None,
-            request_cancelled: None,
+            request_cancelled: Vec::new(),
         }
     }
 
@@ -32,7 +32,7 @@ impl OutputLimits {
         Self {
             max_bytes: Some(max_bytes),
             cancelled: None,
-            request_cancelled: None,
+            request_cancelled: Vec::new(),
         }
     }
 
@@ -79,11 +79,9 @@ impl OutputLimits {
 
     /// Share cancellation with a [`RequestControl`](crate::RequestControl).
     #[must_use]
-    pub fn with_request_control(self, control: &crate::RequestControl) -> Self {
-        Self {
-            request_cancelled: Some(control.cancellation_handle()),
-            ..self
-        }
+    pub fn with_request_control(mut self, control: &crate::RequestControl) -> Self {
+        self.request_cancelled.push(control.cancellation_handle());
+        self
     }
 
     #[inline]
@@ -93,8 +91,8 @@ impl OutputLimits {
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
             || self
                 .request_cancelled
-                .as_ref()
-                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                .iter()
+                .any(|flag| flag.load(Ordering::Relaxed))
     }
 }
 

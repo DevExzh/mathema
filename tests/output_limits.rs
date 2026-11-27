@@ -99,6 +99,33 @@ fn bounded_writer_stops_at_a_small_limit_and_cancellation() {
 }
 
 #[test]
+fn output_limits_retain_all_composed_request_controls() {
+    let parsed = from_latex("x+y").unwrap();
+    let first = RequestControl::new();
+    let second = RequestControl::new();
+    let limits = OutputLimits::unlimited()
+        .with_request_control(&first)
+        .with_request_control(&second);
+
+    first.cancel();
+    assert!(matches!(
+        MathmlWriter::write_compact_with_limits(parsed.compact_expr(), &Config::default(), &limits),
+        Err(mathema::Error::RequestCancelled)
+    ));
+
+    let first = RequestControl::new();
+    let second = RequestControl::new();
+    let limits = OutputLimits::unlimited()
+        .with_request_control(&first)
+        .with_request_control(&second);
+    second.cancel();
+    assert!(matches!(
+        MathmlWriter::write_compact_with_limits(parsed.compact_expr(), &Config::default(), &limits),
+        Err(mathema::Error::RequestCancelled)
+    ));
+}
+
+#[test]
 fn public_bounded_writers_validate_caller_compact_arenas() {
     let mut arena = AstArena::new();
     let root = arena.push_node(CompactNode::Identifier(StrId::EMPTY));
