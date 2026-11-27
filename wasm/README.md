@@ -82,8 +82,10 @@ not move work off the WebAssembly thread. Use a Web Worker when parsing must
 not block the browser main thread.
 
 The repository's web CI runs `wasm/check-generated-types.mjs` against the
-wasm-pack declaration and `wasm/smoke.mjs` against the generated package. The
-same checks can be run locally with `node` after a build:
+wasm-pack declaration. That check reads the Rust `MathNode` and `MathExpr`
+models, verifies their serde-visible variants and fields, and checks the
+generated method signatures. `wasm/smoke.mjs` exercises the generated package.
+The same checks can be run locally with `node` after a build:
 
 ```bash
 node wasm/check-generated-types.mjs web/src/lib/wasm/mathema.d.ts
