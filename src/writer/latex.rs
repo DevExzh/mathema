@@ -1870,8 +1870,17 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // argument or another interchange format, so keep that argument
             // as one TeX atom. `\mathinner` is a grouping atom with no visible
             // delimiters and gives the writer a stable, package-free spelling.
-            let grouped_row = matches!(*arena.node(base), CompactNode::Row(span) if arena.children(span).len() > 1 && !is_idotsint_row(arena, base));
-            if grouped_row {
+            let grouped_base = match *arena.node(base) {
+                CompactNode::Row(span) => {
+                    arena.children(span).len() > 1 && !is_idotsint_row(arena, base)
+                },
+                // A nested leading-script node begins with its own empty-base
+                // script. Without an atom boundary the outer script can be
+                // detached when TeX reparses the nested group.
+                CompactNode::PreScripts { .. } => has_visible_prescripts(arena, base),
+                _ => false,
+            };
+            if grouped_base {
                 buf.push_str("\\mathinner{");
             }
             // The base is written as a sequence of one node, as in a row,
@@ -1880,7 +1889,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 CompactNode::Row(span) => write_nodes(buf, arena, span),
                 _ => write_node_slice(buf, arena, &[base], false),
             }
-            if grouped_row {
+            if grouped_base {
                 buf.push('}');
             }
             if !bare_space_base {

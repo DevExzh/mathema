@@ -148,6 +148,7 @@ fn multi_atom_prescripts_keep_their_base_group_on_latex_rewrite() {
         r"\prescript{a}{b}{V+c}",
         r"\prescript{a}{b}{V_{i}c}",
         r"\prescript{a}{b}{\frac{a}{b}c}",
+        r"\prescript{a}{b}{\prescript{c}{d}{X}}",
     ] {
         let original = from_latex(source).unwrap();
         let first = original.to_latex().unwrap();
