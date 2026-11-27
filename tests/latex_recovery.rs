@@ -142,6 +142,30 @@ fn supported_prescript_and_unicode_math_accents_round_trip_structurally() {
 }
 
 #[test]
+fn multi_atom_prescripts_keep_their_base_group_on_latex_rewrite() {
+    for source in [
+        r"\prescript{a}{b}{Vc}",
+        r"\prescript{a}{b}{V+c}",
+        r"\prescript{a}{b}{V_{i}c}",
+        r"\prescript{a}{b}{\frac{a}{b}c}",
+    ] {
+        let original = from_latex(source).unwrap();
+        let first = original.to_latex().unwrap();
+        let rewritten = from_latex(&first).unwrap();
+        assert_eq!(
+            rewritten.to_latex().unwrap(),
+            first,
+            "LaTeX rewrite is not stable for {source:?}: {first:?}"
+        );
+        assert_eq!(
+            rewritten.to_mathml().unwrap(),
+            original.to_mathml().unwrap(),
+            "prescript base changed for {source:?}: {first:?}"
+        );
+    }
+}
+
+#[test]
 fn incomplete_fraction_recovery_does_not_swallow_node_limits() {
     let config = lenient().with_max_nodes(Some(1));
     let result = from_latex_with(r"\frac{1", &config);

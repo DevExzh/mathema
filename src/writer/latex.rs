@@ -1864,11 +1864,24 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 write_identifier_text(buf, rest);
                 return;
             }
+            // `{}^a{V+c}` attaches the empty-base script to `V` when TeX
+            // reads the group as an ordinary math list. A `PreScripts` base
+            // can contain several atoms because it came from a command
+            // argument or another interchange format, so keep that argument
+            // as one TeX atom. `\mathinner` is a grouping atom with no visible
+            // delimiters and gives the writer a stable, package-free spelling.
+            let grouped_row = matches!(*arena.node(base), CompactNode::Row(span) if arena.children(span).len() > 1 && !is_idotsint_row(arena, base));
+            if grouped_row {
+                buf.push_str("\\mathinner{");
+            }
             // The base is written as a sequence of one node, as in a row,
             // so that its own scripts are braced as there.
             match *arena.node(base) {
                 CompactNode::Row(span) => write_nodes(buf, arena, span),
                 _ => write_node_slice(buf, arena, &[base], false),
+            }
+            if grouped_row {
+                buf.push('}');
             }
             if !bare_space_base {
                 buf.push('}');
