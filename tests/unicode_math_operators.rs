@@ -4,7 +4,9 @@
 //! (sections 2.1 and 4.1), function names in an n-aryand (sections 3.4 and
 //! 3.5) and the space characters of section 3.16.
 
-use mathema::{Format, convert};
+use mathema::ast::{MathExpr, MathNode, Rational};
+use mathema::writer::Writer;
+use mathema::{Config, Format, convert};
 
 fn unicode_math(input: &str) -> String {
     convert(input, Format::UnicodeMath, Format::UnicodeMath).unwrap()
@@ -323,6 +325,111 @@ fn a_thin_space_keeps_the_differential_apart() {
     let mathml = mathml_body(&unicode, Format::UnicodeMath);
     assert!(mathml.contains("<mspace"), "{mathml}");
     assert!(!mathml.contains("xdx"), "{mathml}");
+}
+
+#[test]
+fn unicode_math_preserves_a_two_em_space() {
+    let parsed = mathema::from_latex(r"x\qquad y").unwrap();
+    let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();
+    assert_eq!(written, "x\u{2003}\u{2003}y");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("space width")),
+        "{diagnostics:?}"
+    );
+    let reparsed = mathema::from_unicode_math(&written).unwrap();
+    let body = mathml_body(&written, Format::UnicodeMath);
+    assert_eq!(
+        body,
+        r#"<mi>x</mi><mspace width="1em"/><mspace width="1em"/><mi>y</mi>"#
+    );
+    assert_eq!(reparsed.to_unicode_math().unwrap(), written);
+}
+
+#[test]
+fn unicode_math_preserves_a_fractional_width_just_over_one_em() {
+    let expr = MathExpr::inline(vec![
+        MathNode::Identifier("x".into()),
+        MathNode::Space(Rational::new(37, 36)),
+        MathNode::Identifier("y".into()),
+    ]);
+    let written =
+        mathema::writer::unicode_math::UnicodeMathWriter::write(&expr, &Config::default()).unwrap();
+    assert_eq!(
+        written.chars().filter(|&ch| ch != 'x' && ch != 'y').count(),
+        3
+    );
+    for glyph in ['\u{2002}', '\u{00A0}', '\u{2005}'] {
+        assert_eq!(
+            written.chars().filter(|&ch| ch == glyph).count(),
+            1,
+            "{glyph:?}"
+        );
+    }
+}
+
+#[test]
+fn unicode_math_keeps_canonical_single_glyph_space_spellings() {
+    for (width, glyph) in [
+        (Rational::new(1, 1), '\u{2003}'),
+        (Rational::new(1, 2), '\u{2002}'),
+        (Rational::new(1, 4), '\u{00A0}'),
+        (Rational::new(1, 6), '\u{2009}'),
+    ] {
+        let expr = MathExpr::inline(vec![MathNode::Space(width)]);
+        let written =
+            mathema::writer::unicode_math::UnicodeMathWriter::write(&expr, &Config::default())
+                .unwrap();
+        assert_eq!(written, glyph.to_string(), "{width}");
+    }
+}
+
+#[test]
+fn unicode_math_reports_an_unrepresentable_space_width() {
+    let parsed =
+        mathema::from_mathml(r#"<math><mi>x</mi><mspace width="0.4em"/><mi>y</mi></math>"#)
+            .unwrap();
+    let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();
+    assert_eq!(written, "x\u{2009}y");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("space width 2/5em")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn unicode_math_reports_dropped_upright_style() {
+    let parsed = mathema::from_latex(r"\mathrm{d}x").unwrap();
+    let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();
+    assert_eq!(written, "dx");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("upright math alphabet")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn unicode_math_groups_compound_mathop_bases_before_scripts() {
+    let parsed = mathema::from_latex(r"\mathop{\mathrm{Res}}_{x} f").unwrap();
+    let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();
+    assert_eq!(written, "〖Res〗_x f");
+    let reparsed = mathema::from_unicode_math(&written).unwrap();
+    let reparsed_mathml = reparsed.to_mathml().unwrap();
+    assert!(
+        reparsed_mathml.contains("<msub><mrow><mi>R</mi><mi>e</mi><mi>s</mi></mrow>"),
+        "the group must keep the whole operator as the scripted base: {reparsed_mathml}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("movable lower bound")),
+        "{diagnostics:?}"
+    );
 }
 
 /// A script that is only a sign is set apart from an operand after it.

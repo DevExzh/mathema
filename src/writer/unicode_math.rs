@@ -12,6 +12,13 @@ use crate::writer::Writer as MathWriter;
 /// round-trippably represent. UnicodeMath is a lossy linear notation.
 fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
+        CompactNode::Styled(TextStyle::Normal, span)
+            if styled_content_has_identifier(arena, *span) => Some(
+                "UnicodeMath cannot represent an upright math alphabet for an identifier; the content was written without its upright style".into(),
+            ),
+        CompactNode::Space(width) if unicode_space_is_approximate(*width) => Some(format!(
+            "UnicodeMath cannot represent explicit space width {width}em exactly; the output uses a bounded approximation"
+        )),
         CompactNode::Reflect { .. } => {
             Some("UnicodeMath writes the content of a reflected box without mirroring it".into())
         },
@@ -56,6 +63,43 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
             "UnicodeMath uses a subscript for a movable lower bound; placement depends on its base".into(),
         ),
         _ => None,
+    }
+}
+
+fn unicode_space_is_approximate(width: Rational) -> bool {
+    if width.num < 0 {
+        return true;
+    }
+    width.num != 0
+        && unicode_space_units(width).is_none_or(|units| unicode_space_parts(units).is_none())
+}
+
+/// Whether a styled run contains an identifier whose upright math alphabet is
+/// observable in presentation MathML. Ordinary variables are italic by
+/// default, while UnicodeMath has no general escape for an upright Latin or
+/// Greek identifier. Symbols and numbers do not need this warning because
+/// their UnicodeMath spelling already carries the relevant glyph semantics.
+fn styled_content_has_identifier(arena: &AstArena, span: crate::ast::compact::NodeSpan) -> bool {
+    arena
+        .children(span)
+        .iter()
+        .copied()
+        .any(|id| styled_node_has_identifier(arena, id))
+}
+
+fn styled_node_has_identifier(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Identifier(_) => true,
+        CompactNode::Row(inner) => styled_content_has_identifier(arena, inner),
+        CompactNode::Styled(TextStyle::Normal, inner) => {
+            styled_content_has_identifier(arena, inner)
+        },
+        CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
+            styled_node_has_identifier(arena, content)
+        },
+        _ => false,
     }
 }
 
@@ -179,38 +223,23 @@ impl CompactVisitor for UnicodeMathLossVisitor {
     }
 }
 
-fn write_unicode_space(out: &mut String, em: f64) {
+fn write_unicode_space(out: &mut String, width: Rational) {
     // UnicodeMath has no negative space (LaTeX `\!`): it is dropped rather
     // than written as a positive one. The zero-width space (UTN #28 section
     // 3.16) keeps the letters around it apart.
-    if em <= 0.0 {
+    if width.num <= 0 {
         out.push(ZERO_WIDTH_SPACE);
         return;
     }
-    // UTN #28 section 3.16: the space characters with a width of 1, 3, 4,
-    // 5, 6 or 9 eighteenths of an em, and the no-break space (the reader's
-    // widths).
-    if (em - 0.25).abs() < 1e-6 {
-        out.push('\u{00A0}');
+    // The one-em character is repeatable.  Emit an exact sequence whenever
+    // the width is representable by the UTN #28 space characters, so a
+    // `\qquad` (2em) does not silently become a single em.
+    if let Some(units) = unicode_space_units(width)
+        && write_exact_unicode_space(out, units)
+    {
         return;
     }
-    let eighteenths = em * 18.0;
-    if (eighteenths - eighteenths.round()).abs() < 1e-6 {
-        let exact = match eighteenths.round() as i64 {
-            1 => Some('\u{200A}'),
-            3 => Some('\u{2009}'),
-            4 => Some('\u{205F}'),
-            5 => Some('\u{2005}'),
-            6 => Some('\u{2004}'),
-            9 => Some('\u{2002}'),
-            18 => Some('\u{2003}'),
-            _ => None,
-        };
-        if let Some(space) = exact {
-            out.push(space);
-            return;
-        }
-    }
+    let em = width.as_f64();
     if em >= 1.0 {
         out.push('\u{2003}');
     } else if em >= 0.5 {
@@ -218,6 +247,99 @@ fn write_unicode_space(out: &mut String, em: f64) {
     } else {
         out.push('\u{2009}');
     }
+}
+
+/// Write a non-negative width in thirty-sixths of an em. The available
+/// UnicodeMath widths are 1/18, 1/6, 2/9, 5/18, 1/3, 1/4, 1/2 and 1 em.
+/// The bounded decomposition keeps the common one-character spellings
+/// unchanged.
+fn write_exact_unicode_space(out: &mut String, units: u32) -> bool {
+    let Some(parts) = unicode_space_parts(units) else {
+        return false;
+    };
+
+    for glyph in parts {
+        out.push(glyph);
+    }
+    true
+}
+
+fn unicode_space_units(width: Rational) -> Option<u32> {
+    if width.num <= 0 {
+        return None;
+    }
+    let scaled = i128::from(width.num) * 36;
+    let denominator = i128::from(width.den);
+    if scaled % denominator != 0 {
+        return None;
+    }
+    let units = scaled / denominator;
+    (units <= i128::from(36 * 64)).then_some(u32::try_from(units).ok()?)
+}
+
+/// Find a short exact spelling for a positive width in thirty-sixths of an
+/// em. Most widths split into whole ems plus a sub-em remainder. An odd
+/// remainder just over an em can borrow one whole em, as in 37/36em = 1/2 +
+/// 1/4 + 5/18. The dynamic program only covers the small remainder range.
+fn unicode_space_parts(units: u32) -> Option<SmallVec<[char; 8]>> {
+    let whole = units / 36;
+    let remainder = units % 36;
+    let mut result = SmallVec::new();
+    if let Some(parts) = unicode_space_remainder(remainder) {
+        result.extend(std::iter::repeat_n('\u{2003}', whole as usize));
+        result.extend(parts);
+        return Some(result);
+    }
+    if whole == 0 {
+        return None;
+    }
+    let parts = unicode_space_remainder(remainder + 36)?;
+    result.extend(std::iter::repeat_n('\u{2003}', (whole - 1) as usize));
+    result.extend(parts);
+    Some(result)
+}
+
+fn unicode_space_remainder(units: u32) -> Option<SmallVec<[char; 8]>> {
+    const WIDTHS: &[(usize, char)] = &[
+        (18, '\u{2002}'), // en space, 1/2 em
+        (12, '\u{2004}'), // three-per-em space, 1/3 em
+        (10, '\u{2005}'), // four-per-em space, 5/18 em
+        (9, '\u{00A0}'),  // no-break space, 1/4 em
+        (8, '\u{205F}'),  // medium mathematical space, 2/9 em
+        (6, '\u{2009}'),  // thin space, 1/6 em
+        (2, '\u{200A}'),  // hair space, 1/18 em
+    ];
+    let target = usize::try_from(units).ok()?;
+    if target > 71 {
+        return None;
+    }
+    let mut best = [u8::MAX; 72];
+    let mut predecessor = [u8::MAX; 72];
+    best[0] = 0;
+    for value in 1..=target {
+        for (index, (width, _)) in WIDTHS.iter().enumerate() {
+            if *width <= value && best[value - width] != u8::MAX {
+                let candidate = best[value - width] + 1;
+                if candidate < best[value] {
+                    best[value] = candidate;
+                    predecessor[value] = index as u8;
+                }
+            }
+        }
+    }
+    if best[target] == u8::MAX {
+        return None;
+    }
+    let mut result = SmallVec::new();
+    let mut value = target;
+    while value > 0 {
+        let index = usize::from(predecessor[value]);
+        let (width, glyph) = WIDTHS[index];
+        result.push(glyph);
+        value -= width;
+    }
+    result.reverse();
+    Some(result)
 }
 
 impl MathWriter for UnicodeMathWriter {
@@ -384,12 +506,12 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_) | MathNode::LineBreak => {},
         MathNode::Attributed { content, .. } => write_node(out, content, style),
         MathNode::Space(r) => {
-            write_unicode_space(out, r.as_f64());
+            write_unicode_space(out, *r);
         },
         MathNode::ExplicitSpace { width, basis } => {
             write_unicode_space(
                 out,
-                crate::ast::style::local_space_width(*width, Some(*basis), style).as_f64(),
+                crate::ast::style::local_space_width(*width, Some(*basis), style),
             );
         },
         MathNode::Rule { .. } => {},
@@ -1123,7 +1245,54 @@ fn needs_side_group(name: &str, limits: LimitStyle) -> bool {
             .is_some_and(|(word, default)| word == name && default != LimitStyle::SubSup)
 }
 
+/// A compound `\mathop{...}` body must be an invisible UnicodeMath group
+/// before a script. Without it, `Res_x` is parsed as a subscript on only the
+/// final `s` of the operator name.
+fn operator_body_needs_group(node: &MathNode, style: MathStyle) -> bool {
+    match select_mathchoice(node, style) {
+        MathNode::Identifier(name) | MathNode::Symbol(_, name) => name.chars().nth(1).is_some(),
+        MathNode::Number(_) | MathNode::Operator(_) => false,
+        MathNode::Styled(_, children) | MathNode::Row(children) => {
+            children.len() != 1 || operator_body_needs_group(&children[0], style)
+        },
+        MathNode::Color { content, .. }
+        | MathNode::MathAtom { content, .. }
+        | MathNode::StructuredOperator { content, .. } => operator_body_needs_group(content, style),
+        _ => true,
+    }
+}
+
+fn operator_body_needs_group_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    match *arena.node(select_mathchoice_c(arena, id, style)) {
+        CompactNode::Identifier(sid) | CompactNode::Symbol(_, sid) => {
+            arena.str_val(sid).chars().nth(1).is_some()
+        },
+        CompactNode::Number(_) | CompactNode::Operator { .. } => false,
+        CompactNode::Styled(_, span) | CompactNode::Row(span) => {
+            let children = arena.children(span);
+            children.len() != 1 || operator_body_needs_group_c(arena, children[0], style)
+        },
+        CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
+            operator_body_needs_group_c(arena, content, style)
+        },
+        _ => true,
+    }
+}
+
 fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
+    if let MathNode::MathAtom {
+        atom_type: MathAtomType::Op,
+        content,
+    } = node
+        && operator_body_needs_group(content, style)
+    {
+        out.push('〖');
+        write_node(out, node, style);
+        out.push('〗');
+        return;
+    }
     match select_mathchoice(node, style) {
         MathNode::Operator(attr) if needs_side_group(&attr.name, attr.limit_style) => {
             out.push('〖');
@@ -3025,10 +3194,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         CompactNode::Text(_, sid) => write_quoted_text(out, arena.str_val(sid)),
         CompactNode::Space(r) => {
             let basis = arena.space_basis(id);
-            write_unicode_space(
-                out,
-                crate::ast::style::local_space_width(r, basis, style).as_f64(),
-            );
+            write_unicode_space(out, crate::ast::style::local_space_width(r, basis, style));
         },
 
         CompactNode::Row(span) => write_nodes_c_with_style(out, arena, span, style),
@@ -3714,6 +3880,17 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
 }
 
 fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    if let CompactNode::MathAtom {
+        atom_type: MathAtomType::Op,
+        content,
+    } = *arena.node(id)
+        && operator_body_needs_group_c(arena, content, style)
+    {
+        out.push('〖');
+        write_node_c(out, arena, id, style);
+        out.push('〗');
+        return;
+    }
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Operator { name, limits } if needs_side_group(arena.str_val(name), limits) => {
             out.push('〖');
