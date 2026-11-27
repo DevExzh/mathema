@@ -54,6 +54,13 @@ fn svg_width(svg: &str) -> f64 {
         .expect("SVG width")
 }
 
+fn svg_height(svg: &str) -> f64 {
+    svg.split_once("height=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .and_then(|(height, _)| height.parse().ok())
+        .expect("SVG height")
+}
+
 fn structured(content: MathNode) -> MathExpr {
     MathExpr::inline(vec![MathNode::StructuredOperator {
         content: Box::new(content),
@@ -869,6 +876,33 @@ fn svg_trig_functions() {
 fn svg_display_mode_sum() {
     let svg = latex_to_svg(r"\displaystyle\sum_{i=1}^{n} x_i");
     assert_valid_svg(&svg, "display sum");
+}
+
+/// The expected dimensions come from the LuaLaTeX/Latin Modern Math reference
+/// in `target/review/render-layout/metrics_compare.tsv` (`binom`, display and
+/// text rows). The SVG adds 0.08em padding on each side, so remove that padding
+/// before comparing the public renderer's dimensions. A 0.02em tolerance keeps
+/// the regression independent of the decimal serialization precision while
+/// catching the former undersized display delimiters.
+#[test]
+fn binomial_display_delimiters_match_reference_geometry() {
+    let display = latex_to_svg(r"\displaystyle\binom{n}{k}");
+    let text = latex_to_svg(r"\textstyle\binom{n}{k}");
+    let em = 16.0;
+    let display_width = svg_width(&display) / em - 2.0 * 0.08;
+    let display_height = svg_height(&display) / em - 2.0 * 0.08;
+    let text_width = svg_width(&text) / em - 2.0 * 0.08;
+    let text_height = svg_height(&text) / em - 2.0 * 0.08;
+    let close = |actual: f64, expected: f64| {
+        assert!(
+            (actual - expected).abs() <= 0.02,
+            "{actual:.4}em is outside {expected:.4}em reference"
+        );
+    };
+    close(display_width, 2.3500);
+    close(display_height, 2.9900);
+    close(text_width, 1.3382);
+    close(text_height, 0.7970 + 0.3520);
 }
 
 // =========================================================================
