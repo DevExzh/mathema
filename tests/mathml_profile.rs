@@ -141,16 +141,22 @@ fn standard_profile_validates_with_external_mathml_schema() {
         "xmllint is not installed"
     );
     let temp = tempfile::tempdir().unwrap();
-    for (index, source) in [
+    let latex_sources = [
         r"\boxed{\frac{a_1}{b^2}}",
         r"\colorbox{#f00}{x^2}+\color{blue}{\frac{a}{b}}",
         r"\colorbox{#ff0000}{x}+\fcolorbox{blue}{red}{y}",
         r"\begin{smallmatrix}a&\color{red}{b}\\c&d\end{smallmatrix}",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let output = from_latex(source)
+    ];
+    let mathml_sources = [
+        r#"<math><mfrac bevelled="true"><mi>a</mi><mi>b</mi></mfrac></math>"#,
+        r#"<math><mfenced separators=" ; |"><mi>a</mi><mi>b</mi><mi>c</mi></mfenced></math>"#,
+    ];
+    let parsed = latex_sources
+        .into_iter()
+        .map(|s| (s, from_latex(s)))
+        .chain(mathml_sources.into_iter().map(|s| (s, from_mathml(s))));
+    for (index, (source, expr)) in parsed.enumerate() {
+        let output = expr
             .unwrap()
             .to_mathml_with_options(&MathmlOptions::standard())
             .unwrap();

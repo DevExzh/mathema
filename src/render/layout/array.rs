@@ -609,7 +609,7 @@ pub(super) fn layout_array_arena(
     col_aligns: NodeSpan,
     cells: NodeSpan,
     num_cols: u16,
-    arraystretch_pct: u8,
+    arraystretch: f64,
     add_jot: bool,
     col_seps: u32,
     row_seps: u32,
@@ -620,7 +620,6 @@ pub(super) fn layout_array_arena(
 ) -> LayoutBoxId {
     let size = ctx.size();
     // KaTeX strut-based row spacing (no explicit inter-row gap)
-    let arraystretch = arraystretch_pct as f64 / 100.0;
     let (arstrut_height, arstrut_depth) = array_strut(smallmatrix, size, arraystretch);
     let jot = 0.3 * size;
 

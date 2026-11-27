@@ -408,6 +408,38 @@ impl<'a> MathmlCompactParser<'a> {
         }
     }
 
+    fn fenced_content(&mut self, children: &[NodeId], separators: &str) -> Result<NodeSpan> {
+        // MathML 3 §3.3.8.2 ignores XML whitespace and repeats the last
+        // separator. Only the gaps between actual arguments need decoding.
+        if children.len() < 2 {
+            return self.arena.push_children(children);
+        }
+        let mut separators = separators
+            .chars()
+            .filter(|c| !matches!(c, ' ' | '\t' | '\n' | '\r'));
+        let Some(first) = separators.next() else {
+            return self.arena.push_children(children);
+        };
+        if children.len() > AstArena::MAX_CHILDREN.div_ceil(2) {
+            return Err(table_length_error());
+        }
+        let mut expanded = SmallVec::<[NodeId; 8]>::with_capacity(2 * children.len() - 1);
+        let mut separator = first;
+        expanded.push(children[0]);
+        for (index, &child) in children[1..].iter().enumerate() {
+            if index > 0 {
+                separator = separators.next().unwrap_or(separator);
+            }
+            let text = self.arena.push_str(separator.encode_utf8(&mut [0; 4]));
+            let punctuation = self
+                .arena
+                .push_node(CompactNode::Symbol(SymbolKind::Punctuation, text));
+            self.arena.check_limits()?;
+            expanded.extend([punctuation, child]);
+        }
+        self.arena.push_children(&expanded)
+    }
+
     fn collect_remaining(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
@@ -1520,6 +1552,12 @@ impl<'a> MathmlCompactParser<'a> {
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
         self.sized_operator |= attrs.has_size;
+        if attrs.separator {
+            let sid = self.arena.push_str(name);
+            return self
+                .arena
+                .push_node(CompactNode::Symbol(SymbolKind::Punctuation, sid));
+        }
         // MathJax writes `\big(` as an `<mo>` fixed at one of the TeX sizes.
         if let Some(factor) = attrs.big_delim_factor()
             && big_delim_glyph(name)
@@ -1631,6 +1669,17 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
+        match name {
+            "mstack" | "mlongdiv" | "msgroup" | "msrow" | "mscarries" | "mscarry" | "msline" => {
+                self.style_warning(format!(
+                    "MathML <{name}> elementary layout is not represented; child content was kept"
+                ))
+            },
+            "annotation" | "annotation-xml" => self.style_warning(
+                "MathML annotation metadata is not represented; the annotation was dropped".into(),
+            ),
+            _ => {},
+        }
         // Elements without attributes, most of them, stop at the length.
         if start.len() != name.len()
             && name != "mo"
@@ -1759,12 +1808,35 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mfrac" => {
                 let children = self.parse_children(name)?;
-                let (num, den) = self.two_child_ids(children);
-                let kind = if get_attr(start, "linethickness").is_some_and(|t| is_zero_length(&t)) {
+                let bevelled =
+                    get_attr(start, "bevelled").is_some_and(|value| is_true_mathml_boolean(&value));
+                let thickness = get_attr(start, "linethickness");
+                for attribute in ["numalign", "denomalign"] {
+                    if get_attr(start, attribute)
+                        .is_some_and(|value| !value.trim().eq_ignore_ascii_case("center"))
+                    {
+                        self.style_warning(format!(
+                            "mfrac {attribute} is not represented; the fraction alignment was approximated"
+                        ));
+                    }
+                }
+                let kind = if bevelled {
+                    // The shared AST already has a skewed fraction variant,
+                    // which is the MathML bevelled presentation.
+                    FractionKind::Skewed
+                } else if thickness.as_deref().is_some_and(is_zero_length) {
                     FractionKind::NoBar
                 } else {
+                    if let Some(value) = thickness.as_deref()
+                        && !value.trim().eq_ignore_ascii_case("medium")
+                    {
+                        self.style_warning(format!(
+                            "mfrac linethickness=\"{value}\" is not represented; the default fraction rule was used"
+                        ));
+                    }
                     FractionKind::Normal
                 };
+                let (num, den) = self.two_child_ids(children);
                 Ok(self
                     .arena
                     .push_node(CompactNode::Fraction { kind, num, den }))
@@ -1928,7 +2000,9 @@ impl<'a> MathmlCompactParser<'a> {
                 let open = get_attr(start, "open").unwrap_or_else(|| "(".into());
                 let close = get_attr(start, "close").unwrap_or_else(|| ")".into());
                 let children = self.parse_children(name)?;
-                let content = self.arena.push_children_deferred(&children);
+                let separators = get_attr(start, "separators");
+                let content =
+                    self.fenced_content(&children, separators.as_deref().unwrap_or(","))?;
                 let open_sid = self.arena.push_str(&open);
                 let close_sid = self.arena.push_str(&close);
                 Ok(self.arena.push_node(CompactNode::Fenced {
@@ -1938,6 +2012,22 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "mtable" => {
+                for attribute in [
+                    "rowalign",
+                    "columnwidth",
+                    "equalrows",
+                    "equalcolumns",
+                    "side",
+                    "minlabelspacing",
+                ] {
+                    if get_attr(start, attribute)
+                        .is_some_and(|value| !table_attribute_is_noop(attribute, &value))
+                    {
+                        self.style_warning(format!(
+                            "MathML mtable {attribute} is not represented; the table layout was approximated"
+                        ));
+                    }
+                }
                 let table_columns = parse_column_aligns(get_attr(start, "columnalign"));
                 let table =
                     self.with_table_style(start, true, |p| p.parse_table(name, &table_columns))?;
@@ -1974,8 +2064,18 @@ impl<'a> MathmlCompactParser<'a> {
                     });
                 }
                 let top_right = has("actuarial") || (has("top") && has("right"));
-                let full_box =
-                    has("box") || has("roundedbox") || (top_right && has("bottom") && has("left"));
+                let rounded_box = has("roundedbox");
+                let circle = has("circle");
+                if rounded_box || circle {
+                    let notation = if circle { "circle" } else { "roundedbox" };
+                    self.style_warning(format!(
+                        "menclose notation=\"{notation}\" was approximated as a rectangular box"
+                    ));
+                }
+                let full_box = has("box")
+                    || rounded_box
+                    || circle
+                    || (top_right && has("bottom") && has("left"));
                 if top_right && !full_box {
                     Ok(self.arena.push_node(CompactNode::Actuarial {
                         content: id,
@@ -2032,8 +2132,65 @@ impl<'a> MathmlCompactParser<'a> {
                 }
                 Ok(self.flatten_ids(&children))
             },
-            "mpadded" => self.parse_child_id(name),
+            "mpadded" => {
+                let attributes = ["width", "height", "depth", "lspace", "voffset"];
+                if attributes.into_iter().any(|attribute| {
+                    get_attr(start, attribute)
+                        .is_some_and(|value| !mpadded_attribute_is_noop(&value))
+                }) {
+                    self.style_warning(
+                        "mpadded dimensions are not represented; only its child content was kept"
+                            .into(),
+                    );
+                }
+                self.parse_child_id(name)
+            },
             "mmultiscripts" => self.parse_multiscripts_element(name),
+            "maction" => {
+                let action = get_attr(start, "actiontype").unwrap_or_else(|| "toggle".into());
+                let selection_text = get_attr(start, "selection");
+                let selection = selection_text
+                    .as_deref()
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .filter(|&value| value > 0)
+                    .unwrap_or(1);
+                let children = self.parse_children(name)?;
+                if !matches!(
+                    action.trim(),
+                    "toggle" | "tooltip" | "statusline" | "highlight"
+                ) {
+                    self.style_warning(format!(
+                        "MathML maction actiontype=\"{action}\" is not interactive here; the selected child was kept"
+                    ));
+                }
+                if selection_text.is_some()
+                    && selection == 1
+                    && selection_text.as_deref() != Some("1")
+                {
+                    self.style_warning(
+                        "MathML maction selection was invalid; the first child was kept".into(),
+                    );
+                }
+                if selection > children.len() && !children.is_empty() {
+                    self.style_warning(format!(
+                        "MathML maction selection {selection} exceeded the available children; the first child was kept"
+                    ));
+                }
+                let index = selection
+                    .saturating_sub(1)
+                    .min(children.len().saturating_sub(1));
+                if children.len() > 1 || selection != 1 {
+                    self.style_warning(format!(
+                        "MathML maction alternate content and interactivity were dropped; child {} was kept",
+                        index + 1
+                    ));
+                }
+                Ok(children
+                    .get(index)
+                    .copied()
+                    .or_else(|| children.first().copied())
+                    .unwrap_or_else(|| self.empty_row()))
+            },
             "semantics" => {
                 let children = self.parse_children(name)?;
                 if let Some(&first) = children.first() {
@@ -2487,14 +2644,26 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             let mut rectangular = Vec::with_capacity(total);
             let mut offset = 0;
-            for len in row_lengths {
+            for &len in &row_lengths {
                 rectangular.extend_from_slice(&table_cells[offset..offset + len]);
                 rectangular.extend((len..stride).map(|_| self.empty_row()));
                 offset += len;
             }
             self.arena.push_children(&rectangular)?
         };
-        let arraystretch_pct = arraystretch_percent(start).unwrap_or(100);
+        let authored_stretch = arraystretch_value(start);
+        let metadata_row_lengths = if authored_stretch.is_some()
+            || row_lengths
+                .iter()
+                .any(|&length| length != usize::from(num_cols))
+        {
+            row_lengths.clone()
+        } else {
+            SmallVec::new()
+        };
+        let arraystretch_pct = authored_stretch
+            .map(|value| (value * 100.0).round().clamp(0.0, 255.0) as u8)
+            .unwrap_or(100);
         let array = self.arena.push_node(CompactNode::Array {
             col_aligns,
             cells,
@@ -2505,6 +2674,12 @@ impl<'a> MathmlCompactParser<'a> {
             col_seps,
             row_seps,
         });
+        self.arena.mark_table_metadata(
+            array,
+            &metadata_row_lengths,
+            authored_stretch,
+            usize::from(num_cols),
+        );
         if array_style.is_some() || dashes != RuleDashes::default() {
             self.arena.mark_native_array(array, dashes);
         } else if let Some(environment) = array_environment(start, arraystretch_pct) {
@@ -2528,6 +2703,12 @@ impl<'a> MathmlCompactParser<'a> {
                     let name = e.local_name().into_inner();
                     if name != "mtr" && name != "mlabeledtr" {
                         continue;
+                    }
+                    if name == "mlabeledtr" {
+                        self.style_warning(
+                            "MathML mlabeledtr labels are not represented; the row content was kept"
+                                .into(),
+                        );
                     }
                     if has_mathsize(&e) {
                         self.unsupported_size(name);
@@ -2576,6 +2757,7 @@ impl<'a> MathmlCompactParser<'a> {
         table: &mut MathmlTable,
     ) -> Result<usize> {
         let start = table.cells.len();
+        let mut label_consumed = parent_tag != "mlabeledtr";
         loop {
             self.arena.check_limits()?;
             let index = table.cells.len() - start;
@@ -2610,6 +2792,12 @@ impl<'a> MathmlCompactParser<'a> {
                     Ok(Event::Start(e) | Event::Empty(e)) => {
                         let name = e.local_name().into_inner();
                         if name == "mtd" {
+                            if get_attr(&e, "rowspan").is_some_and(|value| value.trim() != "1") {
+                                self.style_warning(
+                                    "MathML mtd rowspan is not represented; the cell was treated as one row"
+                                        .into(),
+                                );
+                            }
                             let attributes = table_cell_attributes(&e);
                             if has_mathsize(&e) {
                                 self.unsupported_size(name);
@@ -2677,6 +2865,13 @@ impl<'a> MathmlCompactParser<'a> {
                         )
                     },
                 };
+            // The first cell of `mlabeledtr` is a row label, not a data cell.
+            // The shared array model has no label slot, so consume it while
+            // retaining the remaining cells in their authored columns.
+            if !label_consumed {
+                label_consumed = true;
+                continue;
+            }
             let alignment = cell_alignment(inherited, index, own_alignment);
             let new_columns = index + cell_span;
             if new_columns > table.columns.len() {
@@ -3130,11 +3325,11 @@ fn parse_scriptlevel(value: &str, current: i64) -> Option<i64> {
 /// Read the writer's narrowly scoped table multiplier marker. The value is
 /// expressed as a percentage so it remains independent of the current MathML
 /// font size and can be reconstructed without guessing from `scriptlevel`.
-fn arraystretch_percent(start: &quick_xml::events::BytesStart<'_>) -> Option<u8> {
+fn arraystretch_value(start: &quick_xml::events::BytesStart<'_>) -> Option<f64> {
     let value = get_attr(start, "data-mathema-arraystretch")?;
     let value = value.trim().strip_suffix('%')?.trim();
-    let value = value.parse::<u16>().ok()?;
-    u8::try_from(value).ok()
+    let value = value.parse::<f64>().ok()?;
+    value.is_finite().then_some(value / 100.0)
 }
 
 fn array_environment(
@@ -3233,6 +3428,7 @@ struct OperatorAttributes {
     maxsize: Option<f64>,
     zero_lspace: bool,
     zero_rspace: bool,
+    separator: bool,
 }
 
 impl OperatorAttributes {
@@ -3273,6 +3469,23 @@ fn writable_middle(text: &str) -> bool {
             && !c.is_control()
             && !matches!(c, '%' | '#' | '$' | '&' | '~' | '^' | '_' | '.')
     })
+}
+
+fn table_attribute_is_noop(name: &str, value: &str) -> bool {
+    let value = value.trim();
+    match name {
+        "equalrows" | "equalcolumns" => value.eq_ignore_ascii_case("false"),
+        "columnwidth" => value
+            .split_ascii_whitespace()
+            .all(|item| item.eq_ignore_ascii_case("auto")),
+        _ => false,
+    }
+}
+
+/// A plus-zero `mpadded` adjustment leaves the corresponding inherited
+/// dimension unchanged. Other values affect layout and are reported.
+fn mpadded_attribute_is_noop(value: &str) -> bool {
+    value.trim().strip_prefix('+').is_some_and(is_zero_length)
 }
 
 /// A null delimiter or one glyph that TeX accepts after `\big`, the same set
@@ -3393,6 +3606,11 @@ fn operator_attributes(
                         _ => None,
                     };
                 }
+            },
+            "separator" => {
+                result.separator = unescape_attr(&attr.value)
+                    .trim()
+                    .eq_ignore_ascii_case("true");
             },
             "data-mathema-operator" => {
                 result.named_operator = unescape_attr(&attr.value) == "name";
@@ -5430,6 +5648,106 @@ mod tests {
     }
 
     #[test]
+    fn mfenced_preserves_default_and_authored_separators() {
+        let default_input = "<math><mfenced><mi>a</mi><mi>b</mi><mi>c</mi></mfenced></math>";
+        let default = parse_one(default_input);
+        assert!(matches!(
+            default,
+            MathNode::Fenced { content, .. }
+                if matches!(&content[..], [
+                    FencedItem::Element(_),
+                    FencedItem::Element(MathNode::Symbol(SymbolKind::Punctuation, separator)),
+                    FencedItem::Element(_),
+                    FencedItem::Element(MathNode::Symbol(SymbolKind::Punctuation, separator2)),
+                    FencedItem::Element(_),
+                ] if separator == "," && separator2 == ",")
+        ));
+        let default_output = crate::from_mathml(default_input)
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(default_output.contains(r#"<mo separator="true">,</mo>"#));
+        assert!(
+            !default_output.contains(
+                r#"<mo fence="true" form="infix" stretchy="true" symmetric="true">,</mo>"#
+            )
+        );
+        let default_latex = crate::from_mathml(default_input)
+            .unwrap()
+            .to_latex()
+            .unwrap();
+        assert!(default_latex.contains(','), "{default_latex}");
+        assert!(!default_latex.contains(r#"\middle,"#), "{default_latex}");
+
+        let repeated = parse_one(
+            r#"<math><mfenced separators=";" open="[" close="]"><mi>a</mi><mi>b</mi><mi>c</mi></mfenced></math>"#,
+        );
+        assert!(matches!(
+            repeated,
+            MathNode::Fenced { content, open, close }
+                if open == "["
+                    && close == "]"
+                    && content.iter().filter_map(|item| match item {
+                        FencedItem::Element(MathNode::Symbol(SymbolKind::Punctuation, separator)) => {
+                            Some(separator.as_str())
+                        },
+                        FencedItem::Element(_) | FencedItem::Middle(_) => None,
+                    }).eq([";", ";"])
+        ));
+
+        let listed = parse_one(
+            r#"<math><mfenced separators="  ,   ;  " open="{" close="}"><mi>a</mi><mi>b</mi><mi>c</mi><mi>d</mi></mfenced></math>"#,
+        );
+        assert!(matches!(
+            listed,
+            MathNode::Fenced { content, .. }
+                if content.iter().filter_map(|item| match item {
+                    FencedItem::Element(MathNode::Symbol(SymbolKind::Punctuation, separator)) => {
+                        Some(separator.as_str())
+                    },
+                    FencedItem::Element(_) | FencedItem::Middle(_) => None,
+                }).eq([",", ";", ";"])
+        ));
+
+        let suppressed = parse_one(
+            r#"<math><mfenced separators="" open="(" close=")"><mi>a</mi><mi>b</mi></mfenced></math>"#,
+        );
+        assert!(matches!(
+            suppressed,
+            MathNode::Fenced { content, .. }
+                if content.iter().all(|item| matches!(item, FencedItem::Element(_)))
+        ));
+    }
+
+    #[test]
+    fn mfenced_vertical_separator_stays_punctuation_but_true_middle_stays_stretchy() {
+        let fenced = crate::from_mathml(
+            r#"<math><mfenced separators="|"><mi>a</mi><mi>b</mi></mfenced></math>"#,
+        )
+        .unwrap();
+        let fenced_output = fenced.to_mathml().unwrap();
+        assert!(fenced_output.contains(r#"<mo separator="true">|</mo>"#));
+        assert!(
+            !fenced_output.contains(
+                r#"<mo fence="true" form="infix" stretchy="true" symmetric="true">|</mo>"#
+            )
+        );
+        assert_eq!(
+            crate::from_mathml(&fenced_output).unwrap().expr(),
+            fenced.expr()
+        );
+
+        let middle = crate::from_latex(r#"\left( a \middle\langle b \right)"#).unwrap();
+        let middle_output = middle.to_mathml().unwrap();
+        assert!(middle_output.contains("<mo fence=\"true\""));
+        assert!(middle_output.contains("⟨"));
+        assert!(
+            !middle_output.contains(r#"<mo separator="true">⟨</mo>"#),
+            "{middle_output}"
+        );
+    }
+
+    #[test]
     fn mfenced_keeps_one_sided_classed_delimiters_in_content() {
         let config = Config::default();
         for source in [
@@ -5772,10 +6090,15 @@ mod tests {
         };
         assert_eq!(columns, &[ColumnAlign::Left, ColumnAlign::Right]);
         assert_eq!(rows.len(), 4);
-        assert!(rows.iter().all(|row| row.len() == 2));
+        assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), [0, 1, 2, 2]);
         assert!(
             matches!(&rows[3][1][..], [MathNode::AlignedCell { content, .. }] if matches!(content.as_ref(), MathNode::Identifier(s) if s == "c"))
         );
+        let round_trip = crate::from_mathml(&result.to_mathml().unwrap()).unwrap();
+        let MathNode::Array { rows, .. } = &round_trip.expr().nodes[0] else {
+            panic!("expected round-tripped array");
+        };
+        assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), [0, 1, 2, 2]);
         let wide = format!(
             "<math><mtable>{}<mtr>{}</mtr></mtable></math>",
             "<mtr/>".repeat(256),
@@ -6549,6 +6872,128 @@ mod tests {
                 content: Box::new(MathNode::Identifier("x".into())),
             }
         );
+    }
+
+    #[test]
+    fn presentation_approximations_report_their_loss() {
+        let config = Config::default();
+        for (input, message) in [
+            (
+                r#"<math><menclose notation="circle"><mi>x</mi></menclose></math>"#,
+                "circle",
+            ),
+            (
+                r#"<math><mfrac linethickness="2px"><mi>a</mi><mi>b</mi></mfrac></math>"#,
+                "linethickness",
+            ),
+            (
+                r#"<math><mfrac numalign="left" denomalign="right"><mi>a</mi><mi>b</mi></mfrac></math>"#,
+                "numalign",
+            ),
+            (
+                r#"<math><mpadded width="2em" lspace="1em"><mi>x</mi></mpadded></math>"#,
+                "mpadded",
+            ),
+            (
+                r#"<math><mtable><mlabeledtr><mtd><mi>n</mi></mtd><mtd rowspan="2"><mi>x</mi></mtd></mlabeledtr></mtable></math>"#,
+                "mlabeledtr",
+            ),
+            (
+                r#"<math><mstack><msrow><mi>x</mi></msrow></mstack><maction actiontype="toggle"><mi>a</mi><mi>b</mi></maction></math>"#,
+                "elementary layout",
+            ),
+            (
+                r#"<math><mtable equalrows="true" columnwidth="1em"><mtr><mtd><mi>x</mi></mtd></mtr></mtable></math>"#,
+                "equalrows",
+            ),
+        ] {
+            let parsed = MathmlReader::parse(input, &config).unwrap();
+            assert!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(message)),
+                "{input}: {:?}",
+                parsed.diagnostics
+            );
+        }
+        assert!(matches!(
+            parse_one(r#"<math><mfrac bevelled="true"><mi>a</mi><mi>b</mi></mfrac></math>"#),
+            MathNode::Fraction {
+                kind: FractionKind::Skewed,
+                ..
+            }
+        ));
+        let bevelled = crate::from_mathml(
+            r#"<math><mfrac bevelled="true"><mi>a</mi><mi>b</mi></mfrac></math>"#,
+        )
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+        assert!(
+            bevelled.contains(r#"<mfrac bevelled="true">"#),
+            "{bevelled}"
+        );
+        let standard = crate::from_mathml(
+            r#"<math><mfrac bevelled="true"><mi>a</mi><mi>b</mi></mfrac></math>"#,
+        )
+        .unwrap()
+        .to_mathml_with_options(&crate::writer::mathml::MathmlOptions::standard())
+        .unwrap();
+        assert!(
+            standard.contains(r#"<mfrac bevelled="true">"#),
+            "{standard}"
+        );
+    }
+
+    #[test]
+    fn maction_keeps_the_selected_math_child() {
+        let selected = MathmlReader::parse(
+            r#"<math><maction actiontype="toggle" selection="2"><mi>a</mi><mi>b</mi></maction></math>"#,
+            &Config::default(),
+        )
+        .unwrap();
+        assert_eq!(selected.expr.nodes, vec![MathNode::Identifier("b".into())]);
+        assert!(
+            selected
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("alternate content") })
+        );
+
+        let default = MathmlReader::parse(
+            r#"<math><maction actiontype="toggle"><mi>a</mi><mi>b</mi></maction></math>"#,
+            &Config::default(),
+        )
+        .unwrap();
+        assert_eq!(default.expr.nodes, vec![MathNode::Identifier("a".into())]);
+        assert!(
+            default
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("alternate content") })
+        );
+    }
+
+    #[test]
+    fn no_op_presentation_attributes_do_not_warn() {
+        let input = r#"<math><mfrac numalign="center" denomalign="center"><mi>a</mi><mi>b</mi></mfrac><mpadded width="+0em" height="+0em" depth="+0em" lspace="+0em" voffset="+0em"><mi>x</mi></mpadded><mtable equalrows="false" equalcolumns="false" columnwidth="auto"><mtr><mtd rowspan="1"><mi>y</mi></mtd></mtr></mtable></math>"#;
+        let parsed = MathmlReader::parse(input, &Config::default()).unwrap();
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    }
+
+    #[test]
+    fn mlabeledtr_label_is_not_counted_as_a_data_cell() {
+        let parsed = parse_one(
+            r#"<math><mtable><mlabeledtr><mtd><mtext>(1)</mtext></mtd><mtd><mi>x</mi></mtd></mlabeledtr></mtable></math>"#,
+        );
+        assert!(matches!(
+            parsed,
+            MathNode::Array { rows, .. }
+                if rows.len() == 1
+                    && rows[0].len() == 1
+                    && matches!(rows[0][0].as_slice(), [MathNode::Identifier(name)] if name == "x")
+        ));
     }
 
     #[test]

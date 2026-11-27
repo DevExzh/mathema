@@ -1,6 +1,7 @@
-use mathema::ast::MathNode;
+use mathema::ast::{MathNode, PhantomKind};
 use mathema::error::Config;
 use mathema::writer::Writer;
+use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
 use mathema::{Error, Format, LimitKind, Strictness, convert, from_latex, from_unicode_math_with};
 
@@ -40,6 +41,158 @@ fn latex_cases_use_readable_cases_operator_and_round_trip_as_structure() {
             if open == "{" && close.is_empty() && content.len() == 1
     ));
     assert!(!has_text(&reparsed.expr().nodes[0]));
+}
+
+#[test]
+fn legacy_one_sided_matrix_cases_are_recovered_as_rows() {
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let config = Config::default().with_strictness(strictness);
+        let parsed = from_unicode_math_with("{■(x&x≥0@−x&x<0)", &config).expect("legacy cases");
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(mathml.contains("<mtable"), "{mathml}");
+        assert!(!mathml.contains("<mtext>"), "{mathml}");
+        assert_eq!(parsed.to_unicode_math().unwrap(), "Ⓒ(x&x≥0@−x&x<0)");
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("legacy one-sided"))
+        );
+    }
+}
+
+#[test]
+fn equation_arrays_use_an_aligned_structure_and_stable_spelling() {
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let config = Config::default().with_strictness(strictness);
+        let source = "█(a&=b@c&=d)";
+        let parsed = from_unicode_math_with(source, &config).expect("equation array");
+        let mathml = parsed.to_mathml().expect("MathML");
+        assert!(mathml.contains("<mtable"), "{mathml}");
+        assert_eq!(
+            mathml.matches(r#"columnalign="right""#).count(),
+            2,
+            "{mathml}"
+        );
+        assert_eq!(
+            mathml.matches(r#"columnalign="left""#).count(),
+            2,
+            "{mathml}"
+        );
+        assert!(!mathml.contains("<mtext>"), "{mathml}");
+        assert_eq!(parsed.to_unicode_math().unwrap(), source);
+        assert_eq!(
+            UnicodeMathWriter::write_compact(parsed.compact_expr(), &Config::default()).unwrap(),
+            source
+        );
+        assert!(
+            parsed
+                .to_unicode_math_with_diagnostics()
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert!(parsed.diagnostics().is_empty());
+        let standard = parsed
+            .to_mathml_with_options(&mathema::writer::mathml::MathmlOptions::standard())
+            .unwrap();
+        assert!(standard.contains(r#"columnalign="right""#), "{standard}");
+        assert!(standard.contains(r#"columnalign="left""#), "{standard}");
+        let heap = parsed.expr();
+        assert_eq!(
+            UnicodeMathWriter::write(&heap, &Config::default()).unwrap(),
+            source
+        );
+        let compact_from_heap = mathema::ast::compact::CompactExpr::from_math_expr(&heap).unwrap();
+        assert_eq!(
+            UnicodeMathWriter::write_compact(&compact_from_heap, &Config::default()).unwrap(),
+            source
+        );
+        let heap_mathml =
+            mathema::writer::mathml::MathmlWriter::write(&heap, &Config::default()).unwrap();
+        assert!(heap_mathml.contains(r#"columnalign="right""#));
+        assert!(heap_mathml.contains(r#"columnalign="left""#));
+        let omml = OmmlWriter::write_compact(parsed.compact_expr(), &Config::default()).unwrap();
+        assert!(omml.contains(r#"<m:mcJc m:val="right"/>"#), "{omml}");
+        assert!(omml.contains(r#"<m:mcJc m:val="left"/>"#), "{omml}");
+    }
+}
+
+#[test]
+fn equation_number_suffix_is_accepted_and_reported_as_metadata_loss() {
+    for source in ["█(E&=mc^2)#(30)", "█(E&=mc^2#(30))"] {
+        let parsed = from_unicode_math_with(source, &Config::default()).unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(mathml.contains("<mtable"), "{source}: {mathml}");
+        assert!(!mathml.contains("<mtext>"), "{source}: {mathml}");
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("equation-number metadata"))
+        );
+        assert_eq!(parsed.to_unicode_math().unwrap(), "█(E&=mc^2)");
+    }
+}
+
+#[test]
+fn equation_array_alignment_alternates_alignment_and_spacer_columns() {
+    let source = "█(10&x+&3&y=2@3&x+&13&y=4)";
+    let parsed = from_unicode_math_with(source, &Config::default()).unwrap();
+    let mathml = parsed.to_mathml().unwrap();
+    assert_eq!(
+        mathml.matches(r#"columnalign="right""#).count(),
+        4,
+        "{mathml}"
+    );
+    assert_eq!(
+        mathml.matches(r#"columnalign="left""#).count(),
+        4,
+        "{mathml}"
+    );
+    assert_eq!(parsed.to_unicode_math().unwrap(), source);
+    let omml = OmmlWriter::write_compact(parsed.compact_expr(), &Config::default()).unwrap();
+    assert_eq!(
+        omml.matches(r#"<m:mcJc m:val="right"/>"#).count(),
+        2,
+        "{omml}"
+    );
+    assert_eq!(
+        omml.matches(r#"<m:mcJc m:val="left"/>"#).count(),
+        2,
+        "{omml}"
+    );
+}
+
+#[test]
+fn phantom_and_smash_shortcuts_preserve_the_modeled_kind() {
+    for (source, written, kind) in [
+        ("⟡(x)", "⟡x", PhantomKind::Full),
+        ("⇳x", "⇳x", PhantomKind::Vertical),
+        ("⬌x", "⬌x", PhantomKind::Horizontal),
+        ("⬍x", "⬍x", PhantomKind::SmashBoth),
+        ("⬇x", "⬇x", PhantomKind::SmashBottom),
+        ("⬆x", "⬆x", PhantomKind::SmashTop),
+    ] {
+        let parsed = from_unicode_math_with(source, &Config::default()).unwrap();
+        assert!(
+            matches!(
+                parsed.expr().nodes.as_slice(),
+                [MathNode::Phantom(_, actual)] if *actual == kind
+            ),
+            "{source}: {:?}",
+            parsed.expr()
+        );
+        assert_eq!(parsed.to_unicode_math().unwrap(), written);
+        assert!(
+            parsed
+                .to_unicode_math_with_diagnostics()
+                .unwrap()
+                .1
+                .is_empty(),
+            "{source}"
+        );
+    }
 }
 
 #[test]

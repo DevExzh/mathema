@@ -885,7 +885,7 @@ fn applications_are_paired() {
         (format!("<mi>f</mi>{a}<mi>g</mi>{a}{ab}"), false),
         (format!("<mi>f</mi>{a}<mrow/><mi>g</mi>{a}{ab}"), true),
         (
-            format!("<mfenced><mi>f</mi>{a}<mrow/><mi>g</mi>{a}{ab}</mfenced>"),
+            format!("<mfenced separators=''><mi>f</mi>{a}<mrow/><mi>g</mi>{a}{ab}</mfenced>"),
             true,
         ),
         (

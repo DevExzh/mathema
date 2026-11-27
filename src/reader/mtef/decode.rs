@@ -367,6 +367,10 @@ pub(super) struct Decoder<'a> {
     /// Whether there are zero spaces, and leading scripts.
     has_zero_spaces: bool,
     has_leading_scripts: bool,
+    /// Whether positional metadata has already been reported as dropped.
+    reported_nudge: bool,
+    reported_line_spacing: bool,
+    reported_tab_stops: bool,
 }
 
 impl<'a> Decoder<'a> {
@@ -414,6 +418,9 @@ impl<'a> Decoder<'a> {
             spliced: 0,
             has_zero_spaces: false,
             has_leading_scripts: false,
+            reported_nudge: false,
+            reported_line_spacing: false,
+            reported_tab_stops: false,
         }
     }
 
@@ -440,6 +447,31 @@ impl<'a> Decoder<'a> {
 
     fn note(&mut self, message: impl Into<String>) {
         self.diag(DiagnosticKind::Info, message.into());
+    }
+
+    fn note_nudge_loss(&mut self) {
+        if !self.reported_nudge {
+            self.reported_nudge = true;
+            self.note("MTEF positional nudge metadata was dropped because the AST has no positional adjustment field");
+        }
+    }
+
+    fn note_line_spacing_loss(&mut self) {
+        if !self.reported_line_spacing {
+            self.reported_line_spacing = true;
+            self.note(
+                "MTEF line-spacing metadata was dropped because the AST has no line-spacing field",
+            );
+        }
+    }
+
+    fn note_tab_stop_loss(&mut self) {
+        if !self.reported_tab_stops {
+            self.reported_tab_stops = true;
+            self.note(
+                "MTEF ruler tab-stop metadata was dropped because the AST has no tab-stop field",
+            );
+        }
     }
 
     /// A problem Strict mode refuses and Lenient mode reports and recovers from.
@@ -653,8 +685,14 @@ impl<'a> Decoder<'a> {
     fn nudge(&mut self) -> Result<()> {
         let dx = self.u8()?;
         let dy = self.u8()?;
+        let mut moved = dx != 128 || dy != 128;
         if dx == 128 && dy == 128 {
-            self.skip(4)?;
+            let x = self.u16()?;
+            let y = self.u16()?;
+            moved = x != 0 || y != 0;
+        }
+        if moved {
+            self.note_nudge_loss();
         }
         Ok(())
     }
@@ -1107,8 +1145,8 @@ impl<'a> Decoder<'a> {
         if options & OPT_NUDGE != 0 {
             self.nudge()?;
         }
-        if options & OPT_LINE_LSPACE != 0 {
-            self.u16()?;
+        if options & OPT_LINE_LSPACE != 0 && self.u16()? != 0 {
+            self.note_line_spacing_loss();
         }
         if options & OPT_LP_RULER != 0 {
             self.ruler_record()?;
@@ -1144,6 +1182,9 @@ impl<'a> Decoder<'a> {
     /// Tab stops: a count, then a type byte and a 16-bit offset for each.
     fn ruler_body(&mut self) -> Result<()> {
         let stops = self.u8()?;
+        if stops != 0 {
+            self.note_tab_stop_loss();
+        }
         self.skip(usize::from(stops) * 3)
     }
 

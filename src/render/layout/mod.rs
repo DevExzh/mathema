@@ -2242,7 +2242,7 @@ fn layout_node_arena(
             col_aligns,
             cells,
             num_cols,
-            arraystretch_pct,
+            ast.arraystretch_value(id, arraystretch_pct),
             add_jot,
             col_seps,
             row_seps,

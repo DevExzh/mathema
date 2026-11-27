@@ -129,6 +129,48 @@ fn latex_parser_depth_limit_is_fatal_during_lenient_recovery() {
 }
 
 #[test]
+fn nested_fraction_source_is_rejected_before_preprocessing_recurses() {
+    let mut input = String::new();
+    for _ in 0..150 {
+        input.push_str(r"\frac{");
+    }
+    input.push('x');
+    for _ in 0..150 {
+        input.push_str("}{1}");
+    }
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let result =
+            LatexReader::parse_compact(&input, &Config::default().with_strictness(strictness));
+        assert!(
+            matches!(
+                result,
+                Err(Error::LimitExceeded {
+                    kind: LimitKind::Depth,
+                    ..
+                })
+            ),
+            "nested source must fail before preprocessing recursion in {strictness:?}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn source_preflight_ignores_comments_verbatim_and_text_braces() {
+    let braces = format!("{}x{}", "{".repeat(150), "}".repeat(150));
+    let cases = [
+        format!("x % {braces}\n+y"),
+        format!(r"\verb|{braces}|+y"),
+        format!(r"\text{{{braces}}}+y"),
+    ];
+    for input in cases {
+        assert!(
+            LatexReader::parse_compact(&input, &Config::default()).is_ok(),
+            "literal regions should not count as recursive math groups"
+        );
+    }
+}
+
+#[test]
 fn malformed_scoped_recovery_stays_within_node_budget() {
     let input = r"\rm {\frac{a}{b}";
     let lenient = Config::default().with_strictness(Strictness::Lenient);

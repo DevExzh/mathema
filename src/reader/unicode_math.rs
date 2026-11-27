@@ -194,6 +194,8 @@ struct MatrixSkips {
 /// At most this many matrices get their own skip warning; the rest are
 /// summed up in one more.
 const MAX_SKIP_WARNINGS: usize = 32;
+const MAX_NARY_CONTROL_WARNINGS: usize = 32;
+const MAX_EQUATION_NUMBER_WARNINGS: usize = 32;
 
 /// The operand being read in a list.
 #[derive(Default)]
@@ -248,6 +250,14 @@ struct CompactParser {
     /// order they were completed (a nested matrix before the one around it).
     /// Formatted into diagnostics only once the parse succeeded.
     matrix_skips: Vec<MatrixSkips>,
+    /// Unsupported UTN 28 n-ary control values, reported after parsing.
+    unsupported_nary_controls: Vec<(usize, u8)>,
+    /// Equation-number suffixes accepted by UTN 28 but not represented in the
+    /// shared AST.
+    equation_number_losses: Vec<(usize, usize)>,
+    /// Legacy one-sided brace forms canonicalized as the UnicodeMath cases
+    /// operator.
+    legacy_case_warnings: Vec<(usize, usize)>,
     /// Structured input left over after the element parser stopped. The
     /// parser intentionally keeps this as text for compatibility, but the
     /// loss of structure must be observable to callers.
@@ -312,6 +322,9 @@ impl CompactParser {
             dead_walk: Vec::new(),
             dot_run: (0, 0),
             matrix_skips: Vec::new(),
+            unsupported_nary_controls: Vec::new(),
+            equation_number_losses: Vec::new(),
+            legacy_case_warnings: Vec::new(),
             literal_fallback: None,
             pending_cells: 0,
             baseless_ok: false,
@@ -465,6 +478,16 @@ impl CompactParser {
             if remaining.is_empty() {
                 break;
             }
+            if !ids.is_empty()
+                && let Some((rest, start, end)) = self.take_equation_number(remaining)
+            {
+                if self.equation_number_losses.len() < MAX_EQUATION_NUMBER_WARNINGS {
+                    self.equation_number_losses.push((start, end));
+                }
+                remaining = rest;
+                spaced = true;
+                continue;
+            }
             // UTN #28 section 3.16: the other spaces are not removed on
             // build up (LaTeX `\,` is U+2009).
             if let Some((rest, width)) = unicode_math_space(remaining) {
@@ -502,6 +525,27 @@ impl CompactParser {
             return Err(error);
         }
         Ok(ids)
+    }
+
+    /// Consume the UTN 28 equation-number suffix (#(30) or #30). The shared
+    /// AST has no equation-number field, so the number is accepted and
+    /// reported as an explicit metadata loss instead of turning the whole
+    /// equation into literal text.
+    fn take_equation_number<'a>(&self, input: &'a str) -> Option<(&'a str, usize, usize)> {
+        let after_hash = input.strip_prefix('#')?;
+        let consumed = if after_hash.starts_with('(') {
+            self.matching_paren_end(after_hash)?
+        } else {
+            after_hash
+                .char_indices()
+                .find(|(_, ch)| ch.is_whitespace())
+                .map_or(after_hash.len(), |(at, _)| at)
+        };
+        if consumed == 0 {
+            return None;
+        }
+        let start = self.offset(input);
+        Some((&after_hash[consumed..], start, start + 1 + consumed))
     }
 
     /// The error that aborted the parse.
@@ -1644,6 +1688,7 @@ impl CompactParser {
             parse_cbrt,
             parse_cases,
             parse_matrix,
+            parse_legacy_cases,
             parse_text_quoted,
             parse_nary_op,
             parse_group,
@@ -1665,6 +1710,32 @@ impl CompactParser {
 
     /// UTN #28 sections 2.1 and 4.1: `/` before an operator negates it
     /// (`a/=b` is `a≠b`, `a/∈B` is `a∉B`).
+    fn parse_legacy_cases<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let rest = input.strip_prefix('{').ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let (after, array) = self.parse_matrix(rest)?;
+        if after.starts_with('}') {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        let open = self.arena.push_str("{");
+        let close = self.arena.push_str("");
+        let content = self.arena.push_children_deferred(&[array]);
+        let span = self.offset(after);
+        self.legacy_case_warnings.push((self.offset(input), span));
+        Ok((
+            after,
+            self.push_node(CompactNode::Fenced {
+                open,
+                close,
+                content,
+            }),
+        ))
+    }
+
     fn parse_negated_operator<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (rest, negated) = negated_operator(input)
             .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Tag))?;
@@ -1704,15 +1775,29 @@ impl CompactParser {
     }
 
     /// Parse a UnicodeMath box (`▭` U+25AD) or phantom (`⟡` U+27E1) operator
-    /// emitted by this crate's UnicodeMath writer. A masked box uses
+    /// Parse UnicodeMath box and phantom shortcut operators. A masked box uses
     /// ▭(mask&content), where mask 6 hides the bottom and left sides, leaving
     /// the actuarial top/right enclosure. Splitting occurs only at the mask
     /// separator, so ampersands inside the nested operand remain untouched.
     fn parse_box_phantom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let mut chars = input.chars();
-        let is_box = match chars.next() {
-            Some('\u{25AD}') => true,  // ▭ box
-            Some('\u{27E1}') => false, // ⟡ phantom
+        let marker = match chars.next() {
+            Some(marker) => marker,
+            _ => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
+            },
+        };
+        let (is_box, phantom_kind) = match marker {
+            '\u{25AD}' => (true, None),                            // ▭ box
+            '\u{27E1}' => (false, Some(PhantomKind::Full)),        // ⟡ phantom
+            '\u{21F3}' => (false, Some(PhantomKind::Vertical)),    // ⇳ vphantom
+            '\u{2B0C}' => (false, Some(PhantomKind::Horizontal)),  // ⬌ hphantom
+            '\u{2B0D}' => (false, Some(PhantomKind::SmashBoth)),   // ⬍ smash
+            '\u{2B07}' => (false, Some(PhantomKind::SmashBottom)), // ⬇ dsmash
+            '\u{2B06}' => (false, Some(PhantomKind::SmashTop)),    // ⬆ asmash
             _ => {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
@@ -1762,7 +1847,7 @@ impl CompactParser {
                 border_color: empty,
             }
         } else {
-            CompactNode::Phantom(content, PhantomKind::Full)
+            CompactNode::Phantom(content, phantom_kind.unwrap_or(PhantomKind::Full))
         };
         Ok((rest, self.push_node(node)))
     }
@@ -1965,12 +2050,34 @@ impl CompactParser {
     }
 
     fn parse_matrix<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, _) = satisfy(|c| c == '\u{25A0}')(input)?; // ■
+        let (input, marker) = satisfy(|c| matches!(c, '\u{25A0}' | '\u{2588}'))(input)?;
         let (input, _) = satisfy(|c| c == '(')(input)?;
-        let (input, content) = self.parse_matrix_content(input)?;
+        let (input, content) = self.parse_matrix_content(input, marker == '\u{2588}')?;
         let (input, _) = satisfy(|c| c == ')')(input)?;
         self.arena
             .mark_array_environment(content, MatrixKind::Matrix);
+        if marker == '\u{2588}' {
+            self.arena.mark_equation_array(content);
+            // UTN 28 uses `&=` as the alignment boundary in an equation
+            // array. The parser has already split the row at `&`, so retain
+            // the corresponding right/left column alignment in the AST.
+            let col_aligns = match *self.arena.node(content) {
+                CompactNode::Array { col_aligns, .. } => col_aligns,
+                _ => return Ok((input, content)),
+            };
+            let columns = self.arena.children(col_aligns).to_vec();
+            for (index, column) in columns.into_iter().enumerate() {
+                if let Some(CompactNode::ColAlign(alignment)) =
+                    self.arena.try_node_mut_in_place(column)
+                {
+                    *alignment = if index % 2 == 0 {
+                        ColumnAlign::Right
+                    } else {
+                        ColumnAlign::Left
+                    };
+                }
+            }
+        }
         Ok((input, content))
     }
 
@@ -1983,7 +2090,7 @@ impl CompactParser {
     fn parse_cases<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = satisfy(|c| c == '\u{24B8}')(input)?; // Ⓒ
         let (input, _) = satisfy(|c| c == '(')(input)?;
-        let (input, content) = self.parse_matrix_content(input)?;
+        let (input, content) = self.parse_matrix_content(input, false)?;
         let (input, _) = satisfy(|c| c == ')')(input)?;
         self.arena
             .mark_array_environment(content, MatrixKind::Matrix);
@@ -2075,6 +2182,31 @@ impl CompactParser {
                 fallback.end,
             ));
         }
+        for &(offset, value) in &self.unsupported_nary_controls {
+            diagnostics.push(warning(
+                format!(
+                    "UnicodeMath n-ary control digit {value} has unsupported placement flags; the representable limit placement was retained"
+                ),
+                offset,
+                offset + 1,
+            ));
+        }
+        for &(start, end) in &self.equation_number_losses {
+            diagnostics.push(warning(
+                "UnicodeMath equation-number metadata was accepted but is not represented in the AST"
+                    .into(),
+                start,
+                end,
+            ));
+        }
+        for &(start, end) in &self.legacy_case_warnings {
+            diagnostics.push(warning(
+                "legacy one-sided brace/matrix notation was canonicalized as UnicodeMath cases"
+                    .into(),
+                start,
+                end,
+            ));
+        }
         diagnostics.sort_unstable_by_key(|diagnostic| {
             diagnostic.span.map_or(usize::MAX, |span| span.start)
         });
@@ -2089,7 +2221,11 @@ impl CompactParser {
         self.check_node_count(0)
     }
 
-    fn parse_matrix_content<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+    fn parse_matrix_content<'a>(
+        &mut self,
+        input: &'a str,
+        allow_equation_number: bool,
+    ) -> IResult<&'a str, NodeId> {
         let mut rows: Vec<Vec<SmallVec<[NodeId; 4]>>> = Vec::new();
         let mut current_row: Vec<SmallVec<[NodeId; 4]>> = Vec::new();
         let mut current_cell: SmallVec<[NodeId; 4]> = SmallVec::new();
@@ -2122,6 +2258,16 @@ impl CompactParser {
             }
             if let Ok(offset) = u32::try_from(offset) {
                 walk.push(offset);
+            }
+            if allow_equation_number
+                && !current_cell.is_empty()
+                && let Some((rest, start, end)) = self.take_equation_number(remaining)
+            {
+                if self.equation_number_losses.len() < MAX_EQUATION_NUMBER_WARNINGS {
+                    self.equation_number_losses.push((start, end));
+                }
+                remaining = rest;
+                continue;
             }
             if remaining.starts_with(')') {
                 break;
@@ -2431,6 +2577,13 @@ impl CompactParser {
     fn parse_nary_op<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, op) = satisfy(is_nary_char)(input)?;
 
+        let default_limits = if is_integral(op) {
+            LimitStyle::SubSup
+        } else {
+            LimitStyle::AboveBelow
+        };
+        let (input, control_limits) = self.parse_nary_control(input, default_limits);
+
         // Primes are a superscript of the operator (`∑′_i`, LaTeX
         // `\sum'_i`), merged with a superscript that follows.
         let (input, mut primes) = if input.starts_with(is_prime) {
@@ -2469,11 +2622,7 @@ impl CompactParser {
 
         let (input, body) = self.parse_naryand(input)?;
 
-        let limits = if is_integral(op) {
-            LimitStyle::SubSup
-        } else {
-            LimitStyle::AboveBelow
-        };
+        let limits = control_limits.unwrap_or(default_limits);
 
         let id = self.push_node(CompactNode::Nary {
             op,
@@ -2483,6 +2632,51 @@ impl CompactParser {
             limits,
         });
         Ok((input, id))
+    }
+
+    /// Read the optional UTN 28 n-ary placement control. A digit is treated
+    /// as a control only when it is followed by a script marker, the naryand
+    /// concatenation operator, whitespace, or the end of the expression. A
+    /// digit immediately followed by a letter remains a literal n-aryand
+    /// operand such as `∑1x`.
+    fn parse_nary_control<'a>(
+        &mut self,
+        input: &'a str,
+        default: LimitStyle,
+    ) -> (&'a str, Option<LimitStyle>) {
+        let Some(digit) = input.as_bytes().first().copied() else {
+            return (input, None);
+        };
+        if !digit.is_ascii_digit() {
+            return (input, None);
+        }
+        let value = digit - b'0';
+        let after = &input[1..];
+        let continuation = after.is_empty()
+            || after.starts_with(['_', '^', '\u{2592}'])
+            || after.chars().next().is_some_and(char::is_whitespace);
+        if !continuation {
+            return (input, None);
+        }
+        let limits = match value {
+            0 => default,
+            1 => LimitStyle::AboveBelow,
+            2 => LimitStyle::SubSup,
+            _ => {
+                if self.unsupported_nary_controls.len() < MAX_NARY_CONTROL_WARNINGS {
+                    self.unsupported_nary_controls
+                        .push((self.offset(input), value));
+                }
+                if value & 0b11 == 1 {
+                    LimitStyle::AboveBelow
+                } else if value & 0b11 == 2 {
+                    LimitStyle::SubSup
+                } else {
+                    default
+                }
+            },
+        };
+        (&input[1..], Some(limits))
     }
 
     fn parse_number<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -3752,7 +3946,7 @@ mod tests {
             if is_nary_char(c)
                 || is_prime(c)
                 || unicode_accent_suffix(&c.to_string()).is_some()
-                || "\u{A6}\u{2016}\u{221A}\u{221B}\u{221C}▒■▭┬┴〖〗⟡".contains(c)
+                || "\u{A6}\u{2016}\u{221A}\u{221B}\u{221C}▒■▭┬┴〖〗⟡⇳⬆⬇⬌⬍".contains(c)
             {
                 continue;
             }

@@ -1267,6 +1267,77 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
     }
 }
 
+/// Write a cases-family array using its retained source environment. The
+/// parser records this sparse provenance because a generic fenced array cannot
+/// recover whether authored rows were cases, rcases, or their display-style
+/// variants. The compact array shape remains the source of truth for cells.
+fn write_cases_array(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    right: bool,
+    display: bool,
+    starred: bool,
+) -> bool {
+    let CompactNode::Array {
+        cells,
+        num_cols,
+        arraystretch_pct,
+        add_jot,
+        array_style,
+        col_seps,
+        row_seps,
+        ..
+    } = *arena.node(id)
+    else {
+        return false;
+    };
+    // Cases parsing uses the standard 1.2 row pitch. Preserve the provenance
+    // only while that shape is intact. An edited array with a different pitch
+    // needs the generic array writer, which can express its current metadata.
+    if arraystretch_pct != 120 || add_jot || array_style || col_seps != 0 || row_seps != 0 {
+        return false;
+    }
+    let env = match (right, display, starred) {
+        (false, false, false) => "cases",
+        (false, true, false) => "dcases",
+        (false, true, true) => "dcases*",
+        (true, false, false) => "rcases",
+        (true, true, false) => "drcases",
+        (true, true, true) => "rcases*",
+        (false, false, true) => "cases*",
+        (true, false, true) => "rcases*",
+    };
+    let columns = usize::from(num_cols.max(1));
+    let rows = arena.children(cells);
+    let authored_rows = arena.table_metadata(id).and_then(|metadata| {
+        (!metadata.row_lengths.is_empty()).then_some(metadata.row_lengths.as_ref())
+    });
+    buf.push_str("\\begin{");
+    buf.push_str(env);
+    buf.push_str("} ");
+    for (row_index, row) in rows.chunks(columns).enumerate() {
+        if row_index != 0 {
+            buf.push_str(" \\\\ ");
+        }
+        let authored_target = authored_rows
+            .and_then(|lengths| lengths.get(row_index))
+            .copied()
+            .map_or(usize::MAX, usize::from);
+        for (column, cell) in row.iter().take(authored_target).enumerate() {
+            if column != 0 {
+                buf.push_str(" & ");
+            }
+            let (_, nodes) = arena.table_cell_parts(cell);
+            write_node_slice(buf, arena, nodes, false);
+        }
+    }
+    buf.push_str(" \\end{");
+    buf.push_str(env);
+    buf.push('}');
+    true
+}
+
 #[inline(never)]
 fn nary_needs_space(arena: &AstArena, op: char, body: NodeId, curr: NodeId) -> bool {
     !is_empty_body(arena, body) && needs_space(arena, Some(body), curr) && !is_latex_nary(op)
@@ -1568,6 +1639,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             let open_str = arena.str_val(open);
             let close_str = arena.str_val(close);
             let content_ids = arena.children(content);
+
+            if content_ids.len() == 1
+                && let Some((right, display, starred)) = arena.cases_environment(content_ids[0])
+                && write_cases_array(buf, arena, content_ids[0], right, display, starred)
+            {
+                return;
+            }
 
             // A fenced barless fraction: `\binom`, or `\genfrac` with the
             // `\brace`/`\brack` delimiters (both KaTeX and MathJax read
@@ -2039,6 +2117,22 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             let cell_ids = arena.children(cells);
             let dashes = arena.rule_dashes(id);
             let nc = usize::from(num_cols.max(1));
+            let authored_rows = arena
+                .array_environment(id)
+                .is_none()
+                .then(|| {
+                    arena.table_metadata(id).and_then(|metadata| {
+                        (!metadata.row_lengths.is_empty()).then_some(metadata.row_lengths.as_ref())
+                    })
+                })
+                .flatten();
+            let authored_stretch = (buf.latex_profile == LatexProfile::PdfLaTeX)
+                .then(|| {
+                    arena
+                        .authored_arraystretch(id)
+                        .filter(|value| (value - 1.0).abs() > f64::EPSILON)
+                })
+                .flatten();
             // Preserve the display-style alignment semantics when this table
             // came from an AMS environment. An ordinary array or an isolated
             // cell declaration cannot establish that style for the table.
@@ -2092,6 +2186,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             } else {
                 ("array", "")
             };
+            if let Some(stretch) = authored_stretch {
+                buf.push_str("{\\renewcommand{\\arraystretch}{");
+                buf.push_str(&stretch.to_string());
+                buf.push_str("}");
+            }
             buf.push_str(r"\begin{");
             buf.push_str(env);
             buf.push('}');
@@ -2151,8 +2250,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 };
                 let cells_start = buf.len();
                 let mut col_idx = 0;
+                let authored_target = authored_rows
+                    .and_then(|rows| rows.get(row_idx))
+                    .copied()
+                    .map_or(usize::MAX, usize::from);
+                let mut authored_count = 0usize;
                 let mut emitted = false;
-                while col_idx < row.len() {
+                while col_idx < row.len() && authored_count < authored_target {
                     let cell_id = &row[col_idx];
                     if emitted {
                         buf.push_str(" & ");
@@ -2210,9 +2314,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         write_node_slice(buf, arena, nodes, false);
                     }
                     col_idx = col_idx.saturating_add(cell_span);
+                    authored_count += 1;
                 }
-                for _ in row.len()..nc {
-                    buf.push_str(" & ");
+                if authored_rows.is_none() {
+                    for _ in row.len()..nc {
+                        buf.push_str(" & ");
+                    }
                 }
                 if let Some(start) = row_start {
                     guard_row_break_argument(buf, start);
@@ -2239,6 +2346,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push_str(r" \end{");
             buf.push_str(env);
             buf.push('}');
+            if authored_stretch.is_some() {
+                buf.push('}');
+            }
         },
 
         CompactNode::Phantom(inner, kind) => {
@@ -5451,11 +5561,11 @@ mod tests {
                 r"\alpha ab",
             ),
             (
-                "<math><mfenced><mi>α</mi><mi>a</mi><mi>b</mi></mfenced></math>",
+                "<math><mfenced separators=''><mi>α</mi><mi>a</mi><mi>b</mi></mfenced></math>",
                 r"\left( \alpha ab \right)",
             ),
             (
-                "<math><mfenced><mi>α</mi><mrow><mi>a</mi><mi>b</mi></mrow></mfenced></math>",
+                "<math><mfenced separators=''><mi>α</mi><mrow><mi>a</mi><mi>b</mi></mrow></mfenced></math>",
                 r"\left( \alpha ab \right)",
             ),
         ];

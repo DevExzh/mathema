@@ -9,6 +9,12 @@ use crate::error::Span;
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
+    EquationArray,
+    Cases {
+        right: bool,
+        display: bool,
+        starred: bool,
+    },
     NativeArray(RuleDashes),
     MatrixPadding,
 }
@@ -22,6 +28,18 @@ pub(crate) struct RuleDashes {
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
+
+/// Authored table information that the compact rectangular grid cannot encode
+/// in its node fields alone. This is sparse metadata, so ordinary expressions
+/// pay only for the optional pointer in [`AstArena`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TableMetadata {
+    pub(crate) row_lengths: Box<[u16]>,
+    pub(crate) arraystretch_bits: Option<u64>,
+    pub(crate) num_cols: u16,
+    pub(crate) cell_count: u32,
+    pub(crate) legacy_pct: u8,
+}
 
 /// Keep the overwhelmingly common single metadata entry in the arena itself.
 /// A boxed map is allocated only when an arena needs a second distinct entry.
@@ -116,6 +134,8 @@ pub struct AstArena {
     /// unless a reader is configured to retain source provenance.
     #[allow(clippy::box_collection)]
     source_ranges: Option<Box<HashMap<NodeId, Span>>>,
+    #[allow(clippy::box_collection)]
+    table_metadata: Option<Box<HashMap<NodeId, TableMetadata>>>,
     /// Typesetting attributes of the nodes that have any.
     attrs: Option<Box<AttrStore>>,
     children: Vec<NodeId>,
@@ -146,6 +166,7 @@ impl AstArena {
             node_overflow: false,
             provenance: ProvenanceStore::default(),
             source_ranges: None,
+            table_metadata: None,
             attrs: None,
             children: Vec::new(),
             strings: String::new(),
@@ -169,6 +190,7 @@ impl AstArena {
             node_overflow: false,
             provenance: ProvenanceStore::default(),
             source_ranges: None,
+            table_metadata: None,
             attrs: None,
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
@@ -480,6 +502,12 @@ impl AstArena {
         if let Some(ranges) = &mut self.source_ranges {
             ranges.remove(&id);
         }
+        if let Some(store) = &mut self.table_metadata {
+            store.remove(&id);
+            if store.is_empty() {
+                self.table_metadata = None;
+            }
+        }
         self.node_mut_in_place(id)
     }
 
@@ -552,6 +580,17 @@ impl AstArena {
             } else if let Some(ranges) = &mut self.source_ranges {
                 ranges.remove(&destination);
             }
+        }
+        if let Some(metadata) = self
+            .table_metadata
+            .as_ref()
+            .and_then(|store| store.get(&source).cloned())
+        {
+            self.table_metadata
+                .get_or_insert_with(Default::default)
+                .insert(destination, metadata);
+        } else if let Some(store) = &mut self.table_metadata {
+            store.remove(&destination);
         }
     }
 
@@ -705,6 +744,102 @@ impl AstArena {
         }
     }
 
+    /// Record authored row lengths and an exact finite arraystretch value for
+    /// a compact rectangular array. The compact node retains the legacy
+    /// percentage fallback for readers that do not carry this side metadata.
+    #[inline]
+    pub(crate) fn mark_table_metadata(
+        &mut self,
+        id: NodeId,
+        row_lengths: &[usize],
+        arraystretch: Option<f64>,
+        num_cols: usize,
+    ) {
+        if self.size_overflow {
+            return;
+        }
+        let stretch_needs_metadata = arraystretch.is_some_and(f64::is_finite);
+        let CompactNode::Array { cells, .. } = *self.node(id) else {
+            return;
+        };
+        let has_spans = self
+            .children(cells)
+            .iter()
+            .any(|&cell| matches!(self.node(cell), CompactNode::SpannedCell { .. }));
+        let rows_are_ragged = !has_spans && row_lengths.iter().any(|&length| length != num_cols);
+        if !stretch_needs_metadata && !rows_are_ragged {
+            return;
+        }
+        let row_lengths = if has_spans {
+            Box::new([])
+        } else {
+            row_lengths
+                .iter()
+                .map(|&length| u16::try_from(length).unwrap_or(u16::MAX))
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        };
+        let cell_count = self.children(cells).len() as u32;
+        let metadata = TableMetadata {
+            row_lengths,
+            arraystretch_bits: arraystretch
+                .filter(|value| value.is_finite())
+                .map(f64::to_bits),
+            num_cols: num_cols.min(u16::MAX as usize) as u16,
+            cell_count,
+            legacy_pct: match *self.node(id) {
+                CompactNode::Array {
+                    arraystretch_pct, ..
+                } => arraystretch_pct,
+                _ => unreachable!(),
+            },
+        };
+        self.table_metadata
+            .get_or_insert_with(Default::default)
+            .insert(id, metadata);
+    }
+
+    #[inline]
+    pub(crate) fn table_metadata(&self, id: NodeId) -> Option<&TableMetadata> {
+        let metadata = self.table_metadata.as_ref()?.get(&id)?;
+        let CompactNode::Array {
+            cells, num_cols, ..
+        } = *self.node(id)
+        else {
+            return None;
+        };
+        if metadata.num_cols != num_cols || metadata.cell_count != self.children(cells).len() as u32
+        {
+            return None;
+        }
+        Some(metadata)
+    }
+
+    /// Return the authored stretch when available, falling back to the legacy
+    /// compact percentage used by trees constructed before table metadata.
+    #[inline]
+    pub(crate) fn arraystretch_value(&self, id: NodeId, pct: u8) -> f64 {
+        self.table_metadata(id)
+            .filter(|metadata| metadata.legacy_pct == pct)
+            .and_then(|metadata| metadata.arraystretch_bits.map(f64::from_bits))
+            .unwrap_or(f64::from(pct) / 100.0)
+    }
+
+    #[inline]
+    pub(crate) fn authored_arraystretch(&self, id: NodeId) -> Option<f64> {
+        self.table_metadata(id)
+            .and_then(|metadata| {
+                let CompactNode::Array {
+                    arraystretch_pct, ..
+                } = *self.node(id)
+                else {
+                    return None;
+                };
+                (metadata.legacy_pct == arraystretch_pct).then_some(metadata)
+            })
+            .and_then(|metadata| metadata.arraystretch_bits.map(f64::from_bits))
+    }
+
     #[inline]
     pub(crate) fn array_environment(&self, id: NodeId) -> Option<MatrixKind> {
         match self.provenance.get(id)? {
@@ -713,6 +848,53 @@ impl AstArena {
             },
             _ => None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn mark_cases_environment(
+        &mut self,
+        id: NodeId,
+        right: bool,
+        display: bool,
+        starred: bool,
+    ) {
+        if !self.size_overflow {
+            self.provenance.insert(
+                id,
+                Provenance::Cases {
+                    right,
+                    display,
+                    starred,
+                },
+            );
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cases_environment(&self, id: NodeId) -> Option<(bool, bool, bool)> {
+        match self.provenance.get(id)? {
+            Provenance::Cases {
+                right,
+                display,
+                starred,
+            } if matches!(self.node(id), CompactNode::Array { .. }) => {
+                Some((right, display, starred))
+            },
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn mark_equation_array(&mut self, id: NodeId) {
+        if !self.size_overflow {
+            self.provenance.insert(id, Provenance::EquationArray);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_equation_array(&self, id: NodeId) -> bool {
+        matches!(self.provenance.get(id), Some(Provenance::EquationArray))
+            && matches!(self.node(id), CompactNode::Array { .. })
     }
 
     #[inline]
@@ -982,6 +1164,14 @@ impl AstArena {
             + self.provenance.heap_bytes()
             + self.source_ranges.as_ref().map_or(0, |ranges| {
                 size_of::<HashMap<NodeId, Span>>() + ranges.capacity() * size_of::<(NodeId, Span)>()
+            })
+            + self.table_metadata.as_ref().map_or(0, |metadata| {
+                size_of::<HashMap<NodeId, TableMetadata>>()
+                    + metadata.capacity() * size_of::<(NodeId, TableMetadata)>()
+                    + metadata
+                        .values()
+                        .map(|value| value.row_lengths.len() * size_of::<u16>())
+                        .sum::<usize>()
             })
             + self.attrs.as_ref().map_or(0, |attrs| {
                 size_of::<HashMap<NodeId, NodeAttrs>>()

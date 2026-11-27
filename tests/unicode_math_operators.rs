@@ -457,6 +457,47 @@ fn unicode_math_reports_dropped_upright_style() {
 }
 
 #[test]
+fn unicode_math_reports_explicit_delimiter_size_loss() {
+    let parsed = mathema::from_latex(r"\bigl(x\bigr)").unwrap();
+    let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();
+    assert_eq!(written, "(x)");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("explicit scale factor")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn unicode_math_emits_native_nary_placement_controls() {
+    let limits = mathema::from_latex(r"\sum\nolimits_{i=0}^{n} i").unwrap();
+    assert_eq!(limits.to_unicode_math().unwrap(), "∑2_(i=0)^n i");
+    assert!(
+        limits
+            .to_unicode_math_with_diagnostics()
+            .unwrap()
+            .1
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("n-ary placement"))
+    );
+
+    let integral = mathema::from_latex(r"\int\limits_{0}^{1} x").unwrap();
+    assert_eq!(integral.to_unicode_math().unwrap(), "∫1_0^1 x");
+
+    let unsupported = mathema::from_unicode_math_with("∑3_(i=0)^n▒i", &Config::default()).unwrap();
+    assert!(
+        unsupported
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unsupported placement flags"))
+    );
+
+    let literal = mathema::from_unicode_math("∑1x").unwrap();
+    assert!(literal.to_mathml().unwrap().contains("<mn>1</mn>"));
+}
+
+#[test]
 fn unicode_math_groups_compound_mathop_bases_before_scripts() {
     let parsed = mathema::from_latex(r"\mathop{\mathrm{Res}}_{x} f").unwrap();
     let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();

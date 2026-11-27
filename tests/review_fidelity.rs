@@ -387,10 +387,9 @@ fn lenient_unicode_math_matrix_recovery_keeps_table_and_reports_skips() {
 
 #[test]
 fn successful_unicode_math_literal_fallback_is_diagnosed() {
-    // The destination reader intentionally accepts an unmatched cases-like
-    // string as literal text for compatibility.  That successful recovery is
-    // still a meaningful loss and must not look like a clean parse.
-    let result = from_unicode_math_with("{■(x&x≥0@−x&x<0)", &lenient()).unwrap();
+    // An unmatched group can still recover as literal text. Legacy one-sided
+    // matrix cases have their own structural regression in unicode_math_cases.
+    let result = from_unicode_math_with("〖unclosed", &lenient()).unwrap();
     assert!(
         matches!(result.expr().nodes.as_slice(), [MathNode::Text(_, _)]),
         "fixture should exercise literal fallback: {:?}",

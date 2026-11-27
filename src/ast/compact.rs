@@ -1110,6 +1110,12 @@ fn push_array_node_with_geometry(
         col_seps,
         row_seps,
     });
+    let row_lengths = if rows.iter().any(|row| row.len() != usize::from(num_cols)) {
+        rows.iter().map(Vec::len).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    arena.mark_table_metadata(id, &row_lengths, arraystretch, usize::from(num_cols));
     if let Some(environment) = environment {
         arena.mark_array_environment(id, environment);
     }
@@ -1293,15 +1299,24 @@ fn reconstruct_bare_node(arena: &AstArena, id: NodeId) -> MathNode {
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
             let mut rows = Vec::new();
-            for chunk in cell_ids.chunks(nc.max(1)) {
+            let metadata = arena.table_metadata(id);
+            for (row_index, chunk) in cell_ids.chunks(nc.max(1)).enumerate() {
                 let mut row = Vec::with_capacity(chunk.len());
                 let mut column = 0;
+                let authored_cells = metadata
+                    .and_then(|metadata| metadata.row_lengths.get(row_index))
+                    .copied()
+                    .map_or(usize::MAX, usize::from);
+                let mut authored_count = 0usize;
                 while column < chunk.len() {
                     let cell_id = chunk[column];
                     // Each cell is a Row node wrapping the cell contents
                     if arena.is_matrix_padding(cell_id) {
                         column += 1;
                         continue;
+                    }
+                    if authored_count >= authored_cells {
+                        break;
                     }
                     let width = match *arena.node(cell_id) {
                         CompactNode::SpannedCell { span, .. } => {
@@ -1317,19 +1332,21 @@ fn reconstruct_bare_node(arena: &AstArena, id: NodeId) -> MathNode {
                         MathNode::Row(nodes) => nodes,
                         node => vec![node],
                     });
+                    authored_count += 1;
                     column += width;
                 }
                 // A public compact edit can leave the final row short. Keep
                 // its declared slots when materializing the public rectangle.
-                row.resize_with(row.len() + nc.saturating_sub(chunk.len()), Vec::new);
+                if metadata.is_none() {
+                    row.resize_with(row.len() + nc.saturating_sub(chunk.len()), Vec::new);
+                }
                 rows.push(row);
             }
 
-            let arraystretch = if arraystretch_pct == 100 {
-                None
-            } else {
-                Some(arraystretch_pct as f64 / 100.0)
-            };
+            let arraystretch = metadata
+                .filter(|metadata| metadata.legacy_pct == arraystretch_pct)
+                .and_then(|metadata| metadata.arraystretch_bits.map(f64::from_bits))
+                .or_else(|| (arraystretch_pct != 100).then_some(arraystretch_pct as f64 / 100.0));
 
             match arena.valid_matrix_environment(
                 id,

@@ -15,11 +15,13 @@
 //! braces, arrows with labels, embellishments (accents, primes, negation
 //! slashes), function names as one operator and text runs as one text node.
 //!
-//! The AST has no place for MathType's typesetting data, which is read and
-//! dropped without a diagnostic: nudges, explicit fonts (only
-//! their bold/italic style is kept), line spacing, tab stops (rulers), the
-//! equation preferences and template options (fence alignment, expanding
-//! integrals). Dotted partition lines become dashed ones. Operator and
+//! The AST has no place for MathType's typesetting data. Nudge offsets,
+//! nonzero line spacing, and nonempty tab stops (rulers) are read and dropped
+//! with one informational diagnostic per category. Explicit fonts retain their
+//! bold/italic and math-alphabet effects; equation preferences are used for
+//! sizes where possible. Template options without an AST equivalent (fence
+//! alignment, expanding integrals) are still dropped without a separate
+//! diagnostic. Dotted partition lines become dashed ones. Operator and
 //! decimal-point column alignment become left and right alignment.
 //!
 //! Font sizes become attributes ([`crate::ast::attrs`]) where they are not the

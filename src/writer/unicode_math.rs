@@ -32,16 +32,15 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::Boxed { .. } => Some(
             "UnicodeMath box (▭) round-trips structurally but drops background/border color".into(),
         ),
-        CompactNode::Phantom(..) => Some(
-            "UnicodeMath phantom (⟡) round-trips structurally but drops the phantom kind (v/h)"
-                .into(),
+        CompactNode::Actuarial { .. } => Some(
+            "UnicodeMath writes an actuarial enclosure as a masked box; the actuarial node kind is not preserved".into(),
         ),
         CompactNode::Color { .. } => {
             Some("UnicodeMath cannot represent color; only the content is written".into())
         },
-        CompactNode::Scaled { .. } => {
-            Some("UnicodeMath does not preserve the \\scalebox factor".into())
-        },
+        CompactNode::Scaled { factor, .. } if *factor != Rational::one() => Some(format!(
+            "UnicodeMath cannot preserve explicit scale factor {factor}; delimiter or content size was written at the standard size"
+        )),
         CompactNode::RaiseBox { .. } => {
             Some("UnicodeMath does not preserve the \\raisebox shift".into())
         },
@@ -205,7 +204,13 @@ impl CompactVisitor for UnicodeMathLossVisitor {
 
     fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
         let node = arena.node(id);
-        if let Some(message) = unicode_math_loss(arena, node) {
+        // The `█(...)` spelling is a native aligned-row form. Its alignment
+        // is preserved in the AST and in the writer, so it does not carry a
+        // loss diagnostic unless some separate table feature is dropped.
+        let message = (!arena.is_equation_array(id))
+            .then(|| unicode_math_loss(arena, node))
+            .flatten();
+        if let Some(message) = message {
             self.diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Warning,
                 message,
@@ -246,6 +251,18 @@ fn write_unicode_space(out: &mut String, width: Rational) {
         out.push('\u{2002}');
     } else {
         out.push('\u{2009}');
+    }
+}
+
+#[inline]
+fn phantom_shortcut(kind: PhantomKind) -> char {
+    match kind {
+        PhantomKind::Full => '\u{27E1}',        // ⟡
+        PhantomKind::Vertical => '\u{21F3}',    // ⇳
+        PhantomKind::Horizontal => '\u{2B0C}',  // ⬌
+        PhantomKind::SmashBoth => '\u{2B0D}',   // ⬍
+        PhantomKind::SmashBottom => '\u{2B07}', // ⬇
+        PhantomKind::SmashTop => '\u{2B06}',    // ⬆
     }
 }
 
@@ -832,11 +849,19 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
 
         MathNode::Array { .. } | MathNode::Matrix { .. } | MathNode::NativeArray { .. } => {
-            write_heap_table(out, node, '■');
+            write_heap_table(
+                out,
+                node,
+                if is_equation_array_heap(node) {
+                    '█'
+                } else {
+                    '■'
+                },
+            );
         },
 
-        MathNode::Phantom(inner, _) => {
-            out.push('\u{27E1}'); // phantom operator
+        MathNode::Phantom(inner, kind) => {
+            out.push(phantom_shortcut(*kind));
             write_paren_if_complex(out, inner, style);
         },
 
@@ -1811,6 +1836,57 @@ fn cases_array(content: &[FencedItem]) -> Option<&MathNode> {
     .then_some(node)
 }
 
+/// Whether a heap table has the native equation-array column pattern from
+/// UTN 28 section 3.19.
+fn is_equation_array_heap(node: &MathNode) -> bool {
+    let (columns, rows, native_ok) = match node {
+        MathNode::Array {
+            columns,
+            rows,
+            arraystretch,
+            add_jot,
+        } => (columns, rows, arraystretch.is_none() && !add_jot),
+        MathNode::NativeArray {
+            columns,
+            rows,
+            arraystretch,
+            add_jot,
+            array_style,
+            col_seps,
+            row_seps,
+            dashed_col_seps,
+            dashed_row_seps,
+        } => (
+            columns,
+            rows,
+            arraystretch.is_none()
+                && !add_jot
+                && !array_style
+                && *col_seps == 0
+                && *row_seps == 0
+                && *dashed_col_seps == 0
+                && *dashed_row_seps == 0,
+        ),
+        _ => return false,
+    };
+    native_ok
+        && columns.len() >= 2
+        && columns.iter().enumerate().all(|(index, align)| {
+            *align
+                == if index % 2 == 0 {
+                    ColumnAlign::Right
+                } else {
+                    ColumnAlign::Left
+                }
+        })
+        && !rows.iter().flatten().flatten().any(|node| {
+            matches!(
+                node,
+                MathNode::AlignedCell { .. } | MathNode::SpannedCell { .. }
+            )
+        })
+}
+
 /// Write a heap table using the requested UnicodeMath marker. Ordinary
 /// matrices use U+25A0; cases use U+24B8 and share this exact body formatter.
 fn write_heap_table(out: &mut String, node: &MathNode, marker: char) {
@@ -1877,6 +1953,48 @@ fn cases_array_c(arena: &AstArena, content: crate::ast::compact::NodeSpan) -> Op
     matches!(*arena.node(*id), CompactNode::Array { .. }).then_some(*id)
 }
 
+fn is_equation_array_c(arena: &AstArena, id: NodeId) -> bool {
+    let CompactNode::Array {
+        col_aligns,
+        cells,
+        arraystretch_pct,
+        add_jot,
+        array_style,
+        col_seps,
+        row_seps,
+        ..
+    } = *arena.node(id)
+    else {
+        return false;
+    };
+    let columns = arena.children(col_aligns);
+    let rows = arena.children(cells);
+    arraystretch_pct == 100
+        && !add_jot
+        && !array_style
+        && col_seps == 0
+        && row_seps == 0
+        && columns.len() >= 2
+        && columns.iter().enumerate().all(|(index, &column)| {
+            matches!(
+                *arena.node(column),
+                CompactNode::ColAlign(alignment)
+                    if alignment
+                        == if index % 2 == 0 {
+                            ColumnAlign::Right
+                        } else {
+                            ColumnAlign::Left
+                        }
+            )
+        })
+        && !rows.iter().any(|&cell| {
+            matches!(
+                *arena.node(cell),
+                CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+            )
+        })
+}
+
 /// Write a compact table using the requested UnicodeMath marker. The body is
 /// shared by ordinary matrices and cases, so nested cases are emitted once
 /// while their cells are traversed.
@@ -1891,13 +2009,29 @@ fn write_compact_table(out: &mut String, arena: &AstArena, id: NodeId, marker: c
     out.push('(');
     let cell_ids = arena.children(cells);
     let stride = usize::from(num_cols.max(1));
+    let authored_rows = arena
+        .array_environment(id)
+        .is_none()
+        .then(|| {
+            arena.table_metadata(id).and_then(|metadata| {
+                (!metadata.row_lengths.is_empty()).then_some(metadata.row_lengths.as_ref())
+            })
+        })
+        .flatten();
     let mut row_start = 0;
     for (i, row) in cell_ids.chunks(stride).enumerate() {
         if i > 0 {
             out.push('@');
         }
         row_start = out.len();
-        for (j, &cell_id) in row.iter().enumerate() {
+        let authored_target = authored_rows
+            .and_then(|rows| rows.get(i))
+            .copied()
+            .map_or(usize::MAX, usize::from);
+        let mut authored_count = 0usize;
+        let mut j = 0usize;
+        while j < row.len() && authored_count < authored_target {
+            let cell_id = row[j];
             if j > 0 {
                 out.push('&');
             }
@@ -1906,8 +2040,12 @@ fn write_compact_table(out: &mut String, arena: &AstArena, id: NodeId, marker: c
             } else {
                 write_node_c(out, arena, cell_id, MathStyle::Text);
             }
+            authored_count += 1;
+            j += 1;
         }
-        out.extend(std::iter::repeat_n('&', stride - row.len()));
+        if authored_rows.is_none() {
+            out.extend(std::iter::repeat_n('&', stride - row.len()));
+        }
     }
     // The reader drops an empty last row that no at-sign ends.
     if !cell_ids.is_empty() && out.len() == row_start {
@@ -2617,10 +2755,17 @@ fn separate_after_script(out: &mut String, start: usize, previous_operator: bool
 /// function name, which the reader would give the operand after it.
 fn write_nary(out: &mut String, node: &MathNode, style: MathStyle, grouped: bool) {
     if let MathNode::Nary {
-        op, sub, sup, body, ..
+        op,
+        sub,
+        sup,
+        body,
+        limits,
     } = node
     {
         out.push(*op);
+        if let Some(control) = nary_control(*op, *limits) {
+            out.push(control);
+        }
         if let Some(s) = sub {
             out.push('_');
             write_script_arg(out, s, style.sub());
@@ -2664,10 +2809,17 @@ fn splits_naryand(next: &MathNode, style: MathStyle) -> bool {
 /// Compact counterpart of [`write_nary`].
 fn write_nary_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle, grouped: bool) {
     if let CompactNode::Nary {
-        op, sub, sup, body, ..
+        op,
+        sub,
+        sup,
+        body,
+        limits,
     } = *arena.node(id)
     {
         out.push(op);
+        if let Some(control) = nary_control(op, limits) {
+            out.push(control);
+        }
         if sub.is_some() {
             out.push('_');
             write_script_arg_c(out, arena, sub, style.sub());
@@ -2679,6 +2831,23 @@ fn write_nary_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         out.push(' ');
         write_naryand_c(out, arena, body, style, grouped);
     }
+}
+
+/// Emit a UTN 28 n-ary placement control only when it differs from the
+/// operator's native default. This keeps ordinary sums and integrals in the
+/// familiar spelling while making `\nolimits` and integral `\limits`
+/// unambiguous. Unsupported higher control flags are diagnosed by the reader.
+fn nary_control(op: char, limits: LimitStyle) -> Option<char> {
+    match (is_integral_op(op), limits) {
+        (true, LimitStyle::AboveBelow) => Some('1'),
+        (false, LimitStyle::SubSup) => Some('2'),
+        _ => None,
+    }
+}
+
+#[inline]
+fn is_integral_op(op: char) -> bool {
+    matches!(op, '\u{222B}'..='\u{2233}' | '\u{2A0B}'..='\u{2A1C}')
 }
 
 /// Compact counterpart of [`ends_in_function`].
@@ -3537,11 +3706,16 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Array { .. } => {
-            write_compact_table(out, arena, id, '\u{25A0}');
+            let marker = if arena.is_equation_array(id) || is_equation_array_c(arena, id) {
+                '\u{2588}'
+            } else {
+                '\u{25A0}'
+            };
+            write_compact_table(out, arena, id, marker);
         },
 
-        CompactNode::Phantom(inner, _) => {
-            out.push('\u{27E1}');
+        CompactNode::Phantom(inner, kind) => {
+            out.push(phantom_shortcut(kind));
             write_paren_if_complex_c(out, arena, inner, style);
         },
 

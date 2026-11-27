@@ -1524,6 +1524,9 @@ fn write_node_in(
                         kind @ (SymbolKind::Open | SymbolKind::Close),
                         text,
                     )) => write_literal_delimiter(w, *kind, text),
+                    FencedItem::Element(MathNode::Symbol(SymbolKind::Punctuation, text)) => {
+                        write_mo_separator(w, text)
+                    },
                     FencedItem::Element(node) => write_node(w, node, style),
                     FencedItem::Middle(_) => Ok(()),
                 };
@@ -1668,6 +1671,8 @@ fn write_node_in(
             let mut elem = BytesStart::new("mfrac");
             if *kind == FractionKind::NoBar {
                 elem.push_attribute(("linethickness", "0"));
+            } else if *kind == FractionKind::Skewed {
+                elem.push_attribute(("bevelled", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_argument(w, num, style.fracnum())?;
@@ -2387,6 +2392,17 @@ fn write_mo_middle(w: &mut XmlWriter, text: &str) -> Result<()> {
     write_mo_fence(w, text, middle_form(text), true)
 }
 
+fn write_mo_separator(w: &mut XmlWriter, text: &str) -> Result<()> {
+    let mut elem = BytesStart::new("mo");
+    elem.push_attribute(("separator", "true"));
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)?;
+    Ok(())
+}
+
 fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     elem.push_attribute(("stretchy", "false"));
@@ -3012,6 +3028,8 @@ fn write_bare_node_fast(
             let style = forced.unwrap_or(display_style);
             if kind == FractionKind::NoBar {
                 buf.push_str("<mfrac linethickness=\"0\">");
+            } else if kind == FractionKind::Skewed {
+                buf.push_str("<mfrac bevelled=\"true\">");
             } else {
                 buf.push_str("<mfrac>");
             }
@@ -3097,6 +3115,7 @@ fn write_bare_node_fast(
             row_seps,
         } => {
             let nc = usize::from(num_cols.max(1));
+            let arraystretch = arena.arraystretch_value(id, arraystretch_pct);
             let environment = arena
                 .valid_matrix_environment(
                     id,
@@ -3131,9 +3150,9 @@ fn write_bare_node_fast(
                 buf.push_str(value);
                 buf.push('"');
             }
-            if arraystretch_pct != 100 {
+            if (arraystretch - 1.0).abs() > f64::EPSILON {
                 buf.push_str(" data-mathema-arraystretch=\"");
-                buf.push_str(&arraystretch_pct.to_string());
+                buf.push_str(&(arraystretch * 100.0).to_string());
                 buf.push_str("%\"");
             }
             if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
@@ -3156,10 +3175,24 @@ fn write_bare_node_fast(
                 },
             );
             buf.push('>');
-            for row_chunk in cell_ids.chunks(nc.max(1)) {
+            let authored_rows = arena
+                .array_environment(id)
+                .is_none()
+                .then(|| {
+                    arena.table_metadata(id).and_then(|metadata| {
+                        (!metadata.row_lengths.is_empty()).then_some(metadata.row_lengths.as_ref())
+                    })
+                })
+                .flatten();
+            for (row_index, row_chunk) in cell_ids.chunks(nc.max(1)).enumerate() {
                 buf.push_str("<mtr>");
                 let mut i = 0;
-                while i < nc {
+                let authored_target = authored_rows
+                    .and_then(|rows| rows.get(row_index))
+                    .copied()
+                    .map_or(usize::MAX, usize::from);
+                let mut authored_count = 0usize;
+                while i < nc && authored_count < authored_target {
                     let slot = row_chunk.get(i);
                     let align_nodes = arena.children(col_aligns);
                     let (cell_override, mut nodes) = slot
@@ -3245,6 +3278,7 @@ fn write_bare_node_fast(
                         write_nodes_fast(buf, arena, nodes, cell_style, false);
                     }
                     buf.push_str("</mtd>");
+                    authored_count += 1;
                     i = i.saturating_add(cell_span);
                 }
                 buf.push_str("</mtr>");
@@ -4156,6 +4190,12 @@ fn write_mo_middle_fast(buf: &mut XmlBuffer, text: &str) {
     write_mo_fence_fast(buf, text, middle_form(text), true);
 }
 
+fn write_mo_separator_fast(buf: &mut XmlBuffer, text: &str) {
+    buf.push_str("<mo separator=\"true\">");
+    xml_escape_into(buf, text);
+    buf.push_str("</mo>");
+}
+
 fn write_literal_fence_fast(buf: &mut XmlBuffer, text: &str) {
     buf.push_str("<mo stretchy=\"false\">");
     xml_escape_into(buf, text);
@@ -4219,6 +4259,10 @@ fn write_fenced_node_fast(buf: &mut XmlBuffer, arena: &AstArena, id: NodeId, sty
         }
         if matches!(kind, SymbolKind::Open | SymbolKind::Close) {
             write_literal_delimiter_fast(buf, arena, id, kind, text);
+            return;
+        }
+        if kind == SymbolKind::Punctuation {
+            write_mo_separator_fast(buf, text);
             return;
         }
     }

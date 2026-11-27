@@ -668,6 +668,48 @@ fn v5_spacing_style_bare_space_codes() {
 }
 
 #[test]
+fn nonzero_positional_metadata_is_reported_once_per_category() {
+    let line_with_nudge = cat(&[&[0x01, 0x08, 129, 127], &c5(0, 3, 'x'), &[0]]);
+    let line_with_spacing = cat(&[&[0x01, 0x04, 1, 0], &c5(0, 3, 'y'), &[0]]);
+    let mut body = vec![0x0A];
+    body.extend_from_slice(&line_with_nudge);
+    body.extend_from_slice(&line_with_spacing);
+    body.push(0);
+    let result = MtefReader::parse_bytes(&v5(&body), &Config::default()).unwrap();
+    let infos: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == DiagnosticKind::Info)
+        .collect();
+    assert_eq!(infos.len(), 2, "{infos:?}");
+    assert!(
+        infos
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("nudge"))
+    );
+    assert!(
+        infos
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("line-spacing"))
+    );
+}
+
+#[test]
+fn neutral_nudges_and_empty_rulers_are_silent() {
+    let mut body = vec![0x0A];
+    body.extend_from_slice(&[0x01, 0x08, 128, 128, 0, 0, 0, 0]);
+    body.extend_from_slice(&c5(0, 3, 'x'));
+    body.push(0);
+    // A second line has the ruler flag and an empty stop list.
+    body.extend_from_slice(&[0x01, 0x02, 0, 0]);
+    body.extend_from_slice(&c5(0, 3, 'y'));
+    body.push(0);
+    body.push(0);
+    let result = MtefReader::parse_bytes(&v5(&body), &Config::default()).unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[test]
 fn v5_mtcode_math_alphabets() {
     // A letter in font 1 (`font`, style bits `style`), with a font position.
     let letter = |font: &str, style: u8, code: u16, position: Option<u8>| {
@@ -831,8 +873,17 @@ fn v5_size_color_ruler_and_future_records_are_consumed() {
         .iter()
         .filter(|d| d.kind == DiagnosticKind::Info)
         .collect();
-    // The future-expansion record only.
-    assert_eq!(infos.len(), 1, "{infos:?}");
+    assert_eq!(infos.len(), 2, "{infos:?}");
+    assert!(
+        infos
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("future-expansion"))
+    );
+    assert!(
+        infos
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("tab-stop"))
+    );
 }
 
 /// COLOR_DEF (RGB red) as definition 1, then `content` in one line.

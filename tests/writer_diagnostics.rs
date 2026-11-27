@@ -1,6 +1,7 @@
 //! Verifies that every text writer reports lossy conversions via
 //! `write_compact_with_diagnostics` (feature-matrix item FM1/FM2/FM8).
 
+use mathema::ast::FractionKind;
 use mathema::error::{Config, DiagnosticKind};
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -9,7 +10,7 @@ use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::mtef::MtefWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
-use mathema::{OmmlOptions, OmmlRunProperties};
+use mathema::{MathExpr, MathNode, OmmlOptions, OmmlRunProperties};
 
 fn compact(tex: &str) -> mathema::CompactExpr {
     LatexReader::parse_compact(tex, &Config::default())
@@ -29,6 +30,20 @@ fn mathml_reports_mathchoice_loss() {
     let (_, diags) =
         MathmlWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
     assert!(has_warning(&diags, "mathchoice"), "{diags:?}");
+}
+
+#[test]
+fn mathml_preserves_skewed_fraction_presentation() {
+    let expr = mathema::CompactExpr::from_math_expr(&MathExpr::inline(vec![MathNode::Fraction {
+        kind: FractionKind::Skewed,
+        num: Box::new(MathNode::Identifier("a".into())),
+        den: Box::new(MathNode::Identifier("b".into())),
+    }]))
+    .unwrap();
+    let (output, diags) =
+        MathmlWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(output.contains(r#"<mfrac bevelled="true">"#), "{output}");
+    assert!(diags.is_empty(), "{diags:?}");
 }
 
 #[test]
@@ -81,6 +96,12 @@ fn unicode_math_reports_box_and_cancel_loss() {
     )
     .unwrap();
     assert!(has_warning(&d1, "box"), "{d1:?}");
+    let (_, actuarial) = UnicodeMathWriter::write_compact_with_diagnostics(
+        &compact(r"\angl{x}"),
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(has_warning(&actuarial, "actuarial"), "{actuarial:?}");
     let (_, d2) = UnicodeMathWriter::write_compact_with_diagnostics(
         &compact(r"\cancel{y}"),
         &Config::default(),

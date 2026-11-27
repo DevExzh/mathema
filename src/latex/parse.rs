@@ -1957,6 +1957,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
+    precheck_source_nesting(trimmed)?;
     let (processed, warning) =
         match super::preprocess::prepare_math_input(trimmed) {
             Ok(processed) => (processed, None),
@@ -1994,6 +1995,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             parser.arena.check_limits()?;
             let roots = parser.arena.push_children(&ids)?;
             parser.finish_reports();
+            crate::ast::validate_compact_depth_with(
+                &parser.arena,
+                roots,
+                config.effective_max_depth(),
+            )?;
             let mut diagnostics = std::mem::take(&mut parser.diagnostics);
             if !diagnostics.is_empty() {
                 locate_undefined_commands(input, &mut diagnostics);
@@ -2035,6 +2041,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 let roots = parser.arena.push_children(&result_ids)?;
                 parser.finish_reports();
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
+                crate::ast::validate_compact_depth_with(
+                    &parser.arena,
+                    roots,
+                    config.effective_max_depth(),
+                )?;
                 if !diagnostics.is_empty() {
                     locate_undefined_commands(input, &mut diagnostics);
                 }
@@ -2068,6 +2079,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 let roots = parser.arena.push_children(&ids)?;
                 parser.finish_reports();
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
+                crate::ast::validate_compact_depth_with(
+                    &parser.arena,
+                    roots,
+                    config.effective_max_depth(),
+                )?;
                 if !diagnostics.is_empty() {
                     locate_undefined_commands(input, &mut diagnostics);
                 }
@@ -2080,6 +2096,64 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             }
         },
     }
+}
+
+/// Reject deeply nested source groups before preprocessing can recurse through
+/// them. Macro expansion has its own depth guard, but a raw chain such as
+/// `\\frac{\\frac{...` is otherwise walked by the preprocessing scanner before
+/// the arena parser gets a chance to enforce `MAX_PARSE_DEPTH`.
+fn precheck_source_nesting(input: &str) -> Result<()> {
+    // A source shorter than the ceiling cannot contain that many nested
+    // groups. Avoid even the cold lexical-region scan for the normal case.
+    if input.len() <= MAX_PARSE_DEPTH as usize {
+        return Ok(());
+    }
+    // Comments, verbatim arguments and text-mode groups are consumed by their
+    // own scanners. Their braces must not count toward math-list recursion.
+    let ignored = text_regions(input);
+    let mut ignored_at = 0usize;
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let bytes = input.as_bytes();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        while ignored_at < ignored.len() && ignored[ignored_at].1 <= at {
+            ignored_at += 1;
+        }
+        if let Some(&(start, end)) = ignored.get(ignored_at)
+            && (start..end).contains(&at)
+        {
+            at = end;
+            escaped = false;
+            continue;
+        }
+        let byte = bytes[at];
+        if escaped {
+            escaped = false;
+            at += 1;
+            continue;
+        }
+        match byte {
+            b'\\' => {
+                escaped = true;
+                at += 1;
+                continue;
+            },
+            b'{' => {
+                if depth >= MAX_PARSE_DEPTH as usize {
+                    return Err(Error::LimitExceeded {
+                        kind: crate::error::LimitKind::Depth,
+                        limit: MAX_PARSE_DEPTH as usize,
+                    });
+                }
+                depth += 1;
+            },
+            b'}' => depth = depth.saturating_sub(1),
+            _ => {},
+        }
+        at += 1;
+    }
+    Ok(())
 }
 
 /// Parse a LaTeX string into the heap-allocated `MathExpr` AST.
@@ -2618,7 +2692,7 @@ impl LatexCompactParser {
         }
         let cells = self.arena.push_children_deferred(&cell_ids);
         self.arrays_built += 1;
-        self.arena.push_node(CompactNode::Array {
+        let array = self.arena.push_node(CompactNode::Array {
             col_aligns,
             cells,
             num_cols,
@@ -2627,7 +2701,19 @@ impl LatexCompactParser {
             col_seps,
             row_seps,
             array_style,
-        })
+        });
+        let row_lengths = if rows.iter().any(|row| row.len() != usize::from(num_cols)) {
+            rows.iter().map(Vec::len).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        self.arena.mark_table_metadata(
+            array,
+            &row_lengths,
+            (arraystretch_pct != 100).then_some(f64::from(arraystretch_pct) / 100.0),
+            usize::from(num_cols),
+        );
+        array
     }
 
     /// Parse a delimiter and intern the result directly into the arena.
@@ -3122,6 +3208,25 @@ impl LatexCompactParser {
                     self.warn_missing_script_argument(start, marker);
                     let marker_len = start.chars().next().map_or(0, char::len_utf8);
                     return Ok((&start[marker_len..], (NodeId::NONE, NodeId::NONE)));
+                }
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                    && let Some(marker) = self.script_marker_at(start)
+                    && script_marker_has_no_argument(start, marker)
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: format!(
+                            "missing {} argument after `{}`",
+                            if marker.is_subscript() {
+                                "subscript"
+                            } else {
+                                "superscript"
+                            },
+                            if marker.is_subscript() { "_" } else { "^" }
+                        ),
+                        span: self.source_span_of(start),
+                    });
                 }
                 Err(error)
             })?;
@@ -3864,6 +3969,12 @@ impl LatexCompactParser {
             "hat" => self.parse_accent(input, '\u{0302}', AccentPosition::Above),
             "widehat" => self.parse_accent_wide(input, '\u{0302}', AccentPosition::Above, true),
             "bar" => self.parse_accent(input, '\u{0304}', AccentPosition::Above),
+            // Unicode-math's fixed overbar and combining hook accents have
+            // direct generic AST representations. The wide variant is a
+            // separate command in that table and remains intentionally
+            // distinct from this fixed accent.
+            "overbar" => self.parse_accent(input, '\u{0305}', AccentPosition::Above),
+            "ovhook" => self.parse_accent(input, '\u{0309}', AccentPosition::Above),
             "overline" => self.parse_overunder(input, true),
             "underline" | "underbar" => self.parse_overunder(input, false),
             "vec" => self.parse_accent(input, '\u{20D7}', AccentPosition::Above),
@@ -3949,6 +4060,9 @@ impl LatexCompactParser {
             "ce" | "pu" | "dv" | "pdv" | "fdv" | "num" | "si" | "SI" | "qty" | "unit" | "ang"
             | "numrange" | "SIrange" | "qtyrange" | "numlist" | "SIlist" | "qtylist"
             | "sisetup" => self.parse_package_translation(input, name),
+            // Mathtools' explicit prescript syntax is
+            // `\prescript{pre-sup}{pre-sub}{base}`.
+            "prescript" => self.parse_prescript(input),
             "smash" => {
                 // \smash[b]{...} or \smash[t]{...} or \smash{...}
                 let (input, _) = ws(input)?;
@@ -4445,6 +4559,7 @@ impl LatexCompactParser {
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
                 ))
             },
+            "ref" | "eqref" => self.parse_reference(input, name),
 
             // --- Mathchoice: store all 4 branches for style-dependent selection ---
             "mathchoice" => {
@@ -4840,6 +4955,94 @@ impl LatexCompactParser {
         ))
     }
 
+    fn parse_reference<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
+        let source = input;
+        let (input, _) = match crate::latex::capture_braced(input) {
+            Some((rest, _literal_label)) => (rest, ()),
+            None => {
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: format!("\\{name} expected a braced reference-label argument"),
+                        span: self.source_span_of(source),
+                    });
+                }
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            },
+        };
+        self.warn(format!(
+            "\\{name} cross-reference was dropped; equation labels are not represented"
+        ));
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+        ))
+    }
+
+    fn parse_prescript<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let source = input;
+        let (input, pre_sup) = match self.parse_required_group(input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: "\\prescript expected a pre-superscript argument".into(),
+                        span: self.source_span_of(source),
+                    });
+                }
+                return Err(error);
+            },
+        };
+        let source = input;
+        let (input, pre_sub) = match self.parse_required_group(input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: "\\prescript expected a pre-subscript argument".into(),
+                        span: self.source_span_of(source),
+                    });
+                }
+                return Err(error);
+            },
+        };
+        let source = input;
+        let (input, base) = match self.parse_required_group(input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: "\\prescript expected a base argument".into(),
+                        span: self.source_span_of(source),
+                    });
+                }
+                return Err(error);
+            },
+        };
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            }),
+        ))
+    }
+
     /// Parse a single unbraced TeX token: one letter, one digit, one symbol, or a command.
     fn parse_single_token<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         match input.as_bytes().first() {
@@ -5146,7 +5349,18 @@ impl LatexCompactParser {
             {
                 return self.recover_incomplete_command(name, source, error);
             },
-            Err(error) => return Err(error),
+            Err(error) => {
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: format!("\\{name} expected a complete numerator argument"),
+                        span: self.source_span_of(source),
+                    });
+                }
+                return Err(error);
+            },
         };
         let (input, den_id) = match self.parse_required_group(input) {
             Ok(parsed) => parsed,
@@ -5156,7 +5370,18 @@ impl LatexCompactParser {
             {
                 return self.recover_incomplete_command(name, source, error);
             },
-            Err(error) => return Err(error),
+            Err(error) => {
+                if !self.lenient
+                    && self.recovery_context == RecoveryContext::UserSource
+                    && self.abort.is_none()
+                {
+                    self.abort = Some(Error::LatexParse {
+                        message: format!("\\{name} expected a complete denominator argument"),
+                        span: self.source_span_of(input),
+                    });
+                }
+                return Err(error);
+            },
         };
         Ok((
             input,
@@ -5270,7 +5495,6 @@ impl LatexCompactParser {
             num: num_id,
             den: den_id,
         });
-
         if fenced {
             let open = self.arena.push_str(&left_s);
             let close = self.arena.push_str(&right_s);
@@ -8582,6 +8806,12 @@ impl LatexCompactParser {
             0,
             false,
         );
+        self.arena.mark_cases_environment(
+            array_id,
+            false,
+            matches!(env_name, "dcases" | "dcases*"),
+            env_name.ends_with('*'),
+        );
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
         let content = self.arena.push_children_deferred(&[array_id]);
@@ -8612,6 +8842,12 @@ impl LatexCompactParser {
             0,
             0,
             false,
+        );
+        self.arena.mark_cases_environment(
+            array_id,
+            true,
+            matches!(env_name, "drcases" | "rcases*"),
+            env_name.ends_with('*'),
         );
         let open = self.arena.push_str("");
         let close = self.arena.push_str("}");
