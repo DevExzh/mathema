@@ -122,4 +122,6 @@ The optional render pipeline applies core TeXBook typesetting rules (radicals â€
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details. `src/unicode/math_class.rs` is generated from Unicode data, used under the Unicode License V3; see [LICENSE-UNICODE](LICENSE-UNICODE).
+The Mathema source code is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details. `src/unicode/math_class.rs` is generated from Unicode data, used under the Unicode License V3; see [LICENSE-UNICODE](LICENSE-UNICODE).
+
+The optional render feature embeds Latin Modern text and math fonts. Those third-party fonts are released under the GUST Font License. The exact upstream license texts are included in [LICENSE-LATIN-MODERN.txt](LICENSE-LATIN-MODERN.txt) and [LICENSE-LATIN-MODERN-MATH.txt](LICENSE-LATIN-MODERN-MATH.txt), with the referenced [LPPL 1.3c text](LICENSE-LPPL-1.3c.txt). The project manifests and byte-level provenance are documented in [NOTICE-FONTS.txt](NOTICE-FONTS.txt).

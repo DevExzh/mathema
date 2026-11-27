@@ -1,0 +1,110 @@
+Embedded Latin Modern fonts
+===========================
+
+Mathema's optional `render` feature embeds 13 OpenType font files. These
+are third-party works from the Latin Modern and Latin Modern Math projects.
+Their exact upstream license texts are included as
+`LICENSE-LATIN-MODERN.txt` and `LICENSE-LATIN-MODERN-MATH.txt`.
+The GUST Font License permits redistribution under the terms of the
+LaTeX Project Public License. The complete LPPL 1.3c text is included as
+`LICENSE-LPPL-1.3c.txt`.
+
+The upstream project manifests are included verbatim as
+`MANIFEST-Latin-Modern.txt` and `MANIFEST-Latin-Modern-Math.txt`.
+They contain the project copyright, authors, maintenance status, current
+maintainers, and the font and file names covered by each distribution.
+
+Latin Modern text project notice
+--------------------------------
+
+The following notice is copied from the upstream Latin Modern manifest:
+
+  Designer (Computer Modern Family of Fonts): Donald E. Knuth
+  Authors: Bogus\l{}aw Jackowski and Janusz M. Nowacki
+  Version: 2.004
+  Date: 30 X 2009
+
+  Copyright 2003--2009 by B. Jackowski and J.M. Nowacki
+  (on behalf of TeX USERS GROUPS).
+  This work is released under the GUST Font License.
+  This work has the LPPL maintenance status "maintained".
+  The Current Maintainer of this work is Bogus\l{}aw Jackowski
+  and Janusz M. Nowacki.
+
+The 12 included text files are the exact byte-for-byte files installed by
+TeX Live under `/usr/share/texmf/fonts/opentype/public/lm`:
+
+  src/render/fonts/lmmono10-italic.otf
+  src/render/fonts/lmmono10-regular.otf
+  src/render/fonts/lmmonolt10-bold.otf
+  src/render/fonts/lmmonolt10-boldoblique.otf
+  src/render/fonts/lmroman10-bold.otf
+  src/render/fonts/lmroman10-bolditalic.otf
+  src/render/fonts/lmroman10-italic.otf
+  src/render/fonts/lmroman10-regular.otf
+  src/render/fonts/lmsans10-bold.otf
+  src/render/fonts/lmsans10-boldoblique.otf
+  src/render/fonts/lmsans10-oblique.otf
+  src/render/fonts/lmsans10-regular.otf
+
+The preferred family names recorded in the files are Latin Modern Mono,
+Latin Modern Mono Light, Latin Modern Roman, and Latin Modern Sans. The
+two `lmmonolt10` files are specifically Latin Modern Mono Light.
+
+Latin Modern Math project notice
+--------------------------------
+
+The following notice is copied from the upstream Latin Modern Math
+manifest:
+
+  Font: Latin Modern Math
+  Authors: Bogus\l{}aw Jackowski, Piotr Strzelczyk and Piotr Pianowski
+  Version: 1.959
+  Date: 5 IX 2014
+
+  Copyright 2012--2014 for TeX Gyre math extensions by B. Jackowski,
+  P. Strzelczyk and P. Pianowski (on behalf of TeX Users Groups).
+
+  This work can be freely used and distributed under
+  the GUST Font License (GFL -- see GUST-FONT-LICENSE.txt)
+  which is actually an instance of the LaTeX Project Public License
+  (LPPL -- see http://www.latex-project.org/lppl.txt).
+
+  This work has the maintenance status "maintained". The Current Maintainer
+  of this work is Bogus\l{}aw Jackowski, Piotr Strzelczyk and Piotr Pianowski.
+
+The included math file is the exact byte-for-byte file installed by TeX
+Live at `/usr/share/texmf/fonts/opentype/public/lm-math/latinmodern-math.otf`:
+
+  src/render/fonts/LatinModernMath-Regular.otf
+
+The OpenType files have the following SHA-256 values:
+
+  6075562b771f8b82f0c179e363389684f2dd09de30038269e2628e504bd7be0f  src/render/fonts/LatinModernMath-Regular.otf
+  14e6328a5383d2b927c47051093ce0aff60deea07e6df71b8b99ee8d9c2ff8f2  src/render/fonts/lmmono10-italic.otf
+  22deb6d3be3ffcb40b33f0e010afb256c677d97c2a2bdee1f5740cdc97751558  src/render/fonts/lmmono10-regular.otf
+  2f4ae1bd30d4203a1c74c61d61dddbd5e2c2d5a7001d456b1b98e08b7c47ffb9  src/render/fonts/lmmonolt10-bold.otf
+  a739b6deaafe0b9e8ae1eec9db1f425c52e1f6f483ca8e07e359bdd118310bba  src/render/fonts/lmmonolt10-boldoblique.otf
+  102fe06c430a8b681b2bf6876b7cd967ae4d47b4b6b41d915eb7913b726d9fb1  src/render/fonts/lmroman10-bold.otf
+  c37a28eed7a6e03f792b98b5e5f637b2fcda378bb4855f99284f1a88fe35f124  src/render/fonts/lmroman10-bolditalic.otf
+  c1fce25075567bb8dbf2151658c3b442690041db17a2d49fc9e55905ea5b7169  src/render/fonts/lmroman10-italic.otf
+  1aa18cfefa58132c52ce5de70db1fd1154201c19cd2b2cdaffba4906a33e6852  src/render/fonts/lmroman10-regular.otf
+  a597b710326c1a8a2c7238d808e5d38711638a72a32383478db4829d63afd687  src/render/fonts/lmsans10-bold.otf
+  e45673d84754a94f2f053bd4c15950b4b320144fbb622c630a26fd7b68cfabc5  src/render/fonts/lmsans10-boldoblique.otf
+  1b38b36efc21f9d3f34edf6a13f9d71f59c41f824e790f5d3ee5ba5b4936f377  src/render/fonts/lmsans10-oblique.otf
+  d431b786b9b603662718e79cfe9b441f47a8b0b3e854dde89d5acb3ed7cfd682  src/render/fonts/lmsans10-regular.otf
+
+Upstream source and distribution links
+--------------------------------------
+
+  Latin Modern source project:
+    https://www.gust.org.pl/projects/e-foundry/latin-modern
+  Latin Modern CTAN package:
+    https://ctan.org/pkg/lm
+    https://mirrors.ctan.org/fonts/lm.zip
+  Latin Modern Math CTAN package:
+    https://ctan.org/pkg/lm-math
+    https://mirrors.ctan.org/fonts/lm-math.zip
+  GUST Font License:
+    https://www.gust.org.pl/fonts/licenses/GUST-FONT-LICENSE.txt
+    https://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt
