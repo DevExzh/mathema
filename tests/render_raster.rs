@@ -1025,31 +1025,67 @@ fn png_css_rgb_color_matches_equivalent_hex() {
 }
 
 #[test]
-fn png_css_rgba_is_unsupported_and_falls_back_to_black() {
-    let result = from_latex("x").unwrap();
-    let black_options = RasterOptions {
-        render: mathema::RenderOptions {
-            fg_color: "black".into(),
-            ..Default::default()
-        },
-        background: Some([255, 255, 255, 255]),
-        ..Default::default()
-    };
-    let rgba_options = RasterOptions {
-        render: mathema::RenderOptions {
-            fg_color: "rgba(255, 0, 0, 0.25)".into(),
-            ..Default::default()
-        },
-        background: Some([255, 255, 255, 255]),
-        ..Default::default()
-    };
+fn translucent_css_paint_reaches_glyph_and_rule_pixels() {
+    for source in ["x", r"\rule{1em}{1em}"] {
+        let parsed = from_latex(source).unwrap();
+        let mut options = RasterOptions::default();
+        options.render.font_size_px = 48.0;
+        options.render.fg_color = "#ff000040".into();
+        let expected = parsed.to_png_with(&options).unwrap();
+        for equivalent in ["rgba(255, 0, 0, 0.25)", "hsl(0 100% 50% / 25%)"] {
+            options.render.fg_color = equivalent.into();
+            let (image, diagnostics) = parsed
+                .to_png_with_options_and_diagnostics(&options)
+                .unwrap();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            assert_eq!(image, expected);
+            let prepared = parsed.prepare_render(&options.render).unwrap();
+            assert_eq!(prepared.to_png(&options).unwrap(), expected);
+        }
+        let pixmap = tiny_skia::Pixmap::decode_png(&expected).unwrap();
+        assert_eq!(
+            pixmap.pixels().iter().map(|px| px.alpha()).max(),
+            Some(64),
+            "{source}"
+        );
+        assert!(
+            pixmap
+                .pixels()
+                .iter()
+                .all(|px| px.red() == px.alpha() && px.green() == 0 && px.blue() == 0)
+        );
+    }
+}
 
-    let black_png = result.to_png_with(&black_options).unwrap();
-    let rgba_png = result.to_png_with(&rgba_options).unwrap();
-
-    assert_eq!(
-        rgba_png, black_png,
-        "rgba() is unsupported by the RGB-only raster color parser and should fall back to black"
+#[test]
+fn box_paints_inherit_current_color_and_keep_their_alpha() {
+    let render = |border: &str| {
+        let input = format!(
+            r##"<math><mstyle mathcolor="#ff000080"><menclose notation="box" style="border-color: {border}; background-color: #0000ff40"><mspace width="2em"/></menclose></mstyle></math>"##
+        );
+        let parsed = mathema::from_mathml(&input).unwrap();
+        let mut options = RasterOptions::default();
+        options.render.font_size_px = 64.0;
+        let (image, diagnostics) = parsed
+            .to_png_with_options_and_diagnostics(&options)
+            .unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        image
+    };
+    let image = render("currentColor");
+    assert_eq!(image, render("hsla(0, 100%, 50%, 0.5)"));
+    let pixmap = tiny_skia::Pixmap::decode_png(&image).unwrap();
+    assert!(
+        pixmap
+            .pixels()
+            .iter()
+            .any(|px| px.blue() == 64 && px.alpha() == 64)
+    );
+    assert!(
+        pixmap
+            .pixels()
+            .iter()
+            .any(|px| px.red() > 0 && px.alpha() < 255)
     );
 }
 

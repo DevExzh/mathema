@@ -2,6 +2,9 @@
 //!
 //! Pipeline: MathExpr → LayoutBox tree → tiny_skia::Pixmap → PNG/JPEG bytes.
 //! Glyphs are rasterized with `fontdue` using an embedded Latin Modern Math font.
+mod color;
+
+use color::{parse_color, parse_color_checked, resolve_color};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -543,7 +546,7 @@ pub(crate) fn rasterize_layout_arena(
 
 struct RasterCtx {
     em: f64,
-    fg: [u8; 3],
+    fg: Color,
     cache: HashMap<(FontId, char, u32), (fontdue::Metrics, Vec<u8>)>,
     /// Reusable RGBA buffer for glyph compositing (avoids per-glyph Pixmap allocation).
     glyph_rgba_buf: Vec<u8>,
@@ -675,7 +678,7 @@ fn emit_raster_box(
                 pb.close();
                 if let Some(path) = pb.finish() {
                     let mut paint = Paint::default();
-                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                    paint.set_color(fg);
                     paint.anti_alias = true;
                     pixmap.fill_path(
                         &path,
@@ -741,7 +744,7 @@ fn emit_raster_box(
                         let scale = em as f32;
 
                         let mut paint = Paint::default();
-                        paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                        paint.set_color(fg);
                         paint.anti_alias = true;
 
                         let transform =
@@ -789,7 +792,7 @@ fn emit_raster_box(
                 let scale = em as f32;
 
                 let mut paint = Paint::default();
-                paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                paint.set_color(fg);
                 paint.anti_alias = true;
 
                 let transform =
@@ -807,7 +810,7 @@ fn emit_raster_box(
         },
 
         BoxKind::Color { color, child } => {
-            let new_fg = parse_color(color);
+            let new_fg = resolve_color(color, fg);
             let old_fg = ctx.fg;
             ctx.fg = new_fg;
             let cx = x + child.dx * em;
@@ -847,7 +850,7 @@ fn draw_box(
     (width, height, depth): (f64, f64, f64),
     em: f64,
     (background, border): (Option<&str>, Option<&str>),
-    fg: [u8; 3],
+    fg: Color,
     xform: HorizontalTransform,
 ) {
     let framed = super::layout::is_framed(background.is_some(), border.is_some());
@@ -867,13 +870,11 @@ fn draw_box(
         ..Paint::default()
     };
     if let Some(background) = background {
-        let [r, g, b] = parse_color(background);
-        paint.set_color_rgba8(r, g, b, 255);
+        paint.set_color(resolve_color(background, fg));
         pixmap.fill_rect(rect, &paint, transform, None);
     }
     if framed {
-        let [r, g, b] = border.map_or(fg, parse_color);
-        paint.set_color_rgba8(r, g, b, 255);
+        paint.set_color(border.map_or(fg, |value| resolve_color(value, fg)));
         let stroke = Stroke {
             width: stroke as f32,
             ..Stroke::default()
@@ -984,7 +985,7 @@ fn emit_raster_box_arena(
                 pb.close();
                 if let Some(path) = pb.finish() {
                     let mut paint = Paint::default();
-                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                    paint.set_color(fg);
                     paint.anti_alias = true;
                     pixmap.fill_path(
                         &path,
@@ -1050,7 +1051,7 @@ fn emit_raster_box_arena(
                         let scale = em as f32;
 
                         let mut paint = Paint::default();
-                        paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                        paint.set_color(fg);
                         paint.anti_alias = true;
 
                         let transform =
@@ -1098,7 +1099,7 @@ fn emit_raster_box_arena(
                 let scale = em as f32;
 
                 let mut paint = Paint::default();
-                paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                paint.set_color(fg);
                 paint.anti_alias = true;
 
                 let transform =
@@ -1116,7 +1117,7 @@ fn emit_raster_box_arena(
         },
 
         ArenaBoxKind::Color { color, child } => {
-            let new_fg = parse_color(color);
+            let new_fg = resolve_color(color, fg);
             let old_fg = ctx.fg;
             ctx.fg = new_fg;
             // Color child is rendered at same position (no dx/dy offset)
@@ -1239,6 +1240,7 @@ fn draw_glyph(
     buf.resize(needed, 0);
     let mirrored = xform.sign < 0.0;
     let gw_usize = gw as usize;
+    let ink = fg.to_color_u8();
     for (i, &coverage) in bitmap.iter().enumerate() {
         let src_x = i % gw_usize;
         let row = i / gw_usize;
@@ -1249,12 +1251,12 @@ fn draw_glyph(
         };
         let idx = (row * gw_usize + dst_x) * 4;
         if idx + 3 < buf.len() {
-            // Premultiplied RGBA: RGB values are pre-multiplied by alpha
-            let a = coverage as u16;
-            buf[idx] = ((fg[0] as u16 * a) / 255) as u8;
-            buf[idx + 1] = ((fg[1] as u16 * a) / 255) as u8;
-            buf[idx + 2] = ((fg[2] as u16 * a) / 255) as u8;
-            buf[idx + 3] = coverage;
+            // Glyph coverage and paint opacity both contribute to pixel alpha.
+            let alpha = (u16::from(coverage) * u16::from(ink.alpha()) + 127) / 255;
+            buf[idx] = (u16::from(ink.red()) * alpha / 255) as u8;
+            buf[idx + 1] = (u16::from(ink.green()) * alpha / 255) as u8;
+            buf[idx + 2] = (u16::from(ink.blue()) * alpha / 255) as u8;
+            buf[idx + 3] = alpha as u8;
         }
     }
     if let Some(glyph_ref) = tiny_skia::PixmapRef::from_bytes(buf, gw, gh) {
@@ -1289,7 +1291,7 @@ fn draw_glyph(
 /// glyph with layout metrics `m` (em) at `size_px` pixels per em.
 fn draw_notdef(
     pixmap: &mut Pixmap,
-    fg: [u8; 3],
+    fg: Color,
     x: f64,
     baseline_y: f64,
     size_px: f64,
@@ -1315,7 +1317,7 @@ fn draw_notdef(
     }
     if let Some(path) = pb.finish() {
         let mut paint = Paint::default();
-        paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+        paint.set_color(fg);
         paint.anti_alias = true;
         pixmap.fill_path(
             &path,
@@ -1334,7 +1336,7 @@ fn draw_notdef(
 /// are typically not mapped to Unicode codepoints).
 fn draw_glyph_variant(
     pixmap: &mut Pixmap,
-    fg: [u8; 3],
+    fg: Color,
     glyph_id: u16,
     font_size_px: f64,
     x: f64,
@@ -1373,7 +1375,7 @@ fn draw_glyph_variant(
     );
 
     let mut paint = Paint::default();
-    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+    paint.set_color(fg);
     paint.anti_alias = true;
 
     pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
@@ -1386,7 +1388,7 @@ fn draw_glyph_variant(
 #[allow(clippy::too_many_arguments)]
 fn draw_vertical_assembly(
     pixmap: &mut Pixmap,
-    fg: [u8; 3],
+    fg: Color,
     ch: char,
     fill_height_em: f64,
     scale: f64,
@@ -2070,104 +2072,6 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
 }
 
 // ---------------------------------------------------------------------------
-// Color parser (CSS named colors + hex)
-// ---------------------------------------------------------------------------
-
-pub(crate) fn parse_color(s: &str) -> [u8; 3] {
-    parse_color_checked(s).unwrap_or([0, 0, 0])
-}
-
-/// Parse the subset of CSS colors supported by the raster backend.
-///
-/// The unchecked [`parse_color`] entry point retains its historical black
-/// fallback. Diagnostic rendering uses this checked form so unsupported CSS
-/// functions such as `rgba()` and `hsl()` are reported instead of disappearing
-/// into a black pixel.
-pub(crate) fn parse_color_checked(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        return parse_hex_color(hex);
-    }
-    if s.eq_ignore_ascii_case("currentcolor") {
-        return Some([0, 0, 0]);
-    }
-    if let Some(rgb) = parse_rgb_function(s) {
-        return Some(rgb);
-    }
-    // Full CSS named colors (148 colors)
-    if let Some(rgb) = crate::css_colors::lookup_css_color(s) {
-        return Some(rgb);
-    }
-    None
-}
-
-fn parse_rgb_function(s: &str) -> Option<[u8; 3]> {
-    let (name, inner) = css_function(s)?;
-    if !name.eq_ignore_ascii_case("rgb") {
-        return None;
-    }
-
-    let mut parts = inner.split(',').map(str::trim);
-    let r = parse_rgb_component(parts.next()?)?;
-    let g = parse_rgb_component(parts.next()?)?;
-    let b = parse_rgb_component(parts.next()?)?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some([r, g, b])
-}
-
-fn css_function(s: &str) -> Option<(&str, &str)> {
-    let open = s.find('(')?;
-    let close = s.rfind(')')?;
-    if close <= open || !s[close + 1..].trim().is_empty() {
-        return None;
-    }
-    Some((s[..open].trim(), &s[open + 1..close]))
-}
-
-fn parse_rgb_component(s: &str) -> Option<u8> {
-    let s = s.trim();
-    if let Some(percent) = s.strip_suffix('%') {
-        let pct = percent.trim().parse::<f64>().ok()?;
-        if !pct.is_finite() {
-            return None;
-        }
-        let pct = pct.clamp(0.0, 100.0);
-        return Some((pct * 255.0 / 100.0).round() as u8);
-    }
-    let value = s.parse::<f64>().ok()?;
-    if !value.is_finite() {
-        return None;
-    }
-    Some(value.clamp(0.0, 255.0).round() as u8)
-}
-
-fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
-    let hex = hex.trim();
-    // Reject non-ASCII input to prevent byte-boundary panics on multi-byte chars
-    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    match hex.len() {
-        3 => {
-            // #RGB → #RRGGBB (safe to byte-slice: all chars are ASCII hex digits)
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
-            Some([r * 17, g * 17, b * 17])
-        },
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            Some([r, g, b])
-        },
-        _ => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Image encoding
 // ---------------------------------------------------------------------------
 
@@ -2547,7 +2451,7 @@ mod tests {
     #[test]
     fn raster_diagnostics_report_missing_glyphs_and_invalid_colors() {
         let expr = MathExpr::inline(vec![MathNode::Color {
-            color: "rgba(255, 0, 0, 0.5)".into(),
+            color: "var(--equation-color)".into(),
             content: Box::new(MathNode::Text(crate::ast::TextStyle::Normal, "中".into())),
         }]);
         let options = RasterOptions::default();
@@ -2606,49 +2510,6 @@ mod tests {
         let arena_png = render_to_image_compact(&compact.expr, &opts).unwrap();
 
         assert_eq!(heap_png, arena_png, "arena raster must match heap raster");
-    }
-
-    // --- Color parser ---
-
-    #[test]
-    fn color_parse_hex6() {
-        assert_eq!(parse_color("#ff0000"), [255, 0, 0]);
-        assert_eq!(parse_color("#00ff00"), [0, 255, 0]);
-        assert_eq!(parse_color("#0000ff"), [0, 0, 255]);
-    }
-
-    #[test]
-    fn color_parse_hex3() {
-        assert_eq!(parse_color("#f00"), [255, 0, 0]);
-        assert_eq!(parse_color("#0f0"), [0, 255, 0]);
-    }
-
-    #[test]
-    fn color_parse_named() {
-        assert_eq!(parse_color("red"), [255, 0, 0]);
-        assert_eq!(parse_color("blue"), [0, 0, 255]);
-        assert_eq!(parse_color("black"), [0, 0, 0]);
-        assert_eq!(parse_color("white"), [255, 255, 255]);
-    }
-
-    #[test]
-    fn color_parse_currentcolor() {
-        assert_eq!(parse_color("currentColor"), [0, 0, 0]);
-    }
-
-    #[test]
-    fn color_parse_rgb_comma_syntax() {
-        assert_eq!(parse_color("rgb(255, 0, 0)"), [255, 0, 0]);
-        assert_eq!(parse_color("rgb(100%, 50%, 0%)"), [255, 128, 0]);
-    }
-
-    #[test]
-    fn color_parse_rgba_is_unsupported_without_alpha_pipeline() {
-        assert_eq!(parse_rgb_function("rgba(255, 0, 0, 0.5)"), None);
-        assert_eq!(parse_color("rgba(255, 0, 0, 0.5)"), [0, 0, 0]);
-        assert_eq!(parse_color_checked("rgba(255, 0, 0, 0.5)"), None);
-        assert_eq!(parse_color_checked("hsl(0, 100%, 50%)"), None);
-        assert_eq!(parse_color_checked("#12345"), None);
     }
 
     // --- SVG path parser ---

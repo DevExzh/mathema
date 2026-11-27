@@ -916,7 +916,7 @@ mod integration_tests {
     #[test]
     fn prepared_raster_diagnostics_use_the_retained_layout() {
         let expr = MathExpr::inline(vec![crate::ast::MathNode::Color {
-            color: "hsl(0, 100%, 50%)".into(),
+            color: "var(--formula-ink)".into(),
             content: Box::new(crate::ast::MathNode::Text(
                 crate::ast::TextStyle::Normal,
                 "中".into(),

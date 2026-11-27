@@ -329,3 +329,33 @@ fn script_designs_match_at_a_large_scale() {
         );
     }
 }
+
+#[test]
+fn translucent_rule_has_the_same_composite_color_in_svg_and_png() {
+    let equation = mathema::from_latex(r"\rule{2em}{1em}").unwrap();
+    for css in ["rgba(255,0,0,0.5)", "#ff000080", "hsla(0,100%,50%,0.5)"] {
+        let render = RenderOptions {
+            font_size_px: 40.0,
+            fg_color: css.into(),
+            ..RenderOptions::default()
+        };
+        let svg = equation.to_svg_with(&render).unwrap();
+        let png = equation
+            .to_png_with(&RasterOptions {
+                render,
+                background: Some([255; 4]),
+                ..RasterOptions::default()
+            })
+            .unwrap();
+        for (w, h, pixels) in [rasterize_svg(&svg, 1.0).unwrap(), decode_png(&png).unwrap()] {
+            let center = ((h / 2 * w + w / 2) * 4) as usize;
+            let px = &pixels[center..center + 4];
+            assert_eq!(px[0], 255, "{css}: {px:?}");
+            assert!(
+                px[1].abs_diff(127) <= 1 && px[2].abs_diff(127) <= 1,
+                "{css}: {px:?}"
+            );
+            assert_eq!(px[3], 255);
+        }
+    }
+}
