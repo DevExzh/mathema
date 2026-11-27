@@ -17,6 +17,36 @@ fn convert_inline_latex_to_mathml() {
 }
 
 #[test]
+fn radix_stays_on_the_whole_hexadecimal_number_through_cli_latex() {
+    let source = r#"<math><cn type="integer" base="16">FF</cn></math>"#;
+    let latex = mathema()
+        .args(["convert", "-f", "mathml", "-t", "latex", source])
+        .assert()
+        .success();
+    let mathml = mathema()
+        .args(["convert", "-f", "latex", "-t", "mathml"])
+        .write_stdin(latex.get_output().stdout.clone())
+        .assert()
+        .success();
+    let output = std::str::from_utf8(&mathml.get_output().stdout).unwrap();
+    let document = roxmltree::Document::parse(output).unwrap();
+    let subscript = document.root_element().first_element_child().unwrap();
+    assert_eq!(subscript.tag_name().name(), "msub", "{output}");
+    assert!(subscript.next_sibling_element().is_none(), "{output}");
+    let fields: Vec<String> = subscript
+        .children()
+        .filter(|n| n.is_element())
+        .map(|n| {
+            n.descendants()
+                .filter(|n| n.is_text())
+                .filter_map(|n| n.text())
+                .collect()
+        })
+        .collect();
+    assert_eq!(fields, ["FF", "16"]);
+}
+
+#[test]
 fn convert_stdin_latex_to_mathml() {
     mathema()
         .args(["convert", "--from", "latex", "--to", "mathml"])
