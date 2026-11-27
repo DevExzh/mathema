@@ -42,13 +42,27 @@ let umath  = result.to_unicode_math().unwrap();
 > **MathML note:** input accepts both Presentation and Content MathML (Content
 > is lowered to Presentation on read); output emits **Presentation MathML only**.
 
-> **MTEF note:** `from_mtef_bytes` reads Equation Editor 3 (MTEF 3) and MathType 4+
-> (MTEF 5) equations, with or without the OLE `Equation Native` header, and
-> `ConvertResult::mtef_info` reports which one the input was. MathType's
-> typesetting data (fonts, sizes, nudges, tab stops) has no place in
-> the AST and is not kept. `ConvertResult::to_mtef_bytes` writes MTEF 5 or
-> MTEF 3; `MtefWriteOptions::from_info(result.mtef_info())` writes an
-> equation back as the same kind of object it was read from.
+> **MTEF note:** `from_mtef_bytes` reads MTEF 2–5, including streams with a
+> 28-byte OLE `Equation Native` header. `ConvertResult::mtef_info()` returns
+> the version and header details. Supported character styles, sizes and v5
+> RGB colors survive conversion. Reader diagnostics identify dropped features
+> such as positional nudges and tab stops. To write the supported source
+> version family and header form, pass `MtefWriteOptions::from_info` the
+> parsed stream information.
+
+For editing-oriented clients, opt into conservative source byte ranges with
+`Config::default().with_source_ranges(true)`. Read ranges from
+`CompactExpr::source_range(node_id)`. Ranges are retained through supported
+normalization passes, while synthesized or merged nodes can have no range.
+They use decoded MTEF byte offsets for binary input and raw XML event offsets
+for MathML.
+
+For editor diagnostics, `convert_with_diagnostic_records` returns the output
+and records with a stable `code`, a `Read` or `Write` phase, severity,
+message, and optional byte span. After parsing once, `diagnostics_for(target)`
+returns both phases. `convert_with_location` keeps the underlying typed error
+and the reader's original byte range when available. MTEF offsets refer to the
+decoded wire bytes for both binary and hex input.
 
 ## CLI
 

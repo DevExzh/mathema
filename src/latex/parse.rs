@@ -15,8 +15,8 @@ use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
-    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Span,
-    Strictness,
+    CompactParseResult, Config, Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticMetadata,
+    Error, ParseResult, Result, Span, Strictness,
 };
 use crate::unicode::decode_script_scalar;
 use crate::unicode::fonts::latex_font_to_style;
@@ -2004,9 +2004,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             if !diagnostics.is_empty() {
                 locate_undefined_commands(input, &mut diagnostics);
             }
-            Ok(CompactParseResult::with_diagnostics(
+            let records = structured_records(&diagnostics, &parser.diagnostic_codes, 0);
+            Ok(CompactParseResult::with_diagnostic_metadata(
                 CompactExpr::new(parser.arena, roots, config.display),
                 diagnostics,
+                records,
             ))
         },
         Ok((rest, ids)) => {
@@ -2040,7 +2042,8 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&result_ids)?;
                 parser.finish_reports();
-                diagnostics.extend(std::mem::take(&mut parser.diagnostics));
+                let prefix_count = diagnostics.len();
+                diagnostics.append(&mut parser.diagnostics);
                 crate::ast::validate_compact_depth_with(
                     &parser.arena,
                     roots,
@@ -2049,9 +2052,15 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 if !diagnostics.is_empty() {
                     locate_undefined_commands(input, &mut diagnostics);
                 }
-                Ok(CompactParseResult::with_diagnostics(
+                let records = structured_records(
+                    &diagnostics[prefix_count..],
+                    &parser.diagnostic_codes,
+                    prefix_count,
+                );
+                Ok(CompactParseResult::with_diagnostic_metadata(
                     CompactExpr::new(parser.arena, roots, config.display),
                     diagnostics,
+                    records,
                 ))
             }
         },
@@ -2078,7 +2087,8 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
                 parser.finish_reports();
-                diagnostics.extend(std::mem::take(&mut parser.diagnostics));
+                let prefix_count = diagnostics.len();
+                diagnostics.append(&mut parser.diagnostics);
                 crate::ast::validate_compact_depth_with(
                     &parser.arena,
                     roots,
@@ -2087,9 +2097,15 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 if !diagnostics.is_empty() {
                     locate_undefined_commands(input, &mut diagnostics);
                 }
-                Ok(CompactParseResult::with_diagnostics(
+                let records = structured_records(
+                    &diagnostics[prefix_count..],
+                    &parser.diagnostic_codes,
+                    prefix_count,
+                );
+                Ok(CompactParseResult::with_diagnostic_metadata(
                     CompactExpr::new(parser.arena, roots, config.display),
                     diagnostics,
+                    records,
                 ))
             } else {
                 Err(Error::from(nom_err_to_latex_error(e, input)))
@@ -2154,6 +2170,23 @@ fn precheck_source_nesting(input: &str) -> Result<()> {
         at += 1;
     }
     Ok(())
+}
+
+fn structured_records(
+    diagnostics: &[Diagnostic],
+    codes: &[(usize, DiagnosticCode)],
+    offset: usize,
+) -> Vec<DiagnosticMetadata> {
+    codes
+        .iter()
+        .filter_map(|&(index, code)| {
+            Some(DiagnosticMetadata::new(
+                index + offset,
+                diagnostics.get(index)?,
+                code,
+            ))
+        })
+        .collect()
 }
 
 /// Parse a LaTeX string into the heap-allocated `MathExpr` AST.
@@ -2250,6 +2283,8 @@ pub(crate) struct LatexCompactParser {
     /// Warnings accumulated during parsing (e.g. metadata-dropping macros such
     /// as `\href`/`\includegraphics`), merged into the `ParseResult`.
     diagnostics: Vec<Diagnostic>,
+    /// Codes attached at the point where selected parser diagnostics are emitted.
+    diagnostic_codes: Vec<(usize, DiagnosticCode)>,
     /// Active `\rowcolors{start}{odd}{even}` alternating-row coloring (xcolor
     /// `[table]`), captured for the next `array`/`tabular`. Cleared once that
     /// array consumes it.
@@ -2355,6 +2390,7 @@ impl LatexCompactParser {
             recovery_work_limit: recovery_work_limit(input_len),
             colors: HashMap::new(),
             diagnostics: Vec::new(),
+            diagnostic_codes: Vec::new(),
             rowcolors: None,
             paired_delims: HashMap::new(),
             last_unstarred_operator: None,
@@ -2390,6 +2426,21 @@ impl LatexCompactParser {
         });
     }
 
+    /// Append a warning and bind its stable structured category to the
+    /// diagnostic's original index. The index is captured before the push so
+    /// recovery staging and later prepended diagnostics cannot retarget it.
+    fn warn_with_code(&mut self, message: impl Into<String>, code: DiagnosticCode) {
+        let index = self.diagnostics.len();
+        self.warn(message);
+        self.diagnostic_codes.push((index, code));
+    }
+
+    fn push_diagnostic_with_code(&mut self, diagnostic: Diagnostic, code: DiagnosticCode) {
+        let index = self.diagnostics.len();
+        self.diagnostics.push(diagnostic);
+        self.diagnostic_codes.push((index, code));
+    }
+
     /// Run a parser for generated notation with editor recovery disabled.
     /// Restore the caller's context even when the nested parser returns an
     /// error so a following sibling still uses the original policy.
@@ -2420,13 +2471,13 @@ impl LatexCompactParser {
         let span = self
             .source_span_of(input)
             .map(|source| Span::new(source.start, source.start + marker_len));
-        self.diagnostics.push(Diagnostic {
+        self.push_diagnostic_with_code(Diagnostic {
             kind: DiagnosticKind::Warning,
             message: format!(
                 "missing {role} argument after `{marker_text}`; retained the preceding expression"
             ),
             span,
-        });
+        }, DiagnosticCode::ReaderRecovery);
     }
 
     /// Turn an arena node-budget hit into a typed parser error. The parser
@@ -3572,11 +3623,14 @@ impl LatexCompactParser {
                 "after macro expansion, only the first digit `{first}` of `{number}` is the {role}; brace the number to {verb} all of it"
             )
         };
-        self.diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message,
-            span,
-        });
+        self.push_diagnostic_with_code(
+            Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span,
+            },
+            DiagnosticCode::ReaderInterpretation,
+        );
     }
 
     #[cold]
@@ -3584,10 +3638,13 @@ impl LatexCompactParser {
         if let Some(reports) = &self.split_numbers
             && reports.1 > 0
         {
-            self.warn(format!(
-                "{} more script arguments that split a number not listed",
-                reports.1
-            ));
+            self.warn_with_code(
+                format!(
+                    "{} more script arguments that split a number not listed",
+                    reports.1
+                ),
+                DiagnosticCode::ReaderInterpretation,
+            );
         }
     }
 
@@ -4113,8 +4170,9 @@ impl LatexCompactParser {
                 } else {
                     input
                 };
-                self.warn(
+                self.warn_with_code(
                     "\\tag equation metadata was dropped; equation numbering is not represented",
+                    DiagnosticCode::ReaderInterpretation,
                 );
                 Ok((
                     input,
@@ -4397,7 +4455,10 @@ impl LatexCompactParser {
             "href" => {
                 // \href{url}{text} — consume url, return text
                 let (input, _url_id) = self.parse_required_group(input)?;
-                self.warn("\\href target URL was dropped; only the visible text is rendered");
+                self.warn_with_code(
+                    "\\href target URL was dropped; only the visible text is rendered",
+                    DiagnosticCode::ReaderInterpretation,
+                );
                 self.parse_required_group(input)
             },
             "url" => {
@@ -4439,9 +4500,10 @@ impl LatexCompactParser {
             "htmlId" | "htmlClass" | "htmlData" | "htmlStyle" => {
                 // \htmlId{id}{content} — consume attribute arg, return content
                 let (input, _attr_id) = self.parse_required_group(input)?;
-                self.warn(format!(
-                    "\\{name} attribute was dropped; only the content is rendered"
-                ));
+                self.warn_with_code(
+                    format!("\\{name} attribute was dropped; only the content is rendered"),
+                    DiagnosticCode::ReaderInterpretation,
+                );
                 self.parse_required_group(input)
             },
 
@@ -4467,7 +4529,10 @@ impl LatexCompactParser {
                     input
                 };
                 let (input, _) = self.parse_required_group(input)?;
-                self.warn("\\includegraphics was dropped; images are not rendered in math output");
+                self.warn_with_code(
+                    "\\includegraphics was dropped; images are not rendered in math output",
+                    DiagnosticCode::ReaderInterpretation,
+                );
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -4543,7 +4608,10 @@ impl LatexCompactParser {
             )),
             "cline" => {
                 let (input, _) = take_cline_range(input);
-                self.warn("\\cline outside a row boundary was dropped");
+                self.warn_with_code(
+                    "\\cline outside a row boundary was dropped",
+                    DiagnosticCode::ReaderInterpretation,
+                );
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -4553,7 +4621,10 @@ impl LatexCompactParser {
             // --- Label (consume and discard) ---
             "label" => {
                 let (input, _) = self.parse_required_group(input)?;
-                self.warn("\\label equation metadata was dropped; cross-reference labels are not represented");
+                self.warn_with_code(
+                    "\\label equation metadata was dropped; cross-reference labels are not represented",
+                    DiagnosticCode::ReaderInterpretation,
+                );
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -4799,11 +4870,14 @@ impl LatexCompactParser {
             UndefinedKind::Undefined => format!("undefined control sequence {shown}"),
         };
         let span = self.source_span_of_command(name);
+        let diagnostic_index = self.diagnostics.len();
         self.diagnostics.push(Diagnostic {
             kind: DiagnosticKind::Warning,
             message,
             span,
         });
+        self.diagnostic_codes
+            .push((diagnostic_index, DiagnosticCode::UndefinedCommand));
         kind
     }
 
@@ -4835,10 +4909,10 @@ impl LatexCompactParser {
         if let Some(reports) = &self.undefined_commands
             && reports.1 > 0
         {
-            self.warn(format!(
-                "{} more undefined control sequences not listed",
-                reports.1
-            ));
+            self.warn_with_code(
+                format!("{} more undefined control sequences not listed", reports.1),
+                DiagnosticCode::UndefinedCommand,
+            );
         }
     }
 
@@ -4890,9 +4964,12 @@ impl LatexCompactParser {
             // renderer, and a placement control that follows no operator has
             // nothing to place.
             "nonumber" | "notag" => {
-                self.warn(format!(
-                    "\\{name} equation metadata was dropped; equation numbering is not represented"
-                ));
+                self.warn_with_code(
+                    format!(
+                        "\\{name} equation metadata was dropped; equation numbering is not represented"
+                    ),
+                    DiagnosticCode::ReaderInterpretation,
+                );
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
             "nobreak" | "allowbreak" | "goodbreak" | "limits" | "nolimits" | "displaylimits" => {
@@ -4975,9 +5052,10 @@ impl LatexCompactParser {
                 )));
             },
         };
-        self.warn(format!(
-            "\\{name} cross-reference was dropped; equation labels are not represented"
-        ));
+        self.warn_with_code(
+            format!("\\{name} cross-reference was dropped; equation labels are not represented"),
+            DiagnosticCode::ReaderInterpretation,
+        );
         Ok((
             input,
             self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -5311,11 +5389,14 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Verify,
             )));
         }
-        self.diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message: format!("{message}; kept the source as text"),
-            span,
-        });
+        self.push_diagnostic_with_code(
+            Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message: format!("{message}; kept the source as text"),
+                span,
+            },
+            DiagnosticCode::ReaderInterpretation,
+        );
         let text = format!("\\{name}{source}");
         let sid = self.arena.push_str(&text);
         Ok(self
@@ -5348,9 +5429,9 @@ impl LatexCompactParser {
         };
         let alignment = &rest[..end];
         if !matches!(alignment, "" | "c") {
-            self.warn(format!(
+            self.warn_with_code(format!(
                 "continued-fraction alignment `[{alignment}]` was dropped; the AST uses centered columns"
-            ));
+), DiagnosticCode::ReaderInterpretation);
         }
         Ok((&rest[end + 1..], ()))
     }
@@ -5454,11 +5535,14 @@ impl LatexCompactParser {
             .iter()
             .any(|diagnostic| diagnostic.message == message && diagnostic.span == span)
         {
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message,
-                span,
-            });
+            self.push_diagnostic_with_code(
+                Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message,
+                    span,
+                },
+                DiagnosticCode::ReaderRecovery,
+            );
         }
         Ok((
             rest,
@@ -5489,9 +5573,12 @@ impl LatexCompactParser {
             Some(text) => match dimension::width(text) {
                 Ok((rest, width)) if rest.trim().is_empty() && width.num == 0 => true,
                 _ => {
-                    self.warn(format!(
-                        "\\genfrac rule thickness `{text}` is drawn at the default thickness"
-                    ));
+                    self.warn_with_code(
+                        format!(
+                            "\\genfrac rule thickness `{text}` is drawn at the default thickness"
+                        ),
+                        DiagnosticCode::ReaderInterpretation,
+                    );
                     false
                 },
             },
@@ -5576,7 +5663,7 @@ impl LatexCompactParser {
             // null one.
             text if text.chars().nth(1).is_some() => {
                 let message = format!("{text} is not a delimiter");
-                self.warn(message);
+                self.warn_with_code(message, DiagnosticCode::ReaderInterpretation);
                 String::new()
             },
             text => text.to_string(),
@@ -6392,20 +6479,27 @@ impl LatexCompactParser {
                     rest = tail;
                 } else {
                     if group.is_none() {
-                        self.warn(
+                        self.warn_with_code(
                             "incomplete glue component; following tokens were retained as math",
+                            DiagnosticCode::ReaderInterpretation,
                         );
                     }
                     break;
                 }
             }
             if rest.len() != fixed_end.len() {
-                self.warn("only the natural width is representable; glue stretch and shrink components were dropped");
+                self.warn_with_code(
+                    "only the natural width is representable; glue stretch and shrink components were dropped",
+                    DiagnosticCode::ReaderInterpretation,
+                );
             }
         }
         if let Some((tail, _)) = group {
             if !rest.trim().is_empty() {
-                self.warn("extra tokens in the braced spacing dimension were dropped");
+                self.warn_with_code(
+                    "extra tokens in the braced spacing dimension were dropped",
+                    DiagnosticCode::ReaderInterpretation,
+                );
             }
             rest = tail;
         }
@@ -6420,11 +6514,14 @@ impl LatexCompactParser {
     fn warn_kern_unit(&mut self, is_mu: bool, unit: &str) {
         let wrong = !matches!(unit, "fil" | "fill" | "filll") && (unit == "mu") != is_mu;
         if wrong {
-            self.warn(if is_mu {
-                "\\mkern/\\mskip spacing expects a mu unit"
-            } else {
-                "\\kern/\\hskip spacing does not use a mu unit"
-            });
+            self.warn_with_code(
+                if is_mu {
+                    "\\mkern/\\mskip spacing expects a mu unit"
+                } else {
+                    "\\kern/\\hskip spacing does not use a mu unit"
+                },
+                DiagnosticCode::ReaderInterpretation,
+            );
         }
     }
 
@@ -7797,9 +7894,12 @@ impl LatexCompactParser {
             "split" => self.parse_align_env(input, env_name),
             _ => {
                 if self.lenient {
-                    self.warn(format!(
-                        "unknown LaTeX environment `{env_name}`; parsed as a generic array"
-                    ));
+                    self.warn_with_code(
+                        format!(
+                            "unknown LaTeX environment `{env_name}`; parsed as a generic array"
+                        ),
+                        DiagnosticCode::ReaderInterpretation,
+                    );
                     self.parse_unknown_environment_env(input, env_name)
                 } else {
                     self.abort = Some(Error::LatexParse {
@@ -9125,7 +9225,10 @@ impl LatexCompactParser {
                     nom::error::ErrorKind::Verify,
                 )));
             }
-            self.warn(format!("empheq: `{rest}` was dropped"));
+            self.warn_with_code(
+                format!("empheq: `{rest}` was dropped"),
+                DiagnosticCode::ReaderInterpretation,
+            );
         }
         let ids = self.resolve_infix_fraction(ids);
         match ids[..] {
@@ -9386,12 +9489,16 @@ impl LatexCompactParser {
             }
         }
         if partial_cline {
-            self.warn(
+            self.warn_with_code(
                 "\\cline over only some columns was dropped; only full-width horizontal rules are representable",
+                DiagnosticCode::ReaderInterpretation,
             );
         }
         if unreadable_cline {
-            self.warn("\\cline without a readable column range was dropped");
+            self.warn_with_code(
+                "\\cline without a readable column range was dropped",
+                DiagnosticCode::ReaderInterpretation,
+            );
         }
         Ok((rest, (rows, row_seps, dashed_rows)))
     }

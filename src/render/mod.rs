@@ -48,7 +48,7 @@ use std::sync::{
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
-use crate::error::{Diagnostic, DiagnosticKind, Result};
+use crate::error::{Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticRecord, Result};
 use crate::writer::xml_chars;
 use std::collections::HashSet;
 
@@ -501,6 +501,16 @@ impl PreparedRender {
         ))
     }
 
+    /// Return structured SVG fallback records without emitting an SVG.
+    pub fn svg_diagnostic_records(&self, options: &RenderOptions) -> Result<Vec<DiagnosticRecord>> {
+        self.svg_geometry(options)?;
+        Ok(svg_diagnostic_records_arena(
+            &self.layout_arena,
+            self.root,
+            &options.fg_color,
+        ))
+    }
+
     /// Emit a standalone SVG with embedded glyph outlines.
     #[cfg(feature = "render")]
     pub fn to_svg(&self, options: &RenderOptions) -> Result<String> {
@@ -643,6 +653,21 @@ impl PreparedRender {
         options: &raster::RasterOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         self.to_image_with_diagnostics_and_limits(options, &raster::RasterLimits::default())
+    }
+
+    /// Return structured raster fallback records without encoding an image.
+    #[cfg(feature = "raster")]
+    pub fn raster_diagnostic_records(
+        &self,
+        options: &raster::RasterOptions,
+    ) -> Result<Vec<DiagnosticRecord>> {
+        options.validate()?;
+        self.validate_options(&options.render)?;
+        Ok(raster::raster_diagnostic_records_arena(
+            &self.layout_arena,
+            self.root,
+            &options.render.fg_color,
+        ))
     }
 
     /// Emit a raster image with diagnostics and a caller-selected pixel budget.
@@ -1699,26 +1724,7 @@ fn missing_glyph_diagnostics(root: &layout::LayoutBox) -> Vec<Diagnostic> {
 }
 
 fn paint_diagnostic(role: &str, value: &str) -> Option<Diagnostic> {
-    let (kind, explanation) = match paint::classify(value) {
-        paint::PaintClass::Concrete(_) | paint::PaintClass::CurrentColor => return None,
-        paint::PaintClass::HostDependent => {
-            (DiagnosticKind::Info, "depends on the host CSS environment")
-        },
-        paint::PaintClass::Invalid => (
-            DiagnosticKind::Warning,
-            "is unrecognized by Mathema; the SVG viewer receives it verbatim",
-        ),
-    };
-    let mut chars = value.chars();
-    let mut sample: String = chars.by_ref().take(64).collect();
-    if chars.next().is_some() {
-        sample.push('…');
-    }
-    Some(Diagnostic {
-        kind,
-        message: format!("SVG {role} paint {sample:?} {explanation}"),
-        span: None,
-    })
+    paint_diagnostic_with_code(role, value).map(|(diagnostic, _)| diagnostic)
 }
 
 fn svg_diagnostics(root: &layout::LayoutBox, foreground: &str) -> Vec<Diagnostic> {
@@ -1842,32 +1848,85 @@ fn svg_diagnostics_arena(
     root: arena::LayoutBoxId,
     foreground: &str,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = missing_glyph_diagnostics_arena(arena, root);
-    let mut seen = HashSet::new();
-    if let Some(diagnostic) = paint_diagnostic("foreground", foreground)
-        && seen.insert(diagnostic.message.clone())
-    {
-        diagnostics.push(diagnostic);
-    }
-    collect_svg_paints_arena(arena, root, &mut seen, &mut diagnostics);
-    diagnostics
+    svg_diagnostic_records_arena(arena, root, foreground)
+        .into_iter()
+        .map(|record| Diagnostic {
+            kind: record.kind,
+            message: record.message,
+            span: record.span,
+        })
+        .collect()
 }
 
-fn collect_svg_paints_arena(
+fn paint_diagnostic_with_code(role: &str, value: &str) -> Option<(Diagnostic, DiagnosticCode)> {
+    let (kind, explanation, code) = match paint::classify(value) {
+        paint::PaintClass::Concrete(_) | paint::PaintClass::CurrentColor => return None,
+        paint::PaintClass::HostDependent => (
+            DiagnosticKind::Info,
+            "depends on the host CSS environment",
+            DiagnosticCode::RenderHostPaint,
+        ),
+        paint::PaintClass::Invalid => (
+            DiagnosticKind::Warning,
+            "is unrecognized by Mathema; the SVG viewer receives it verbatim",
+            DiagnosticCode::RenderUnrecognizedPaint,
+        ),
+    };
+    let mut chars = value.chars();
+    let mut sample: String = chars.by_ref().take(64).collect();
+    if chars.next().is_some() {
+        sample.push('…');
+    }
+    Some((
+        Diagnostic {
+            kind,
+            message: format!("SVG {role} paint {sample:?} {explanation}"),
+            span: None,
+        },
+        code,
+    ))
+}
+
+fn svg_diagnostic_records_arena(
+    arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    foreground: &str,
+) -> Vec<DiagnosticRecord> {
+    let mut records = missing_glyph_diagnostics_arena(arena, root)
+        .into_iter()
+        .map(|diagnostic| {
+            DiagnosticRecord::from_owned_write(diagnostic, DiagnosticCode::RenderMissingGlyph)
+        })
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    if let Some((diagnostic, code)) = paint_diagnostic_with_code("foreground", foreground) {
+        seen.insert(diagnostic.message.clone());
+        records.push(DiagnosticRecord::from_owned_write(diagnostic, code));
+    }
+    collect_svg_paint_records_arena(arena, root, &mut seen, &mut records);
+    records
+}
+
+fn collect_svg_paint_records_arena(
     arena: &arena::LayoutArena,
     id: arena::LayoutBoxId,
     seen: &mut HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
+    records: &mut Vec<DiagnosticRecord>,
 ) {
+    let mut record = |role: &str, value: &str| {
+        let Some((diagnostic, code)) = paint_diagnostic_with_code(role, value) else {
+            return;
+        };
+        if !seen.insert(diagnostic.message.clone()) {
+            return;
+        }
+        records.push(DiagnosticRecord::from_owned_write(diagnostic, code));
+    };
     use arena::ArenaBoxKind;
     match &arena.get(id).kind {
         ArenaBoxKind::Color { color, child } => {
-            if let Some(diagnostic) = paint_diagnostic("expression", color)
-                && seen.insert(diagnostic.message.clone())
-            {
-                diagnostics.push(diagnostic);
-            }
-            collect_svg_paints_arena(arena, *child, seen, diagnostics);
+            record("expression", color);
+            collect_svg_paint_records_arena(arena, *child, seen, records);
         },
         ArenaBoxKind::Boxed {
             bg_color,
@@ -1875,34 +1934,23 @@ fn collect_svg_paints_arena(
             child,
             ..
         } => {
-            for (role, value) in [
-                ("box background", bg_color.as_deref()),
-                ("box border", border_color.as_deref()),
-            ] {
-                if let Some(value) = value
-                    && let Some(diagnostic) = paint_diagnostic(role, value)
-                    && seen.insert(diagnostic.message.clone())
-                {
-                    diagnostics.push(diagnostic);
-                }
+            if let Some(color) = bg_color {
+                record("box background", color);
             }
-            collect_svg_paints_arena(arena, *child, seen, diagnostics);
+            if let Some(color) = border_color {
+                record("box border", color);
+            }
+            collect_svg_paint_records_arena(arena, *child, seen, records);
         },
         ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
             for child in arena.children(*children) {
-                collect_svg_paints_arena(arena, child.id, seen, diagnostics);
+                collect_svg_paint_records_arena(arena, child.id, seen, records);
             }
         },
         ArenaBoxKind::Reflected { child } => {
-            collect_svg_paints_arena(arena, *child, seen, diagnostics)
+            collect_svg_paint_records_arena(arena, *child, seen, records)
         },
-        ArenaBoxKind::Glyph { .. }
-        | ArenaBoxKind::TextRun { .. }
-        | ArenaBoxKind::Rule { .. }
-        | ArenaBoxKind::Delimiter { .. }
-        | ArenaBoxKind::Kern
-        | ArenaBoxKind::SvgPath(_)
-        | ArenaBoxKind::Phantom => {},
+        _ => {},
     }
 }
 
@@ -2077,6 +2125,79 @@ mod integration_tests {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect();
         assert_eq!(actual_messages, expected_messages);
+    }
+
+    #[test]
+    fn prepared_structured_paint_records_match_legacy_collection() {
+        let expr = MathExpr::inline(vec![crate::ast::MathNode::Color {
+            color: "var(--ink)".into(),
+            content: Box::new(crate::ast::MathNode::Text(
+                crate::ast::TextStyle::Normal,
+                "中".into(),
+            )),
+        }]);
+        let options = RenderOptions::default();
+        let prepared = prepare_render(&expr, &options).unwrap();
+        let records = prepared.svg_diagnostic_records(&options).unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|record| { record.code == DiagnosticCode::RenderMissingGlyph })
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| { record.code == DiagnosticCode::RenderHostPaint })
+        );
+        let (_, legacy) = prepared.to_svg_text_with_diagnostics(&options).unwrap();
+        let legacy_view: Vec<_> = legacy
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.kind,
+                    diagnostic.message.as_str(),
+                    diagnostic.span,
+                )
+            })
+            .collect();
+        let structured_view: Vec<_> = records
+            .iter()
+            .map(|record| (record.kind, record.message.as_str(), record.span))
+            .collect();
+        assert_eq!(structured_view, legacy_view);
+    }
+
+    #[cfg(feature = "raster")]
+    #[test]
+    fn prepared_raster_records_classify_invalid_paints_without_encoding() {
+        let expr = MathExpr::inline(vec![crate::ast::MathNode::Color {
+            color: "var(--ink)".into(),
+            content: Box::new(crate::ast::MathNode::Identifier("x".into())),
+        }]);
+        let options = crate::render::raster::RasterOptions::default();
+        let prepared = prepare_render(&expr, &options.render).unwrap();
+        let records = prepared.raster_diagnostic_records(&options).unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|record| { record.code == DiagnosticCode::RenderColorFallback })
+        );
+        let (_, legacy) = prepared.to_png_with_diagnostics(&options).unwrap();
+        let legacy_view: Vec<_> = legacy
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.kind,
+                    diagnostic.message.as_str(),
+                    diagnostic.span,
+                )
+            })
+            .collect();
+        let structured_view: Vec<_> = records
+            .iter()
+            .map(|record| (record.kind, record.message.as_str(), record.span))
+            .collect();
+        assert_eq!(structured_view, legacy_view);
     }
 
     #[test]

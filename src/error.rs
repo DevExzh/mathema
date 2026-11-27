@@ -21,6 +21,21 @@ impl Span {
     }
 }
 
+/// Clamp a byte offset to a UTF-8 source and return the smallest safe
+/// character span. EOF is represented by an empty span.
+pub(crate) fn safe_byte_span(source: &str, offset: usize) -> Span {
+    let offset = offset.min(source.len());
+    if offset == source.len() {
+        return Span::new(offset, offset);
+    }
+    let mut start = offset;
+    while !source.is_char_boundary(start) {
+        start -= 1;
+    }
+    let end = start + source[start..].chars().next().map_or(0, char::len_utf8);
+    Span::new(start, end)
+}
+
 /// Mathema error type.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -115,6 +130,85 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Return the source span carried by this error, when the reader already
+    /// knows one. Formats whose parser cannot safely map its failure back to
+    /// source bytes return `None`.
+    #[must_use]
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Self::LatexParse { span, .. } => *span,
+            _ => None,
+        }
+    }
+}
+
+/// An additive error wrapper carrying source-format context and a best-effort
+/// byte span. The wrapped [`Error`] remains available for callers that match
+/// the legacy error enum.
+#[derive(Debug)]
+pub struct LocatedError {
+    /// The original structured error.
+    pub error: Error,
+    /// Source format whose reader produced the error.
+    pub format: Option<Format>,
+    /// Byte span in the original source, when available. For MTEF this refers
+    /// to the decoded wire bytes, including an optional Equation Native header.
+    pub span: Option<Span>,
+}
+
+impl LocatedError {
+    /// Construct a location-aware view of a legacy error.
+    #[must_use]
+    pub fn new(error: Error, format: Option<Format>) -> Self {
+        let span = error.span();
+        Self {
+            error,
+            format,
+            span,
+        }
+    }
+
+    /// Construct a location-aware error with an explicitly observed span.
+    #[must_use]
+    pub fn with_span(error: Error, format: Option<Format>, span: Option<Span>) -> Self {
+        Self {
+            error,
+            format,
+            span,
+        }
+    }
+
+    pub(crate) fn in_format(mut self, format: Format) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    /// Consume the wrapper and return the original error.
+    #[must_use]
+    pub fn into_error(self) -> Error {
+        self.error
+    }
+}
+
+impl From<Error> for LocatedError {
+    fn from(error: Error) -> Self {
+        Self::new(error, None)
+    }
+}
+
+impl std::fmt::Display for LocatedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for LocatedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// A resource limit that readers enforce while parsing untrusted input.
 ///
 /// Reported by [`Error::LimitExceeded`]. The input-size limit has its own
@@ -171,6 +265,113 @@ pub enum DiagnosticKind {
     Info,
 }
 
+/// The stage that produced a structured diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DiagnosticPhase {
+    /// The source reader recovered input or interpreted an unsupported construct.
+    Read,
+    /// A target writer or renderer could not preserve source information.
+    Write,
+}
+
+impl DiagnosticPhase {
+    /// Stable machine-readable spelling for logs and bindings.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// Stable category for a structured diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DiagnosticCode {
+    /// The reader recovered malformed or incomplete source input.
+    ReaderRecovery,
+    /// The reader accepted a construct whose source semantics are only partially modeled.
+    ReaderInterpretation,
+    /// An undefined, misplaced, dangerous, or otherwise unexpanded control sequence.
+    UndefinedCommand,
+    /// A text or interchange writer dropped or approximated source information.
+    TargetLoss,
+    /// A renderer used a client-font or missing-glyph-box fallback.
+    RenderMissingGlyph,
+    /// A raster renderer rejected a CSS paint spelling.
+    RenderColorFallback,
+    /// An SVG paint is resolved by the viewer or surrounding document.
+    RenderHostPaint,
+    /// An SVG paint could not be recognized and is passed through to the viewer.
+    RenderUnrecognizedPaint,
+}
+
+impl DiagnosticCode {
+    /// Stable machine-readable spelling for logs and bindings.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReaderRecovery => "reader_recovery",
+            Self::ReaderInterpretation => "reader_interpretation",
+            Self::UndefinedCommand => "undefined_command",
+            Self::TargetLoss => "target_loss",
+            Self::RenderMissingGlyph => "render_missing_glyph",
+            Self::RenderColorFallback => "render_color_fallback",
+            Self::RenderHostPaint => "render_host_paint",
+            Self::RenderUnrecognizedPaint => "render_unrecognized_paint",
+        }
+    }
+}
+
+/// A diagnostic with a stable code and an explicit conversion phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticRecord {
+    /// Stable machine-readable category.
+    pub code: DiagnosticCode,
+    /// Conversion phase that produced the record.
+    pub phase: DiagnosticPhase,
+    /// Existing severity retained for compatibility with [`Diagnostic`].
+    pub kind: DiagnosticKind,
+    /// Human-readable detail.
+    pub message: String,
+    /// Source byte range, when the reader knows one.
+    pub span: Option<Span>,
+}
+
+/// Compact code metadata kept alongside the public legacy diagnostic vector.
+/// The message and span remain in that vector and are copied only when a
+/// caller explicitly asks for structured records.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DiagnosticMetadata {
+    pub(crate) index: usize,
+    pub(crate) fingerprint: u64,
+    pub(crate) code: DiagnosticCode,
+}
+
+impl DiagnosticMetadata {
+    pub(crate) fn new(index: usize, diagnostic: &Diagnostic, code: DiagnosticCode) -> Self {
+        Self {
+            index,
+            fingerprint: diagnostic_fingerprint(diagnostic),
+            code,
+        }
+    }
+}
+
+impl DiagnosticRecord {
+    pub(crate) fn from_owned_write(diagnostic: Diagnostic, code: DiagnosticCode) -> Self {
+        Self {
+            code,
+            phase: DiagnosticPhase::Write,
+            kind: diagnostic.kind,
+            message: diagnostic.message,
+            span: diagnostic.span,
+        }
+    }
+}
+
 /// A non-fatal message produced while parsing input.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
@@ -190,6 +391,7 @@ pub struct ParseResult {
     pub expr: MathExpr,
     /// Non-fatal diagnostics collected during parsing.
     pub diagnostics: Vec<Diagnostic>,
+    diagnostic_metadata: Vec<DiagnosticMetadata>,
 }
 
 impl ParseResult {
@@ -198,12 +400,17 @@ impl ParseResult {
         Self {
             expr,
             diagnostics: Vec::new(),
+            diagnostic_metadata: Vec::new(),
         }
     }
 
     /// Create a result holding `expr` and the given diagnostics.
     pub fn with_diagnostics(expr: MathExpr, diagnostics: Vec<Diagnostic>) -> Self {
-        Self { expr, diagnostics }
+        Self {
+            expr,
+            diagnostics,
+            diagnostic_metadata: Vec::new(),
+        }
     }
 
     /// Return `true` if any diagnostic has [`DiagnosticKind::Warning`] severity.
@@ -212,6 +419,15 @@ impl ParseResult {
         self.diagnostics
             .iter()
             .any(|d| d.kind == DiagnosticKind::Warning)
+    }
+
+    /// Build a fresh structured snapshot from the current public diagnostic
+    /// vector. Editing that vector updates messages/spans in subsequent
+    /// snapshots. Moved entries retain their original codes when unambiguous.
+    /// Newly added or edited entries fall back to their severity.
+    #[must_use]
+    pub fn diagnostic_records(&self) -> Vec<DiagnosticRecord> {
+        records_from_metadata(&self.diagnostics, &self.diagnostic_metadata)
     }
 }
 
@@ -223,6 +439,72 @@ pub struct CompactParseResult {
     pub expr: CompactExpr,
     /// Non-fatal diagnostics collected during parsing.
     pub diagnostics: Vec<Diagnostic>,
+    diagnostic_metadata: Vec<DiagnosticMetadata>,
+}
+
+fn reader_code(diagnostic: &Diagnostic) -> DiagnosticCode {
+    match diagnostic.kind {
+        DiagnosticKind::Warning => DiagnosticCode::ReaderRecovery,
+        DiagnosticKind::Info => DiagnosticCode::ReaderInterpretation,
+    }
+}
+
+fn diagnostic_fingerprint(diagnostic: &Diagnostic) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hash = DefaultHasher::new();
+    (diagnostic.kind, &diagnostic.message, diagnostic.span).hash(&mut hash);
+    hash.finish()
+}
+
+fn records_from_metadata(
+    diagnostics: &[Diagnostic],
+    metadata: &[DiagnosticMetadata],
+) -> Vec<DiagnosticRecord> {
+    // Usually the caller has left the public Vec untouched. In that case
+    // tags are already ordered and the common path needs no lookup table.
+    let moved = metadata.iter().any(|entry| {
+        diagnostics
+            .get(entry.index)
+            .is_none_or(|d| diagnostic_fingerprint(d) != entry.fingerprint)
+    });
+    let mut by_content = std::collections::HashMap::new();
+    if moved {
+        for entry in metadata {
+            by_content
+                .entry(entry.fingerprint)
+                .and_modify(|code| {
+                    if *code != Some(entry.code) {
+                        *code = None;
+                    }
+                })
+                .or_insert(Some(entry.code));
+        }
+    }
+    let mut tags = metadata.iter().peekable();
+    diagnostics
+        .iter()
+        .enumerate()
+        .map(|(index, diagnostic)| {
+            let indexed = tags.next_if(|entry| entry.index == index);
+            let code = if !moved {
+                indexed.map(|entry| entry.code)
+            } else {
+                let key = diagnostic_fingerprint(diagnostic);
+                indexed
+                    .filter(|entry| entry.fingerprint == key)
+                    .map(|entry| entry.code)
+                    .or_else(|| by_content.get(&key).copied().flatten())
+            }
+            .unwrap_or_else(|| reader_code(diagnostic));
+            DiagnosticRecord {
+                phase: DiagnosticPhase::Read,
+                code,
+                kind: diagnostic.kind,
+                message: diagnostic.message.clone(),
+                span: diagnostic.span,
+            }
+        })
+        .collect()
 }
 
 impl CompactParseResult {
@@ -231,12 +513,31 @@ impl CompactParseResult {
         Self {
             expr,
             diagnostics: Vec::new(),
+            diagnostic_metadata: Vec::new(),
         }
     }
 
     /// Create a result holding `expr` and the given diagnostics.
     pub fn with_diagnostics(expr: CompactExpr, diagnostics: Vec<Diagnostic>) -> Self {
-        Self { expr, diagnostics }
+        Self {
+            expr,
+            diagnostics,
+            diagnostic_metadata: Vec::new(),
+        }
+    }
+
+    /// Create a parse result with compact code metadata without cloning
+    /// messages into a parallel vector.
+    pub(crate) fn with_diagnostic_metadata(
+        expr: CompactExpr,
+        diagnostics: Vec<Diagnostic>,
+        diagnostic_metadata: Vec<DiagnosticMetadata>,
+    ) -> Self {
+        Self {
+            expr,
+            diagnostics,
+            diagnostic_metadata,
+        }
     }
 
     /// Bridge: build from a `ParseResult` by interning into a fresh arena.
@@ -248,6 +549,7 @@ impl CompactParseResult {
         Ok(Self {
             expr: CompactExpr::from_math_expr(&result.expr)?,
             diagnostics: result.diagnostics.clone(),
+            diagnostic_metadata: result.diagnostic_metadata.clone(),
         })
     }
 
@@ -256,6 +558,7 @@ impl CompactParseResult {
         ParseResult {
             expr: self.expr.to_math_expr(),
             diagnostics: self.diagnostics.clone(),
+            diagnostic_metadata: self.diagnostic_metadata.clone(),
         }
     }
 
@@ -265,6 +568,13 @@ impl CompactParseResult {
         self.diagnostics
             .iter()
             .any(|d| d.kind == DiagnosticKind::Warning)
+    }
+
+    /// Build a fresh structured snapshot from the current public diagnostic
+    /// vector. Legacy edits are reflected in the returned messages and spans.
+    #[must_use]
+    pub fn diagnostic_records(&self) -> Vec<DiagnosticRecord> {
+        records_from_metadata(&self.diagnostics, &self.diagnostic_metadata)
     }
 }
 

@@ -15,15 +15,15 @@ declares `amsmath`, `amssymb`, and `xcolor`, matching `README.md`. Optional
 writer constructs require additional packages and are kept outside this gate.
 
 The MathML 3 and ECMA-376 schemas are intentionally kept outside the source
-tree. Set `MATHEMA_MATHML_XSD` to the local MathML 3 schema and
+tree. Set `MATHEMA_MATHML_XSD` to a local MathML 3 schema and
 `MATHEMA_OMML_XSD` to `shared-math.xsd`. The directory containing that file
-must contain the complete imported ECMA XSD set. The review workspace contains
-reference copies in
+must contain the complete imported ECMA XSD set. The paths
 `target/review/parent/w3c-mathml3` and
-`target/review/parent/official-ecma-transitional`.
+`target/review/parent/official-ecma-transitional` refer to local review
+artifacts and are not checked into the repository.
 Set `MATHEMA_XML_XSD` to W3C's XML namespace schema so the ECMA XML import is
-validated against the real namespace declaration. The checked-in review copy
-is `target/review/parent/xml.xsd`.
+validated against the real namespace declaration. The local review artifact is
+`target/review/parent/xml.xsd`.
 The CI job downloads the W3C MathML 3 archive
 `mathml3-xsd.zip` (SHA-256
 `921cba0eaf1ec3c2756849425d0ca4c7b2d5f549eda7dd1e0d7f1351ba173a8d`) and
@@ -49,6 +49,11 @@ rejects Word-only `m:mcJc` in DrawingML output. The command returns a failure
 when an external consumer rejects output. This keeps the check suitable for a
 release gate while allowing ordinary library builds to run without TeX or XML
 schema packages.
+
+The CI compatibility job installs `libxml2-utils`, `texlive-latex-recommended`,
+and `unzip` on the hosted Ubuntu runner. It downloads and hashes the schema
+archives before validation. Run the same checks locally after installing
+`xmllint`, `pdflatex`, `unzip`, and `cargo`.
 
 ## Package and performance checks
 

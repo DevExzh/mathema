@@ -7,7 +7,10 @@ use crate::ast::normalize::{
     normalize_compact_expr_keeping_identifiers, normalize_compact_expr_leading_scripts,
     normalize_compact_expr_opening_arguments, normalize_compact_expr_trusted,
 };
-use crate::error::{CompactParseResult, Config, Diagnostic, Format, Result};
+use crate::error::{
+    CompactParseResult, Config, Diagnostic, DiagnosticCode, DiagnosticRecord, Format, LocatedError,
+    Result,
+};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
 use crate::reader::mathml::MathmlReader;
@@ -36,12 +39,7 @@ pub fn convert(input: &str, from: Format, to: Format) -> Result<String> {
 
 /// Conversion with custom configuration.
 pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> Result<String> {
-    let mut compact = parse_compact(input, from, config)?;
-    crate::ast::validate_compact_depth_with(
-        &compact.expr.arena,
-        compact.expr.roots,
-        config.effective_max_depth(),
-    )?;
+    let mut compact = parse_checked(input, from, config)?;
     normalize_for(&mut compact.expr, from, to)?;
     write_compact(&compact.expr, to, config)
 }
@@ -186,12 +184,7 @@ pub fn convert_with_config_and_svg_options(
             "SVG options require Format::Svg as the output".into(),
         ));
     }
-    let mut compact = parse_compact(input, from, config)?;
-    crate::ast::validate_compact_depth_with(
-        &compact.expr.arena,
-        compact.expr.roots,
-        config.effective_max_depth(),
-    )?;
+    let mut compact = parse_checked(input, from, config)?;
     normalize_for(&mut compact.expr, from, to)?;
     crate::render::render_to_svg_compact_with_options(&compact.expr, options)
 }
@@ -227,18 +220,62 @@ pub fn convert_with_config_and_svg_options_and_diagnostics(
             "SVG options require Format::Svg as the output".into(),
         ));
     }
-    let mut compact = parse_compact(input, from, config)?;
-    crate::ast::validate_compact_depth_with(
-        &compact.expr.arena,
-        compact.expr.roots,
-        config.effective_max_depth(),
-    )?;
+    let mut compact = parse_checked(input, from, config)?;
     let mut diagnostics = std::mem::take(&mut compact.diagnostics);
     normalize_for(&mut compact.expr, from, to)?;
     let (output, render_diagnostics) =
         crate::render::render_to_svg_compact_with_options_and_diagnostics(&compact.expr, options)?;
     diagnostics.extend(render_diagnostics);
     Ok((output, diagnostics))
+}
+
+/// Conversion with an additive source-location view of failures.
+pub fn convert_with_location(
+    input: &str,
+    from: Format,
+    to: Format,
+) -> std::result::Result<String, LocatedError> {
+    convert_with_config_and_location(input, from, to, &Config::default())
+}
+
+/// Configured conversion with an additive source-location view of failures.
+pub fn convert_with_config_and_location(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+) -> std::result::Result<String, LocatedError> {
+    let mut compact = match from {
+        Format::LaTeX => LatexReader::parse_compact(input, config)
+            .map_err(|error| LocatedError::new(error, Some(from))),
+        Format::MathML => MathmlReader::parse_compact_located(input, config),
+        Format::Omml => OmmlReader::parse_compact_located(input, config),
+        Format::Mtef => {
+            MtefReader::parse_hex_with_info_located(input, config).map(|(result, _)| result)
+        },
+        Format::UnicodeMath => UnicodeMathReader::parse_compact_located(input, config),
+        #[cfg(feature = "render")]
+        Format::Svg => Err(LocatedError::new(
+            crate::error::Error::Unsupported("SVG is an output-only format".into()),
+            Some(from),
+        )),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(LocatedError::new(
+            crate::error::Error::Unsupported("raster formats are output-only".into()),
+            Some(from),
+        )),
+    }
+    .map_err(|error| error.in_format(from))?;
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )
+    .map_err(|error| LocatedError::new(error, Some(from)))?;
+    normalize_for(&mut compact.expr, from, to)
+        .map_err(|error| LocatedError::with_span(error, None, None))?;
+    write_compact(&compact.expr, to, config)
+        .map_err(|error| LocatedError::with_span(error, None, None))
 }
 
 /// One-liner conversion that also returns diagnostics from both phases of the
@@ -259,6 +296,15 @@ pub fn convert_with_diagnostics(
     convert_with_config_and_diagnostics(input, from, to, &Config::default())
 }
 
+/// One-shot conversion with stable diagnostic codes and explicit phases.
+pub fn convert_with_diagnostic_records(
+    input: &str,
+    from: Format,
+    to: Format,
+) -> Result<(String, Vec<DiagnosticRecord>)> {
+    convert_with_config_and_diagnostic_records(input, from, to, &Config::default())
+}
+
 /// Conversion with custom configuration that also returns diagnostics from
 /// both parsing and writing.
 ///
@@ -272,41 +318,85 @@ pub fn convert_with_config_and_diagnostics(
     to: Format,
     config: &Config,
 ) -> Result<(String, Vec<Diagnostic>)> {
-    let mut compact = parse_compact(input, from, config)?;
+    let mut parsed = parse_checked(input, from, config)?;
+    let (output, writer) = write_converted_with_diagnostics(&mut parsed.expr, from, to, config)?;
+    parsed.diagnostics.extend(writer);
+    Ok((output, parsed.diagnostics))
+}
+
+/// Conversion with stable diagnostic codes and explicit read/write phases.
+///
+/// This additive API preserves [`convert_with_config_and_diagnostics`] and its
+/// human-readable messages. Reader records precede writer records, and each
+/// record retains the source byte span when one is available.
+pub fn convert_with_config_and_diagnostic_records(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+) -> Result<(String, Vec<DiagnosticRecord>)> {
+    let mut parsed = parse_checked(input, from, config)?;
+    let mut records = parsed.diagnostic_records();
+    #[cfg(feature = "render")]
+    if to == Format::Svg {
+        normalize_for(&mut parsed.expr, from, to)?;
+        let options = crate::render::RenderOptions::default();
+        let prepared = crate::render::prepare_render_compact(&parsed.expr, &options)?;
+        records.extend(prepared.svg_diagnostic_records(&options)?);
+        return Ok((prepared.to_svg(&options)?, records));
+    }
+    let (output, writer) = write_converted_with_diagnostics(&mut parsed.expr, from, to, config)?;
+    records.extend(writer.into_iter().map(target_loss_record));
+    Ok((output, records))
+}
+
+fn target_loss_record(diagnostic: Diagnostic) -> DiagnosticRecord {
+    DiagnosticRecord::from_owned_write(diagnostic, DiagnosticCode::TargetLoss)
+}
+
+fn parse_checked(input: &str, from: Format, config: &Config) -> Result<CompactParseResult> {
+    let parsed = parse_compact(input, from, config)?;
     crate::ast::validate_compact_depth_with(
-        &compact.expr.arena,
-        compact.expr.roots,
+        &parsed.expr.arena,
+        parsed.expr.roots,
         config.effective_max_depth(),
     )?;
+    Ok(parsed)
+}
 
+fn write_converted_with_diagnostics(
+    expr: &mut CompactExpr,
+    from: Format,
+    to: Format,
+    config: &Config,
+) -> Result<(String, Vec<Diagnostic>)> {
     // `normalize_for` deliberately lowers colors and typesetting attributes
     // for LaTeX, OMML and UnicodeMath before their ordinary writer runs. Keep
     // a loss report from the pre-lowered tree for those targets, otherwise
     // target normalization would make the loss invisible. UnicodeMath has a
     // traversal-only collector; LaTeX and OMML need their emitting collector
     // only when normalization actually has something to remove.
-    let mut diagnostics = std::mem::take(&mut compact.diagnostics);
     let mut writer_diagnostics = Vec::new();
     let needs_pre_normalization_report =
         matches!(to, Format::LaTeX | Format::Omml | Format::UnicodeMath);
-    let needs_pre_normalization_serialization = needs_pre_normalization_report
-        && has_loss_dropped_by_target_normalization(&compact.expr, to);
+    let needs_pre_normalization_serialization =
+        needs_pre_normalization_report && has_loss_dropped_by_target_normalization(expr, to);
     if needs_pre_normalization_report {
         writer_diagnostics = if to == Format::UnicodeMath {
             // UnicodeMath already exposes a traversal-only loss collector, so
             // keep this target to one serialization even though normalization
             // clears its attributes before the ordinary writer runs.
-            UnicodeMathWriter::compact_diagnostics(&compact.expr, config)
+            UnicodeMathWriter::compact_diagnostics(expr, config)
         } else if needs_pre_normalization_serialization {
             // LaTeX and OMML currently discover some losses while emitting;
             // collect them before normalization makes those nodes disappear.
-            write_compact_with_diagnostics(&compact.expr, to, config)?.1
+            write_compact_with_diagnostics(expr, to, config)?.1
         } else {
             Vec::new()
         };
     }
 
-    normalize_for(&mut compact.expr, from, to)?;
+    normalize_for(expr, from, to)?;
     let (output, final_writer_diagnostics) =
         if needs_pre_normalization_serialization || to == Format::UnicodeMath {
             // The writer already ran once above to collect losses. Avoid running
@@ -314,13 +404,12 @@ pub fn convert_with_config_and_diagnostics(
             // exactly the nodes that need reporting, while this plain write is the
             // established one-shot output path. UnicodeMath's traversal-only
             // collector likewise already covered the whole pre-normalized tree.
-            (write_compact(&compact.expr, to, config)?, Vec::new())
+            (write_compact(expr, to, config)?, Vec::new())
         } else {
-            write_compact_with_diagnostics(&compact.expr, to, config)?
+            write_compact_with_diagnostics(expr, to, config)?
         };
     writer_diagnostics.extend(final_writer_diagnostics);
-    diagnostics.extend(writer_diagnostics);
-    Ok((output, diagnostics))
+    Ok((output, writer_diagnostics))
 }
 
 /// Normalize a freshly read expression. The letters of an operator's name are
@@ -1099,6 +1188,57 @@ impl ConvertResult {
     pub fn diagnostics(&self) -> &[crate::error::Diagnostic] {
         &self.compact.diagnostics
     }
+
+    /// Return source-reader diagnostics with stable machine-readable codes.
+    #[must_use]
+    pub fn diagnostic_records(&self) -> Vec<DiagnosticRecord> {
+        self.compact.diagnostic_records()
+    }
+
+    /// Return reader and target diagnostics for one output format.
+    ///
+    /// The returned records preserve phase order. The output itself is not
+    /// produced by this method, so use the corresponding `to_*` method when
+    /// both bytes/text and diagnostics are needed.
+    pub fn diagnostics_for(&self, target: Format) -> Result<Vec<DiagnosticRecord>> {
+        let mut records = self.diagnostic_records();
+        let diagnostics = match target {
+            Format::LaTeX => self.to_latex_with_diagnostics()?.1,
+            Format::MathML => self.to_mathml_with_diagnostics()?.1,
+            Format::Omml => self.to_omml_with_diagnostics()?.1,
+            Format::Mtef => self.to_mtef_with_diagnostics()?.1,
+            Format::UnicodeMath => {
+                UnicodeMathWriter::compact_diagnostics(&self.compact.expr, &self.config)
+            },
+            #[cfg(feature = "render")]
+            Format::Svg => {
+                let options = crate::render::RenderOptions::default();
+                records.extend(
+                    self.prepare_render(&options)?
+                        .svg_diagnostic_records(&options)?,
+                );
+                return Ok(records);
+            },
+            #[cfg(feature = "raster")]
+            Format::Png | Format::Jpeg => {
+                let options = crate::render::raster::RasterOptions {
+                    format: if target == Format::Png {
+                        crate::render::raster::ImageFormat::Png
+                    } else {
+                        crate::render::raster::ImageFormat::Jpeg
+                    },
+                    ..Default::default()
+                };
+                records.extend(
+                    self.prepare_render(&options.render)?
+                        .raster_diagnostic_records(&options)?,
+                );
+                return Ok(records);
+            },
+        };
+        records.extend(diagnostics.into_iter().map(target_loss_record));
+        Ok(records)
+    }
 }
 
 /// Parse LaTeX input into a reusable conversion result.
@@ -1125,8 +1265,35 @@ pub fn from_mathml(input: &str) -> Result<ConvertResult> {
 
 /// Parse MathML with custom configuration.
 pub fn from_mathml_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let compact = MathmlReader::parse_compact(input, config)?;
-    check_depth(&compact, config)?;
+    from_mathml_with_location(input, config).map_err(LocatedError::into_error)
+}
+
+/// Parse MathML with an additive source-location view of failures.
+pub fn from_mathml_with_location(
+    input: &str,
+    config: &Config,
+) -> std::result::Result<ConvertResult, LocatedError> {
+    let compact = MathmlReader::parse_compact_located(input, config)
+        .map_err(|error| error.in_format(Format::MathML))?;
+    check_depth(&compact, config)
+        .map_err(|error| LocatedError::new(error, Some(Format::MathML)))?;
+    Ok(ConvertResult {
+        with_leading_scripts: OnceLock::new(),
+        compact,
+        config: *config,
+        mtef: None,
+    })
+}
+
+/// Parse UnicodeMath with a best-effort source byte location on malformed input.
+pub fn from_unicode_math_with_location(
+    input: &str,
+    config: &Config,
+) -> std::result::Result<ConvertResult, LocatedError> {
+    let compact = UnicodeMathReader::parse_compact_located(input, config)
+        .map_err(|error| error.in_format(Format::UnicodeMath))?;
+    check_depth(&compact, config)
+        .map_err(|error| LocatedError::new(error, Some(Format::UnicodeMath)))?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
         compact,
@@ -1142,8 +1309,17 @@ pub fn from_omml(input: &str) -> Result<ConvertResult> {
 
 /// Parse OMML with custom configuration.
 pub fn from_omml_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let compact = OmmlReader::parse_compact(input, config)?;
-    check_depth(&compact, config)?;
+    from_omml_with_location(input, config).map_err(LocatedError::into_error)
+}
+
+/// Parse OMML with a best-effort XML event location on malformed input.
+pub fn from_omml_with_location(
+    input: &str,
+    config: &Config,
+) -> std::result::Result<ConvertResult, LocatedError> {
+    let compact = OmmlReader::parse_compact_located(input, config)
+        .map_err(|error| error.in_format(Format::Omml))?;
+    check_depth(&compact, config).map_err(|error| LocatedError::new(error, Some(Format::Omml)))?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
         compact,
@@ -1193,6 +1369,16 @@ pub fn from_mtef_bytes(bytes: &[u8]) -> Result<ConvertResult> {
     from_mtef_bytes_with(bytes, &Config::default())
 }
 
+/// Parse binary MTEF with a best-effort wire-byte location on malformed input.
+pub fn from_mtef_bytes_with_location(
+    bytes: &[u8],
+    config: &Config,
+) -> std::result::Result<ConvertResult, LocatedError> {
+    let (compact, info) = MtefReader::parse_bytes_with_info_located(bytes, config)
+        .map_err(|error| error.in_format(Format::Mtef))?;
+    finish_mtef(compact, info, config).map_err(|error| LocatedError::new(error, Some(Format::Mtef)))
+}
+
 /// Parse binary MTEF data with custom configuration. See [`from_mtef_bytes`].
 pub fn from_mtef_bytes_with(bytes: &[u8], config: &Config) -> Result<ConvertResult> {
     let (compact, info) = MtefReader::parse_bytes_with_info(bytes, config)?;
@@ -1233,14 +1419,7 @@ pub fn from_unicode_math(input: &str) -> Result<ConvertResult> {
 
 /// Parse UnicodeMath with custom configuration.
 pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let compact = UnicodeMathReader::parse_compact(input, config)?;
-    check_depth(&compact, config)?;
-    Ok(ConvertResult {
-        with_leading_scripts: OnceLock::new(),
-        compact,
-        config: *config,
-        mtef: None,
-    })
+    from_unicode_math_with_location(input, config).map_err(LocatedError::into_error)
 }
 
 #[cfg(test)]

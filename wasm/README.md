@@ -5,8 +5,8 @@ WebAssembly bindings for the mathema math format converter.
 ## Build
 
 ```bash
-# Install wasm-pack (one-time)
-cargo install wasm-pack
+# Install the CI-tested wasm-pack release (one-time)
+cargo install wasm-pack --version 0.15.1 --locked
 
 # Build for browser (ES module)
 wasm-pack build --target web --no-default-features --features wasm

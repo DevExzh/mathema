@@ -27,7 +27,10 @@ use crate::ast::{
     TextStyle, TypeSize,
 };
 use crate::error::Span;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
+use crate::error::{
+    Config, Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticMetadata, Error, LimitKind,
+    Result, Strictness,
+};
 
 // Record types (MTEFv3.md "Tag byte structure", MTEFv5.md "Record types").
 pub(super) const END: u8 = 0;
@@ -291,6 +294,7 @@ enum Class {
 pub(super) struct Decoder<'a> {
     data: &'a [u8],
     pos: usize,
+    pub(super) last_error_offset: Option<usize>,
     /// End of the MTEF data (the OLE header can declare a shorter length).
     end: usize,
     pub(super) v5: bool,
@@ -307,6 +311,8 @@ pub(super) struct Decoder<'a> {
     heights: Vec<u8>,
     pub(super) arena: AstArena,
     pub(super) diagnostics: Vec<Diagnostic>,
+    /// Override the severity-derived category for accepted but lossy input.
+    pub(super) diagnostic_metadata: Vec<DiagnosticMetadata>,
     pub(super) info: Option<MtefInfo>,
     /// MTEF 3 FONT records by typeface number.
     v3_fonts: Box<[Option<(Encoding, FontStyle)>; 256]>,
@@ -378,6 +384,7 @@ impl<'a> Decoder<'a> {
         Self {
             data,
             pos: 0,
+            last_error_offset: None,
             end: data.len(),
             v5: false,
             legacy: false,
@@ -390,6 +397,7 @@ impl<'a> Decoder<'a> {
             heights: Vec::new(),
             arena: AstArena::with_capacity(data.len().min(1 << 16) / 2, 0, 0),
             diagnostics: Vec::new(),
+            diagnostic_metadata: Vec::new(),
             info: None,
             v3_fonts: Box::new([None; 256]),
             encodings: Vec::new(),
@@ -426,49 +434,81 @@ impl<'a> Decoder<'a> {
 
     // ── Diagnostics ────────────────────────────────────────────────────
 
-    pub(super) fn error_at(&self, offset: usize, message: impl AsRef<str>) -> Error {
+    pub(super) fn error_at(&mut self, offset: usize, message: impl AsRef<str>) -> Error {
+        self.last_error_offset = Some(offset);
         Error::MtefParse {
             message: format!("{} (at byte {offset})", message.as_ref()),
         }
     }
 
-    fn diag(&mut self, kind: DiagnosticKind, message: String) {
+    pub(super) fn wire_span(&self, offset: usize) -> Span {
+        let start = offset.min(self.data.len());
+        Span::new(start, start.saturating_add(1).min(self.data.len()))
+    }
+
+    fn warning_at(&self, offset: usize, message: impl AsRef<str>) -> Diagnostic {
+        Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!("{} (at byte {offset})", message.as_ref()),
+            span: Some(self.wire_span(offset)),
+        }
+    }
+
+    pub(super) fn warn(&mut self, offset: usize, message: impl AsRef<str>) {
+        self.diagnostics.push(self.warning_at(offset, message));
+    }
+
+    fn interpret(&mut self, offset: usize, message: impl AsRef<str>) {
+        let diagnostic = self.warning_at(offset, message);
+        self.diagnostic_metadata.push(DiagnosticMetadata::new(
+            self.diagnostics.len(),
+            &diagnostic,
+            DiagnosticCode::ReaderInterpretation,
+        ));
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn note(&mut self, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
-            kind,
-            message,
+            kind: DiagnosticKind::Info,
+            message: message.into(),
             span: None,
         });
     }
 
-    pub(super) fn warn(&mut self, offset: usize, message: impl AsRef<str>) {
-        let message = format!("{} (at byte {offset})", message.as_ref());
-        self.diag(DiagnosticKind::Warning, message);
+    fn note_at(&mut self, offset: usize, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Info,
+            message: message.into(),
+            span: Some(self.wire_span(offset)),
+        });
     }
 
-    fn note(&mut self, message: impl Into<String>) {
-        self.diag(DiagnosticKind::Info, message.into());
-    }
-
-    fn note_nudge_loss(&mut self) {
+    fn note_nudge_loss(&mut self, offset: usize) {
         if !self.reported_nudge {
             self.reported_nudge = true;
-            self.note("MTEF positional nudge metadata was dropped because the AST has no positional adjustment field");
+            self.note_at(
+                offset,
+                "MTEF positional nudge metadata was dropped because the AST has no positional adjustment field",
+            );
         }
     }
 
-    fn note_line_spacing_loss(&mut self) {
+    fn note_line_spacing_loss(&mut self, offset: usize) {
         if !self.reported_line_spacing {
             self.reported_line_spacing = true;
-            self.note(
+            self.note_at(
+                offset,
                 "MTEF line-spacing metadata was dropped because the AST has no line-spacing field",
             );
         }
     }
 
-    fn note_tab_stop_loss(&mut self) {
+    fn note_tab_stop_loss(&mut self, offset: usize) {
         if !self.reported_tab_stops {
             self.reported_tab_stops = true;
-            self.note(
+            self.note_at(
+                offset,
                 "MTEF ruler tab-stop metadata was dropped because the AST has no tab-stop field",
             );
         }
@@ -618,7 +658,7 @@ impl<'a> Decoder<'a> {
 
     // ── Primitive reads ────────────────────────────────────────────────
 
-    fn truncated(&self) -> Error {
+    fn truncated(&mut self) -> Error {
         self.error_at(self.pos, "unexpected end of MTEF data")
     }
 
@@ -683,6 +723,7 @@ impl<'a> Decoder<'a> {
 
     /// Nudge offsets: two biased bytes, or 128, 128 and two 16-bit values.
     fn nudge(&mut self) -> Result<()> {
+        let offset = self.pos;
         let dx = self.u8()?;
         let dy = self.u8()?;
         let mut moved = dx != 128 || dy != 128;
@@ -692,7 +733,7 @@ impl<'a> Decoder<'a> {
             moved = x != 0 || y != 0;
         }
         if moved {
-            self.note_nudge_loss();
+            self.note_nudge_loss(offset);
         }
         Ok(())
     }
@@ -840,7 +881,7 @@ impl<'a> Decoder<'a> {
             let options_at = self.pos;
             let options = self.u8()?;
             if options & !0x01 != 0 {
-                self.warn(
+                self.interpret(
                     options_at,
                     format!(
                         "MTEF equation options {options:#04x} set undefined bits; they were ignored"
@@ -1145,8 +1186,11 @@ impl<'a> Decoder<'a> {
         if options & OPT_NUDGE != 0 {
             self.nudge()?;
         }
-        if options & OPT_LINE_LSPACE != 0 && self.u16()? != 0 {
-            self.note_line_spacing_loss();
+        if options & OPT_LINE_LSPACE != 0 {
+            let offset = self.pos;
+            if self.u16()? != 0 {
+                self.note_line_spacing_loss(offset);
+            }
         }
         if options & OPT_LP_RULER != 0 {
             self.ruler_record()?;
@@ -1181,9 +1225,10 @@ impl<'a> Decoder<'a> {
 
     /// Tab stops: a count, then a type byte and a 16-bit offset for each.
     fn ruler_body(&mut self) -> Result<()> {
+        let offset = self.pos;
         let stops = self.u8()?;
         if stops != 0 {
-            self.note_tab_stop_loss();
+            self.note_tab_stop_loss(offset);
         }
         self.skip(usize::from(stops) * 3)
     }
@@ -1278,7 +1323,7 @@ impl<'a> Decoder<'a> {
             && !chars::is_marker(u32::from(ch))
             && !ch.is_whitespace()
         {
-            self.warn(
+            self.interpret(
                 start,
                 format!(
                     "unknown MathType space character U+{:04X}; a thin space was used",
@@ -1562,7 +1607,7 @@ impl<'a> Decoder<'a> {
         let (row_rules, row_dashes) = self.partition_lines(rows + 1)?;
         let row_seps = row_rules.low();
         if row_rules.extended_count() > 0 {
-            self.warn(
+            self.interpret(
                 start,
                 format!(
                     "{} horizontal matrix partition lines exceed the native row mask",
@@ -1873,11 +1918,7 @@ impl<'a> Decoder<'a> {
     pub(super) fn lose_size(&mut self, loss: SizeLoss) {
         let rare = self.rare_sizes.get_or_insert_default();
         if !std::mem::replace(&mut rare.losses[loss as usize], true) {
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Info,
-                message: loss.message().to_owned(),
-                span: None,
-            });
+            self.note(loss.message());
         }
     }
 
@@ -2237,7 +2278,7 @@ impl<'a> Decoder<'a> {
                     if chars::is_private_use(glyph.ch)
                         && !matches!(class, Class::Space(_) | Class::Marker)
                     {
-                        self.warn(
+                        self.interpret(
                             glyph.offset as usize,
                             format!(
                                 "MathType private-use character U+{:04X} has no Unicode equivalent; it was kept as is",
@@ -3909,7 +3950,7 @@ impl<'a> Decoder<'a> {
                     return Ok(base);
                 };
                 if kind == 28 {
-                    self.warn(
+                    self.interpret(
                         offset,
                         "four dots below have no Unicode accent; three dots below were used",
                     );

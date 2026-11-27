@@ -26,7 +26,8 @@ use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::style::MathStyle;
 use crate::ast::*;
 use crate::error::{
-    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
+    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, Format, LocatedError,
+    ParseResult, Result, Strictness,
 };
 use crate::reader::Reader as MathReader;
 
@@ -166,6 +167,16 @@ impl MathReader for OmmlReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        Self::parse_compact_located(input, config).map_err(LocatedError::into_error)
+    }
+}
+
+impl OmmlReader {
+    /// Internal location-aware parser for the additive detailed error API.
+    pub(crate) fn parse_compact_located(
+        input: &str,
+        config: &Config,
+    ) -> std::result::Result<CompactParseResult, LocatedError> {
         config.check_input_size(input)?;
         let stripped = strip_bom(input);
         let source_lead = input.len() - stripped.len();
@@ -194,14 +205,20 @@ impl MathReader for OmmlReader {
             },
             // Resource limits apply in every mode.
             Err(e) if config.strictness == Strictness::Lenient && !is_limit(&e) => {
+                let mut diagnostic = warning(format!("OMML parse error (recovered): {e}"));
+                diagnostic.span = parser.error_span();
                 let mut diags = parser.diags;
-                diags.push(warning(format!("OMML parse error (recovered): {e}")));
+                diags.push(diagnostic);
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, config.display),
                     diags,
                 ))
             },
-            Err(e) => Err(parser.globalize_limit(e)),
+            Err(e) => Err(LocatedError::with_span(
+                parser.globalize_limit(e),
+                Some(Format::Omml),
+                parser.error_span(),
+            )),
         }
     }
 }
@@ -569,6 +586,7 @@ struct Parser<'i> {
     /// The math style of what is being read.
     style: MathStyle,
     reader: NsReader<&'i [u8]>,
+    source: &'i str,
     arena: AstArena,
     source_lead: usize,
     source_ranges: bool,
@@ -586,6 +604,7 @@ struct Parser<'i> {
     padding_budget: usize,
     diags: Vec<Diagnostic>,
     seen: HashSet<String>,
+    last_error_offset: Option<usize>,
 }
 
 fn warning(message: String) -> Diagnostic {
@@ -661,6 +680,7 @@ impl<'i> Parser<'i> {
             in_name: false,
             style: config.display.into(),
             reader,
+            source: input,
             arena: AstArena::with_node_limit(config.max_nodes),
             source_lead,
             source_ranges: config.source_ranges,
@@ -673,6 +693,7 @@ impl<'i> Parser<'i> {
             padding_budget: (input.len() / 4).max(MIN_PADDING_BUDGET),
             diags: Vec::new(),
             seen: HashSet::new(),
+            last_error_offset: None,
         }
     }
 
@@ -738,6 +759,7 @@ impl<'i> Parser<'i> {
         self.arena.check_limits()?;
         loop {
             self.event_start = self.reader.buffer_position() as usize;
+            self.last_error_offset = Some(self.event_start);
             let read = self.reader.read_resolved_event();
             let (ns, event) = match read {
                 Ok((res, event)) => {
@@ -749,7 +771,10 @@ impl<'i> Parser<'i> {
                     };
                     (ns, event)
                 },
-                Err(e) => return Err(self.xml_err(e)),
+                Err(e) => {
+                    self.last_error_offset = Some(self.reader.error_position() as usize);
+                    return Err(self.xml_err(e));
+                },
             };
             match event {
                 Event::Start(start) => {
@@ -809,6 +834,13 @@ impl<'i> Parser<'i> {
                 },
             }
         }
+    }
+
+    fn error_span(&self) -> Option<crate::error::Span> {
+        self.last_error_offset.map(|offset| {
+            let local = crate::error::safe_byte_span(self.source, offset);
+            crate::error::Span::new(local.start + self.source_lead, local.end + self.source_lead)
+        })
     }
 
     /// Refuse characters outside the XML 1.0 `Char` production (such as

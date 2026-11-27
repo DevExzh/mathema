@@ -33,15 +33,21 @@ if (!Array.isArray(ast.nodes) || !ast.nodes.some((node) => 'Superscript' in node
 }
 
 const diagnosticConverter = wasm.MathemaConverter.withOptions('latex', false, false);
-const diagnosticInput = 'é+\\foo{x}';
+const diagnosticInput = 'é+\\foo{x}\\color{red}{y}';
 const diagnostic = diagnosticConverter.parse(diagnosticInput);
 const structured = diagnostic.diagnosticsStructured();
+const detailed = diagnostic.diagnosticsFor('unicodemath');
 const legacy = JSON.parse(diagnostic.diagnostics());
 const warning = structured.find((entry) => entry.kind === 'Warning');
+const readWarning = detailed.find((entry) => entry.phase === 'read');
+const writeRecord = detailed.find((entry) => entry.phase === 'write');
 const expectedStart = Buffer.byteLength('é+', 'utf8');
 const expectedEnd = expectedStart + Buffer.byteLength('\\foo', 'utf8');
 if (
   !warning ||
+  readWarning?.code !== 'undefined_command' ||
+  !writeRecord ||
+  writeRecord.code !== 'target_loss' ||
   legacy[0]?.kind !== 'Warning' ||
   warning.span?.start !== expectedStart ||
   warning.span?.end !== expectedEnd
@@ -51,12 +57,27 @@ if (
   );
 }
 
+const fallback = converter.parse('中');
+const fallbackRecord = fallback
+  .diagnosticsFor('svg')
+  .find((entry) => entry.phase === 'write');
+if (fallbackRecord?.code !== 'render_missing_glyph') {
+  throw new Error(`Unexpected SVG glyph diagnostic: ${JSON.stringify(fallbackRecord)}`);
+}
+const mathml = new wasm.MathemaConverter('mathml');
+const painted = mathml.parse('<math><mstyle mathcolor="var(--ink)"><mi>x</mi></mstyle></math>');
+if (!painted.diagnosticsFor('svg').some((record) => record.code === 'render_host_paint')) {
+  throw new Error('Missing host CSS diagnostic');
+}
+painted.free();
+mathml.free();
+
 const asyncParsed = await converter.parseAsync('x+1');
 if (!asyncParsed.toMathml().includes('<math')) {
   throw new Error('parseAsync() did not return a usable ParsedMath result');
 }
 
-for (const value of [parsed, diagnostic, asyncParsed]) value.free();
+for (const value of [parsed, diagnostic, asyncParsed, fallback]) value.free();
 diagnosticConverter.free();
 converter.free();
 console.log('WASM smoke passed: AST, structured diagnostics, Unicode spans, async parsing, SVG options, disposal');

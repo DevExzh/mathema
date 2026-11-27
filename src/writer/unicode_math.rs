@@ -12,6 +12,9 @@ use crate::writer::Writer as MathWriter;
 /// round-trippably represent. UnicodeMath is a lossy linear notation.
 fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
+        CompactNode::UndefinedCommand { .. } => Some(
+            "UnicodeMath writes an undefined LaTeX command as text and loses its command identity".into(),
+        ),
         CompactNode::Styled(TextStyle::Normal, span)
             if styled_content_has_identifier(arena, *span) => Some(
                 "UnicodeMath cannot represent an upright math alphabet for an identifier; the content was written without its upright style".into(),
@@ -214,7 +217,7 @@ impl CompactVisitor for UnicodeMathLossVisitor {
             self.diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Warning,
                 message,
-                span: None,
+                span: arena.source_range(id),
             });
         }
         match *node {

@@ -5,6 +5,7 @@
 //! 3.5) and the space characters of section 3.16.
 
 use mathema::ast::{MathExpr, MathNode, Rational};
+use mathema::error::{DiagnosticCode, DiagnosticKind, DiagnosticPhase};
 use mathema::writer::Writer;
 use mathema::{Config, Format, convert};
 
@@ -492,6 +493,11 @@ fn unicode_math_emits_native_nary_placement_controls() {
             .iter()
             .any(|diagnostic| diagnostic.message.contains("unsupported placement flags"))
     );
+    assert!(unsupported.diagnostic_records().iter().any(|record| {
+        record.code == DiagnosticCode::ReaderInterpretation
+            && record.phase == DiagnosticPhase::Read
+            && record.kind == DiagnosticKind::Warning
+    }));
 
     let literal = mathema::from_unicode_math("∑1x").unwrap();
     assert!(literal.to_mathml().unwrap().contains("<mn>1</mn>"));

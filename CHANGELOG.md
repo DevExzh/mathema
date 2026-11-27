@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rendering now defaults to embedded-outline SVG. The text backend remains an
+  explicit choice through `to_svg_text`, `SvgMode::Text`, `--svg-mode text`, or
+  `toSvgText`. `SvgOptions` can add a title, an ARIA label, and an XML-safe ID
+  prefix for composing inline documents. SVG accepts output-byte and cancellation
+  limits, and raster accepts a pixel budget.
+- `Config::with_source_ranges(true)` retains conservative source byte ranges
+  through text and binary reads and normalization. Tracking is opt-in.
+- Rust and WASM callers can retrieve reader and target diagnostics together
+  with stable codes, severity, optional byte spans and read/write phases.
+  Rust also exposes located errors for text and binary readers.
+- Raw MTEF files and OLE `Equation Native` streams can be read by the CLI with
+  `--mtef-binary` or `--binary`; the flag implies `--from mtef` and preserves
+  bounded file and stdin reads. MathML round-trip and schema-oriented profiles
+  are available from the CLI and Rust APIs.
+- Content MathML lowering keeps precedence-sensitive grouping, derivative order,
+  and integral qualifiers where the shared AST can represent them. Based
+  numerals keep their radix, polar complex numbers keep their angle, and
+  authored table rows, cases, and stretch metadata remain available to native
+  writers. Irreducible target losses remain explicit writer diagnostics.
+
 ### Changed
 
 - MathML round trips preserve the outer fence around a literal opening or

@@ -9,14 +9,7 @@ mod types;
 
 use wasm_bindgen::prelude::*;
 
-use crate::reader::Reader;
-use crate::reader::latex::LatexReader;
-use crate::writer::Writer;
-use crate::writer::latex::LatexWriter;
-use crate::writer::mathml::MathmlWriter;
-use crate::writer::omml::OmmlWriter;
-use crate::writer::unicode_math::UnicodeMathWriter;
-use crate::{Config, Format, convert as do_convert};
+use crate::{Format, convert as do_convert};
 
 /// Initialize the WASM module. Call once before any other function.
 /// Sets up the panic hook so Rust panics produce readable JS console errors.
@@ -73,14 +66,12 @@ pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
     do_convert(input, from_fmt, to_fmt).map_err(to_js_err)
 }
 
-/// Convert an input expression to SVG.
-///
-/// Standalone embedded outlines are used by default. Pass true for the
-/// explicit client-font text backend.
+/// Convert an input expression to SVG. Standalone outlines are the default;
+/// pass `true` for the explicit client-font text backend.
 #[cfg(feature = "render")]
 #[wasm_bindgen(js_name = "convertSvg")]
 pub fn convert_svg(input: &str, from: &str, text_backend: Option<bool>) -> Result<String, JsValue> {
-    let from_fmt = parse_format(from)?;
+    let from_fmt = parse_input_format(from)?;
     let mode = if text_backend.unwrap_or(false) {
         crate::render::SvgMode::Text
     } else {
@@ -94,38 +85,25 @@ pub fn convert_svg(input: &str, from: &str, text_backend: Option<bool>) -> Resul
 /// Parse LaTeX, normalize the AST, and return MathML.
 #[wasm_bindgen]
 pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
-    let config = Config::default();
-    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr_trusted(&mut compact.expr).map_err(to_js_err)?;
-    MathmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
+    do_convert(input, Format::LaTeX, Format::MathML).map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize the AST, and return OMML.
 #[wasm_bindgen]
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
-    let config = Config::default();
-    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::convert::drop_unwritten(&mut compact.expr, Format::Omml).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr_trusted(&mut compact.expr).map_err(to_js_err)?;
-    OmmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
+    do_convert(input, Format::LaTeX, Format::Omml).map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize the AST, and return UnicodeMath.
 #[wasm_bindgen]
 pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
-    let config = Config::default();
-    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr_trusted(&mut compact.expr).map_err(to_js_err)?;
-    UnicodeMathWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
+    do_convert(input, Format::LaTeX, Format::UnicodeMath).map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize, and return the re-serialized (normalized) LaTeX.
 #[wasm_bindgen]
 pub fn normalize_latex(input: &str) -> Result<String, JsValue> {
-    let config = Config::default();
-    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr_trusted(&mut compact.expr).map_err(to_js_err)?;
-    LatexWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
+    do_convert(input, Format::LaTeX, Format::LaTeX).map_err(to_js_err)
 }
 
 #[cfg(test)]

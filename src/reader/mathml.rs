@@ -8,7 +8,8 @@ use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
-    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
+    CompactParseResult, Config, Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticMetadata,
+    Error, Format, LocatedError, ParseResult, Result, Strictness,
 };
 use crate::reader::Reader as MathReader;
 use crate::writer::mathml::{KERN_ATTRIBUTE, LOGICAL_SIZES, SIZE_ATTRIBUTE, size_attributes};
@@ -23,6 +24,16 @@ impl MathReader for MathmlReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        Self::parse_compact_located(input, config).map_err(LocatedError::into_error)
+    }
+}
+
+impl MathmlReader {
+    /// Internal location-aware parser used by the additive detailed API.
+    pub(crate) fn parse_compact_located(
+        input: &str,
+        config: &Config,
+    ) -> std::result::Result<CompactParseResult, LocatedError> {
         config.check_input_size(input)?;
         let trimmed = input.trim();
         let source_lead = input.len() - input.trim_start().len();
@@ -56,7 +67,7 @@ impl MathReader for MathmlReader {
                         }],
                     ));
                 }
-                return Err(e);
+                return Err(e.into());
             },
         };
         match parser.parse_root() {
@@ -69,9 +80,10 @@ impl MathReader for MathmlReader {
                 let mut expr = CompactExpr::new(parser.arena, roots, display);
                 expr.drop_unreachable_attrs();
                 expr.set_base_size(base_size);
-                Ok(CompactParseResult::with_diagnostics(
+                Ok(CompactParseResult::with_diagnostic_metadata(
                     expr,
                     parser.diagnostics,
+                    parser.diagnostic_metadata,
                 ))
             },
             Err(e) => {
@@ -82,18 +94,28 @@ impl MathReader for MathmlReader {
                 parser.arena.check_limits()?;
                 if config.strictness == Strictness::Lenient && !is_limit(&e) {
                     let display = parser.display.unwrap_or(config.display);
+                    let span = parser.error_span();
                     let mut diagnostics = parser.diagnostics;
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::Warning,
                         message: format!("MathML parse error (recovered): {e}"),
-                        span: None,
+                        span,
                     });
+                    let diagnostic_metadata = parser.diagnostic_metadata;
                     parser.arena.clear_node_limit();
                     let mut expr = CompactExpr::new(parser.arena, NodeSpan::EMPTY, display);
                     expr.drop_unreachable_attrs();
-                    Ok(CompactParseResult::with_diagnostics(expr, diagnostics))
+                    Ok(CompactParseResult::with_diagnostic_metadata(
+                        expr,
+                        diagnostics,
+                        diagnostic_metadata,
+                    ))
                 } else {
-                    Err(e)
+                    Err(LocatedError::with_span(
+                        e,
+                        Some(Format::MathML),
+                        parser.error_span(),
+                    ))
                 }
             },
         }
@@ -127,6 +149,7 @@ enum ScriptChildMode {
 
 struct MathmlCompactParser<'a> {
     reader: Reader<&'a [u8]>,
+    source: &'a str,
     arena: AstArena,
     /// Byte offset of the XML event most recently read from the source.
     event_start: usize,
@@ -143,6 +166,8 @@ struct MathmlCompactParser<'a> {
     /// AST representation (for example dashed table rules or rule boundaries
     /// beyond the AST's 32-bit masks).
     diagnostics: Vec<Diagnostic>,
+    /// Stable records for diagnostics emitted by the presentation reader.
+    diagnostic_metadata: Vec<DiagnosticMetadata>,
     style_display: bool,
     /// The authored MathML scriptlevel can exceed TeX's three finite size
     /// levels. Keep the full non-negative level while reading nested
@@ -182,6 +207,8 @@ struct MathmlCompactParser<'a> {
     unclosed_element: Option<String>,
     /// Non-whitespace content encountered before a complete `<math>` root.
     leading_document_issue: Option<String>,
+    /// Byte position reported by quick-xml for the latest malformed event.
+    last_error_position: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -218,6 +245,7 @@ impl<'a> MathmlCompactParser<'a> {
         let est_nodes = input.len() / 15 + 4;
         Ok(Self {
             reader,
+            source: input,
             arena: AstArena::with_capacity_and_node_limit(
                 est_nodes,
                 est_nodes,
@@ -232,6 +260,7 @@ impl<'a> MathmlCompactParser<'a> {
             movable_limit_operators: HashMap::new(),
             wide_accents: HashSet::new(),
             diagnostics: Vec::new(),
+            diagnostic_metadata: Vec::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
             mathvariant_style: None,
@@ -248,6 +277,7 @@ impl<'a> MathmlCompactParser<'a> {
             style_warnings: HashSet::new(),
             unclosed_element: None,
             leading_document_issue: None,
+            last_error_position: None,
         })
     }
 
@@ -345,22 +375,28 @@ impl<'a> MathmlCompactParser<'a> {
             if !self.lenient {
                 return Err(Error::MathmlParse { message });
             }
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message: format!("{message}; recovered as a MathML fragment"),
-                span: None,
-            });
+            self.push_diagnostic(
+                Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message: format!("{message}; recovered as a MathML fragment"),
+                    span: None,
+                },
+                DiagnosticCode::ReaderRecovery,
+            );
         }
         if let Some(tag) = self.unclosed_element.take() {
             let message = format!("MathML element <{tag}> is not closed");
             if !self.lenient {
                 return Err(Error::MathmlParse { message });
             }
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message: format!("{message}; recovered at end of input"),
-                span: None,
-            });
+            self.push_diagnostic(
+                Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message: format!("{message}; recovered at end of input"),
+                    span: None,
+                },
+                DiagnosticCode::ReaderRecovery,
+            );
         }
         if root_tag != "math" {
             return Ok(());
@@ -393,11 +429,14 @@ impl<'a> MathmlCompactParser<'a> {
             if !self.lenient {
                 return Err(Error::MathmlParse { message });
             }
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message: format!("{message}; trailing input was ignored"),
-                span: None,
-            });
+            self.push_diagnostic(
+                Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message: format!("{message}; trailing input was ignored"),
+                    span: None,
+                },
+                DiagnosticCode::ReaderRecovery,
+            );
             return Ok(());
         }
     }
@@ -855,8 +894,19 @@ impl<'a> MathmlCompactParser<'a> {
     fn reader_read_event(&mut self) -> Result<Event<'a>> {
         self.arena.check_limits()?;
         self.event_start = self.reader.buffer_position() as usize;
-        self.reader.read_event().map_err(|e| Error::MathmlParse {
-            message: format!("XML error: {e}"),
+        self.last_error_position = Some(self.event_start);
+        self.reader.read_event().map_err(|e| {
+            self.last_error_position = Some(self.reader.error_position() as usize);
+            Error::MathmlParse {
+                message: format!("XML error: {e}"),
+            }
+        })
+    }
+
+    fn error_span(&self) -> Option<crate::error::Span> {
+        self.last_error_position.map(|offset| {
+            let local = crate::error::safe_byte_span(self.source, offset);
+            crate::error::Span::new(local.start + self.source_lead, local.end + self.source_lead)
         })
     }
 
@@ -1181,12 +1231,24 @@ impl<'a> MathmlCompactParser<'a> {
     #[cold]
     fn style_warning(&mut self, message: String) {
         if self.style_warnings.len() < 100 && self.style_warnings.insert(message.clone()) {
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message,
-                span: None,
-            });
+            self.push_diagnostic(
+                Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message,
+                    span: None,
+                },
+                DiagnosticCode::ReaderInterpretation,
+            );
         }
+    }
+
+    fn push_diagnostic(&mut self, diagnostic: Diagnostic, code: DiagnosticCode) {
+        self.diagnostic_metadata.push(DiagnosticMetadata::new(
+            self.diagnostics.len(),
+            &diagnostic,
+            code,
+        ));
+        self.diagnostics.push(diagnostic);
     }
 
     /// Read an element other than `mstyle` and `math` that has a `mathsize`.
@@ -2484,11 +2546,14 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn table_warning(&mut self, message: impl Into<String>) {
-        self.diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message: message.into(),
-            span: None,
-        });
+        self.push_diagnostic(
+            Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message: message.into(),
+                span: None,
+            },
+            DiagnosticCode::ReaderInterpretation,
+        );
     }
 
     /// Lower the standard MathML table rule attributes into the compact

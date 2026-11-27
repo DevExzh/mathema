@@ -11,7 +11,6 @@
 //! result.free(); // release WASM memory
 //! ```
 
-use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use wasm_bindgen::prelude::*;
@@ -30,21 +29,7 @@ unsafe extern "C" {
 const TYPESCRIPT_TYPES: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/wasm/mathema.d.ts"));
 
-use crate::ast::compact::CompactExpr;
-use crate::ast::normalize::normalize_compact_expr_trusted;
-use crate::error::{CompactParseResult, Config, DiagnosticKind, Format, Strictness};
-use crate::reader::Reader;
-use crate::reader::latex::LatexReader;
-use crate::reader::mathml::MathmlReader;
-use crate::reader::mtef::MtefReader;
-use crate::reader::omml::OmmlReader;
-use crate::reader::unicode_math::UnicodeMathReader;
-use crate::writer::Writer;
-use crate::writer::latex::LatexWriter;
-use crate::writer::mathml::MathmlWriter;
-use crate::writer::mtef::MtefWriter;
-use crate::writer::omml::OmmlWriter;
-use crate::writer::unicode_math::UnicodeMathWriter;
+use crate::error::{Config, DiagnosticKind, DiagnosticRecord, Format, Strictness};
 
 use super::to_js_err;
 
@@ -103,14 +88,8 @@ impl MathemaConverter {
 
     /// Parse input and return a reusable result for multi-format output.
     pub fn parse(&self, input: &str) -> Result<ParsedMath, JsValue> {
-        let mut compact = self.parse_compact(input)?;
-        crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)
-            .map_err(to_js_err)?;
-        normalize_compact_expr_trusted(&mut compact.expr).map_err(to_js_err)?;
-        Ok(ParsedMath {
-            compact,
-            config: self.config,
-        })
+        let result = self.parse_native(input)?;
+        Ok(ParsedMath { result })
     }
 
     /// Parse input asynchronously, returning a `Promise<ParsedMath>`.
@@ -126,20 +105,21 @@ impl MathemaConverter {
 }
 
 impl MathemaConverter {
-    fn parse_compact(&self, input: &str) -> Result<CompactParseResult, JsValue> {
+    fn parse_native(&self, input: &str) -> Result<crate::convert::ConvertResult, JsValue> {
         match self.format {
-            Format::LaTeX => LatexReader::parse_compact(input, &self.config).map_err(to_js_err),
-            Format::MathML => MathmlReader::parse_compact(input, &self.config).map_err(to_js_err),
-            Format::Omml => OmmlReader::parse_compact(input, &self.config).map_err(to_js_err),
-            Format::Mtef => MtefReader::parse_compact(input, &self.config).map_err(to_js_err),
-            Format::UnicodeMath => {
-                UnicodeMathReader::parse_compact(input, &self.config).map_err(to_js_err)
-            },
+            Format::LaTeX => crate::from_latex_with(input, &self.config),
+            Format::MathML => crate::from_mathml_with(input, &self.config),
+            Format::Omml => crate::from_omml_with(input, &self.config),
+            Format::Mtef => crate::from_mtef_with(input, &self.config),
+            Format::UnicodeMath => crate::from_unicode_math_with(input, &self.config),
             #[cfg(feature = "render")]
-            Format::Svg => Err(JsValue::from_str("SVG is output-only")),
+            Format::Svg => Err(crate::Error::Unsupported("SVG is output-only".into())),
             #[cfg(feature = "raster")]
-            Format::Png | Format::Jpeg => Err(JsValue::from_str("raster formats are output-only")),
+            Format::Png | Format::Jpeg => Err(crate::Error::Unsupported(
+                "raster formats are output-only".into(),
+            )),
         }
+        .map_err(to_js_err)
     }
 }
 
@@ -147,23 +127,7 @@ impl MathemaConverter {
 /// produce output in any supported format without re-parsing.
 #[wasm_bindgen]
 pub struct ParsedMath {
-    compact: CompactParseResult,
-    config: Config,
-}
-
-impl ParsedMath {
-    /// The expression without the font sizes and colors that `format` does not write, as
-    /// it would have been normalized without them.
-    fn written_in(&self, format: Format) -> Result<Cow<'_, CompactExpr>, JsValue> {
-        let arena = &self.compact.expr.arena;
-        if !arena.has_attrs() && !crate::writer::omml::has_colors(&self.compact.expr) {
-            return Ok(Cow::Borrowed(&self.compact.expr));
-        }
-        let mut expr = self.compact.expr.clone();
-        crate::convert::drop_unwritten(&mut expr, format).map_err(to_js_err)?;
-        normalize_compact_expr_trusted(&mut expr).map_err(to_js_err)?;
-        Ok(Cow::Owned(expr))
-    }
+    result: crate::convert::ConvertResult,
 }
 
 #[wasm_bindgen]
@@ -171,34 +135,31 @@ impl ParsedMath {
     /// Write as LaTeX.
     #[wasm_bindgen(js_name = "toLatex")]
     pub fn to_latex(&self) -> Result<String, JsValue> {
-        let expr = self.written_in(Format::LaTeX)?;
-        LatexWriter::write_compact(&expr, &self.config).map_err(to_js_err)
+        self.result.to_latex().map_err(to_js_err)
     }
 
     /// Write as MathML.
     #[wasm_bindgen(js_name = "toMathml")]
     pub fn to_mathml(&self) -> Result<String, JsValue> {
-        MathmlWriter::write_compact(&self.compact.expr, &self.config).map_err(to_js_err)
+        self.result.to_mathml().map_err(to_js_err)
     }
 
     /// Write as Office Math Markup Language (OMML).
     #[wasm_bindgen(js_name = "toOmml")]
     pub fn to_omml(&self) -> Result<String, JsValue> {
-        let expr = self.written_in(Format::Omml)?;
-        OmmlWriter::write_compact(&expr, &self.config).map_err(to_js_err)
+        self.result.to_omml().map_err(to_js_err)
     }
 
     /// Write as MTEF (hex-encoded binary).
     #[wasm_bindgen(js_name = "toMtef")]
     pub fn to_mtef(&self) -> Result<String, JsValue> {
-        MtefWriter::write_compact(&self.compact.expr, &self.config).map_err(to_js_err)
+        self.result.to_mtef().map_err(to_js_err)
     }
 
     /// Write as UnicodeMath.
     #[wasm_bindgen(js_name = "toUnicodeMath")]
     pub fn to_unicode_math(&self) -> Result<String, JsValue> {
-        let expr = self.written_in(Format::UnicodeMath)?;
-        UnicodeMathWriter::write_compact(&expr, &self.config).map_err(to_js_err)
+        self.result.to_unicode_math().map_err(to_js_err)
     }
 
     /// Render as a standalone SVG with embedded Latin Modern Math glyph
@@ -220,12 +181,10 @@ impl ParsedMath {
             opts.font_size_px = px;
         }
         opts.display_mode = display;
-        crate::render::render_to_svg_standalone_compact(&self.compact.expr, &opts)
-            .map_err(to_js_err)
+        self.result.to_svg_with(&opts).map_err(to_js_err)
     }
 
-    /// Render a standalone SVG with optional accessibility metadata and an ID
-    /// prefix for composing several inline SVG documents.
+    /// Render standalone SVG with accessibility metadata and an ID prefix.
     #[cfg(feature = "render")]
     #[wasm_bindgen(js_name = "toSvgWithOptions")]
     pub fn to_svg_with_options(
@@ -253,7 +212,8 @@ impl ParsedMath {
         if let Some(prefix) = id_prefix {
             options = options.with_id_prefix(prefix).map_err(to_js_err)?;
         }
-        crate::render::render_to_svg_compact_with_options(&self.compact.expr, &options)
+        self.result
+            .to_svg_with_svg_options(&options)
             .map_err(to_js_err)
     }
 
@@ -273,20 +233,20 @@ impl ParsedMath {
             opts.font_size_px = px;
         }
         opts.display_mode = display;
-        crate::render::render_to_svg_compact(&self.compact.expr, &opts).map_err(to_js_err)
+        self.result.to_svg_text_with(&opts).map_err(to_js_err)
     }
 
     /// Get the AST as a JavaScript object (via serde-wasm-bindgen).
     #[wasm_bindgen(js_name = "toAst")]
     pub fn to_ast(&self) -> Result<MathExprJs, JsValue> {
-        let expr = self.compact.expr.to_math_expr();
+        let expr = self.result.expr();
         crate::wasm::serde::to_js_value(&expr).map(JsCast::unchecked_into)
     }
 
     /// Get the number of AST nodes (compact arena size).
     #[wasm_bindgen(js_name = "nodeCount")]
     pub fn node_count(&self) -> usize {
-        self.compact.expr.arena.node_count()
+        self.result.compact_expr().arena.node_count()
     }
 
     /// Get any parse diagnostics as a JSON string.
@@ -296,12 +256,11 @@ impl ParsedMath {
     /// native JavaScript object is preferable to parsing JSON.
     #[wasm_bindgen(js_name = "diagnostics")]
     pub fn diagnostics(&self) -> String {
-        if self.compact.diagnostics.is_empty() {
+        let source = self.result.diagnostics();
+        if source.is_empty() {
             return "[]".to_string();
         }
-        let diags: Vec<String> = self
-            .compact
-            .diagnostics
+        let diags: Vec<String> = source
             .iter()
             .map(|d| {
                 let kind = match d.kind {
@@ -329,10 +288,25 @@ impl ParsedMath {
     #[wasm_bindgen(js_name = "diagnosticsStructured")]
     pub fn diagnostics_structured(&self) -> Result<DiagnosticArray, JsValue> {
         let diagnostics = self
-            .compact
-            .diagnostics
-            .iter()
-            .map(WasmDiagnostic::from)
+            .result
+            .diagnostic_records()
+            .into_iter()
+            .map(WasmDiagnostic::from_record)
+            .collect::<Vec<_>>();
+        crate::wasm::serde::to_js_value(&diagnostics).map(JsCast::unchecked_into)
+    }
+
+    /// Get reader and writer diagnostics for an output format as native
+    /// JavaScript objects. Reader records precede writer records.
+    #[wasm_bindgen(js_name = "diagnosticsFor")]
+    pub fn diagnostics_for(&self, target: &str) -> Result<DiagnosticArray, JsValue> {
+        let target = super::parse_format(target)?;
+        let diagnostics = self
+            .result
+            .diagnostics_for(target)
+            .map_err(to_js_err)?
+            .into_iter()
+            .map(WasmDiagnostic::from_record)
             .collect::<Vec<_>>();
         crate::wasm::serde::to_js_value(&diagnostics).map(JsCast::unchecked_into)
     }
@@ -369,6 +343,8 @@ struct WasmDiagnostic {
     kind: &'static str,
     message: String,
     span: Option<WasmSpan>,
+    code: &'static str,
+    phase: &'static str,
 }
 
 #[derive(::serde::Serialize)]
@@ -377,18 +353,20 @@ struct WasmSpan {
     end: usize,
 }
 
-impl From<&crate::error::Diagnostic> for WasmDiagnostic {
-    fn from(diagnostic: &crate::error::Diagnostic) -> Self {
+impl WasmDiagnostic {
+    fn from_record(diagnostic: DiagnosticRecord) -> Self {
         Self {
             kind: match diagnostic.kind {
                 DiagnosticKind::Warning => "Warning",
                 DiagnosticKind::Info => "Info",
             },
-            message: diagnostic.message.clone(),
+            message: diagnostic.message,
             span: diagnostic.span.map(|span| WasmSpan {
                 start: span.start,
                 end: span.end,
             }),
+            code: diagnostic.code.as_str(),
+            phase: diagnostic.phase.as_str(),
         }
     }
 }
@@ -452,6 +430,17 @@ mod tests {
         let converter = MathemaConverter::new("latex").expect("create");
         let result = converter.parse("x").expect("parse");
         assert_eq!(result.diagnostics(), "[]");
+    }
+
+    #[test]
+    fn converter_uses_native_result_diagnostic_codes_and_phases() {
+        let converter = MathemaConverter::with_options("latex", false, false).expect("create");
+        let result = converter.parse(r"\foo{x}").expect("parse");
+        let records = result.result.diagnostics_for(Format::UnicodeMath).unwrap();
+        assert!(records.iter().any(|record| record.phase.as_str() == "read"));
+        assert!(records.iter().any(|record| {
+            record.phase.as_str() == "write" && record.code.as_str() == "target_loss"
+        }));
     }
 
     #[test]

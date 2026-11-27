@@ -18,7 +18,7 @@ use super::layout::{BoxKind, LayoutBox};
 use super::style::MathStyle;
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
-use crate::error::{Diagnostic, DiagnosticKind, Result};
+use crate::error::{Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticRecord, Result};
 
 // ---------------------------------------------------------------------------
 // Embedded font (Latin Modern Math, GUST Font License)
@@ -374,23 +374,60 @@ pub(crate) fn raster_diagnostics_arena(
     root: LayoutBoxId,
     foreground: &str,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = super::missing_glyph_diagnostics_arena(arena, root);
-    let mut seen = HashSet::new();
-    record_color("foreground", foreground, &mut seen, &mut diagnostics);
-    collect_raster_colors_arena(arena, root, &mut seen, &mut diagnostics);
-    diagnostics
+    raster_diagnostic_records_arena(arena, root, foreground)
+        .into_iter()
+        .map(|record| Diagnostic {
+            kind: record.kind,
+            message: record.message,
+            span: record.span,
+        })
+        .collect()
 }
 
-fn collect_raster_colors_arena(
+pub(crate) fn raster_diagnostic_records_arena(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    foreground: &str,
+) -> Vec<DiagnosticRecord> {
+    let mut records = super::missing_glyph_diagnostics_arena(arena, root)
+        .into_iter()
+        .map(|diagnostic| {
+            DiagnosticRecord::from_owned_write(diagnostic, DiagnosticCode::RenderMissingGlyph)
+        })
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    if parse_color_checked(foreground).is_none() {
+        seen.insert(format!("foreground\0{foreground}"));
+        records.push(DiagnosticRecord::from_owned_write(
+            invalid_color_diagnostic("foreground", foreground),
+            DiagnosticCode::RenderColorFallback,
+        ));
+    }
+    collect_raster_color_records(arena, root, &mut seen, &mut records);
+    records
+}
+
+fn collect_raster_color_records(
     arena: &LayoutArena,
     id: LayoutBoxId,
     seen: &mut HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
+    records: &mut Vec<DiagnosticRecord>,
 ) {
+    let mut record = |role: &str, value: &str| {
+        if parse_color_checked(value).is_none() {
+            let key = format!("{role}\0{value}");
+            if seen.insert(key) {
+                records.push(DiagnosticRecord::from_owned_write(
+                    invalid_color_diagnostic(role, value),
+                    DiagnosticCode::RenderColorFallback,
+                ));
+            }
+        }
+    };
     match &arena.get(id).kind {
         ArenaBoxKind::Color { color, child } => {
-            record_color("expression", color, seen, diagnostics);
-            collect_raster_colors_arena(arena, *child, seen, diagnostics);
+            record("expression", color);
+            collect_raster_color_records(arena, *child, seen, records);
         },
         ArenaBoxKind::Boxed {
             bg_color,
@@ -399,28 +436,22 @@ fn collect_raster_colors_arena(
             ..
         } => {
             if let Some(color) = bg_color {
-                record_color("box background", color, seen, diagnostics);
+                record("box background", color);
             }
             if let Some(color) = border_color {
-                record_color("box border", color, seen, diagnostics);
+                record("box border", color);
             }
-            collect_raster_colors_arena(arena, *child, seen, diagnostics);
+            collect_raster_color_records(arena, *child, seen, records);
         },
         ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
             for child in arena.children(*children) {
-                collect_raster_colors_arena(arena, child.id, seen, diagnostics);
+                collect_raster_color_records(arena, child.id, seen, records);
             }
         },
         ArenaBoxKind::Reflected { child } => {
-            collect_raster_colors_arena(arena, *child, seen, diagnostics);
+            collect_raster_color_records(arena, *child, seen, records);
         },
-        ArenaBoxKind::Glyph { .. }
-        | ArenaBoxKind::Rule { .. }
-        | ArenaBoxKind::Kern
-        | ArenaBoxKind::Delimiter { .. }
-        | ArenaBoxKind::SvgPath(_)
-        | ArenaBoxKind::Phantom
-        | ArenaBoxKind::TextRun { .. } => {},
+        _ => {},
     }
 }
 

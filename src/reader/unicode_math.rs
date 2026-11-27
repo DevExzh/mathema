@@ -13,8 +13,8 @@ use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::*;
 use crate::error::{
-    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, LimitKind, ParseResult, Result,
-    Span, Strictness,
+    CompactParseResult, Config, Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticMetadata,
+    Error, Format, LimitKind, LocatedError, ParseResult, Result, Span, Strictness,
 };
 use crate::reader::Reader;
 
@@ -114,6 +114,16 @@ impl Reader for UnicodeMathReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        Self::parse_compact_located(input, config).map_err(LocatedError::into_error)
+    }
+}
+
+impl UnicodeMathReader {
+    /// Internal location-aware parser for the additive detailed error API.
+    pub(crate) fn parse_compact_located(
+        input: &str,
+        config: &Config,
+    ) -> std::result::Result<CompactParseResult, LocatedError> {
         config.check_input_size(input)?;
         // A typographic space is content even at the ends.
         let lead = input.len() - skip_blanks(input).len();
@@ -130,14 +140,15 @@ impl Reader for UnicodeMathReader {
             Ok(ids) => {
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
-                let diagnostics = parser.skip_diagnostics();
-                Ok(CompactParseResult::with_diagnostics(
+                let (diagnostics, metadata) = parser.skip_diagnostics();
+                Ok(CompactParseResult::with_diagnostic_metadata(
                     CompactExpr::new(parser.arena, roots, DisplayStyle::Inline),
                     diagnostics,
+                    metadata,
                 ))
             },
             // Resource limits hold in every mode.
-            Err(e @ Error::LimitExceeded { .. }) => Err(e),
+            Err(e @ Error::LimitExceeded { .. }) => Err(e.into()),
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let mut arena = AstArena::new();
@@ -153,7 +164,14 @@ impl Reader for UnicodeMathReader {
                         }],
                     ))
                 } else {
-                    Err(e)
+                    Err(LocatedError::with_span(
+                        e,
+                        Some(Format::UnicodeMath),
+                        parser.last_failure_offset.map(|offset| {
+                            let local = crate::error::safe_byte_span(input, offset);
+                            Span::new(local.start + lead, local.end + lead)
+                        }),
+                    ))
                 }
             },
         }
@@ -269,6 +287,8 @@ struct CompactParser {
     /// (`_1 F`): set by the element loops at the start of a list and after
     /// white space, and taken by `parse_element`.
     baseless_ok: bool,
+    /// Byte offset of the latest strict parse attempt that failed.
+    last_failure_offset: Option<usize>,
     /// Units of work done, for tests of the parser's complexity.
     #[cfg(test)]
     steps: usize,
@@ -328,6 +348,7 @@ impl CompactParser {
             literal_fallback: None,
             pending_cells: 0,
             baseless_ok: false,
+            last_failure_offset: None,
             #[cfg(test)]
             steps: 0,
         }
@@ -573,6 +594,7 @@ impl CompactParser {
     }
 
     fn parse_element_inner<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        self.last_failure_offset = Some(self.offset(input));
         let baseless_ok = std::mem::take(&mut self.baseless_ok);
         self.enter(input)?;
         let result = self.parse_operand(input, baseless_ok);
@@ -2124,24 +2146,28 @@ impl CompactParser {
 
     /// Warnings for the skipped matrix content of the result, at most
     /// [`MAX_SKIP_WARNINGS`] plus a summary.
-    fn skip_diagnostics(&mut self) -> Vec<Diagnostic> {
+    fn skip_diagnostics(&mut self) -> (Vec<Diagnostic>, Vec<DiagnosticMetadata>) {
         // Report in input order.
         self.matrix_skips.sort_unstable_by_key(|skip| skip.start);
         let lead = self.lead;
-        let warning = |message: String, start: usize, end: usize| {
+        let warning = |code, message: String, start: usize, end: usize| {
             debug_assert!(start <= end, "skip span {start}..{end}");
-            Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message,
-                span: Some(crate::error::Span::new(lead + start, lead + end)),
-            }
+            (
+                Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message,
+                    span: Some(crate::error::Span::new(lead + start, lead + end)),
+                },
+                code,
+            )
         };
-        let mut diagnostics: Vec<Diagnostic> = self
+        let mut diagnostics: Vec<_> = self
             .matrix_skips
             .iter()
             .take(MAX_SKIP_WARNINGS)
             .map(|skip| {
                 warning(
+                    DiagnosticCode::ReaderRecovery,
                     format!(
                         "skipped {} run(s) of matrix content that is not UnicodeMath \
                          at bytes {}..{}",
@@ -2161,6 +2187,7 @@ impl CompactParser {
             let start = first.start;
             let end = rest.iter().map(|skip| skip.end).max().unwrap_or(start);
             diagnostics.push(warning(
+                DiagnosticCode::ReaderRecovery,
                 format!(
                     "skipped content in {} more matrices at bytes {}..{}",
                     rest.len(),
@@ -2172,7 +2199,7 @@ impl CompactParser {
             ));
         }
         if let Some(fallback) = self.literal_fallback {
-            diagnostics.push(warning(
+            diagnostics.push(warning(DiagnosticCode::ReaderRecovery,
                 format!(
                     "UnicodeMath parse fallback (recovered as text): unparsed input was kept as literal text at bytes {}..{}",
                     lead + fallback.start,
@@ -2183,7 +2210,7 @@ impl CompactParser {
             ));
         }
         for &(offset, value) in &self.unsupported_nary_controls {
-            diagnostics.push(warning(
+            diagnostics.push(warning(DiagnosticCode::ReaderInterpretation,
                 format!(
                     "UnicodeMath n-ary control digit {value} has unsupported placement flags; the representable limit placement was retained"
                 ),
@@ -2192,7 +2219,7 @@ impl CompactParser {
             ));
         }
         for &(start, end) in &self.equation_number_losses {
-            diagnostics.push(warning(
+            diagnostics.push(warning(DiagnosticCode::ReaderInterpretation,
                 "UnicodeMath equation-number metadata was accepted but is not represented in the AST"
                     .into(),
                 start,
@@ -2201,16 +2228,28 @@ impl CompactParser {
         }
         for &(start, end) in &self.legacy_case_warnings {
             diagnostics.push(warning(
+                DiagnosticCode::ReaderInterpretation,
                 "legacy one-sided brace/matrix notation was canonicalized as UnicodeMath cases"
                     .into(),
                 start,
                 end,
             ));
         }
-        diagnostics.sort_unstable_by_key(|diagnostic| {
+        diagnostics.sort_unstable_by_key(|(diagnostic, _)| {
             diagnostic.span.map_or(usize::MAX, |span| span.start)
         });
-        diagnostics
+        let mut metadata = Vec::new();
+        let diagnostics = diagnostics
+            .into_iter()
+            .enumerate()
+            .map(|(index, (diagnostic, code))| {
+                if code == DiagnosticCode::ReaderInterpretation {
+                    metadata.push(DiagnosticMetadata::new(index, &diagnostic, code));
+                }
+                diagnostic
+            })
+            .collect();
+        (diagnostics, metadata)
     }
 
     /// Start a new matrix cell, counting it towards the node limit. Returns

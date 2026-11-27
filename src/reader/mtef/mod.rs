@@ -104,7 +104,8 @@ use crate::ast::DisplayStyle;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, NodeSpan};
 use crate::error::{
-    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
+    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, Format, LocatedError,
+    ParseResult, Result, Strictness,
 };
 use crate::reader::Reader;
 use decode::Decoder;
@@ -137,14 +138,30 @@ impl MtefReader {
         Self::parse_bytes_with_info(bytes, config).map(|(result, _)| result)
     }
 
+    /// Parse raw bytes with a best-effort wire offset on malformed input.
+    pub fn parse_bytes_with_location(
+        bytes: &[u8],
+        config: &Config,
+    ) -> std::result::Result<ParseResult, LocatedError> {
+        Self::parse_bytes_with_info_located(bytes, config)
+            .map(|(result, _)| result.to_parse_result())
+    }
+
     /// Parse hex-encoded MTEF data, also returning its header information.
     pub(crate) fn parse_hex_with_info(
         input: &str,
         config: &Config,
     ) -> Result<(CompactParseResult, Option<MtefInfo>)> {
+        Self::parse_hex_with_info_located(input, config).map_err(LocatedError::into_error)
+    }
+
+    pub(crate) fn parse_hex_with_info_located(
+        input: &str,
+        config: &Config,
+    ) -> std::result::Result<(CompactParseResult, Option<MtefInfo>), LocatedError> {
         config.check_input_size(input)?;
         match hex_decode(input) {
-            Ok(bytes) => Self::parse_bytes_with_info(&bytes, config),
+            Ok(bytes) => Self::parse_bytes_with_info_located(&bytes, config),
             Err(e) if config.strictness == Strictness::Lenient => Ok((
                 empty_result(
                     DisplayStyle::Inline,
@@ -152,7 +169,7 @@ impl MtefReader {
                 ),
                 None,
             )),
-            Err(e) => Err(e),
+            Err(e) => Err(LocatedError::with_span(e, Some(Format::Mtef), None)),
         }
     }
 
@@ -161,6 +178,13 @@ impl MtefReader {
         bytes: &[u8],
         config: &Config,
     ) -> Result<(CompactParseResult, Option<MtefInfo>)> {
+        Self::parse_bytes_with_info_located(bytes, config).map_err(LocatedError::into_error)
+    }
+
+    pub(crate) fn parse_bytes_with_info_located(
+        bytes: &[u8],
+        config: &Config,
+    ) -> std::result::Result<(CompactParseResult, Option<MtefInfo>), LocatedError> {
         config.check_input_len(bytes.len())?;
         if bytes.is_empty() {
             return Ok((empty_result(DisplayStyle::Inline, Vec::new()), None));
@@ -195,19 +219,41 @@ impl MtefReader {
                 let base = full_size.filter(|_| expr.arena.has_attrs());
                 expr.set_base_size(base);
                 Ok((
-                    CompactParseResult::with_diagnostics(expr, decoder.diagnostics),
+                    CompactParseResult::with_diagnostic_metadata(
+                        expr,
+                        decoder.diagnostics,
+                        decoder.diagnostic_metadata,
+                    ),
                     info,
                 ))
             },
             // Resource limits are enforced in every mode.
             Err(Error::MtefParse { message }) if config.strictness == Strictness::Lenient => {
+                let span = decoder
+                    .last_error_offset
+                    .map(|offset| decoder.wire_span(offset));
                 let mut diagnostics = decoder.diagnostics;
-                diagnostics.push(warning(format!(
-                    "MTEF data could not be decoded; nothing was kept: {message}"
-                )));
-                Ok((empty_result(display, diagnostics), info))
+                diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message: format!("MTEF data could not be decoded; nothing was kept: {message}"),
+                    span,
+                });
+                Ok((
+                    CompactParseResult::with_diagnostic_metadata(
+                        CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, display),
+                        diagnostics,
+                        decoder.diagnostic_metadata,
+                    ),
+                    info,
+                ))
             },
-            Err(e) => Err(e),
+            Err(e) => Err(LocatedError::with_span(
+                e,
+                Some(Format::Mtef),
+                decoder
+                    .last_error_offset
+                    .map(|offset| decoder.wire_span(offset)),
+            )),
         }
     }
 }

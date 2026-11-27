@@ -1,5 +1,5 @@
 use mathema::ast::{MathNode, PhantomKind};
-use mathema::error::Config;
+use mathema::error::{Config, DiagnosticCode, DiagnosticKind, DiagnosticPhase};
 use mathema::writer::Writer;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
@@ -58,6 +58,11 @@ fn legacy_one_sided_matrix_cases_are_recovered_as_rows() {
                 .iter()
                 .any(|diagnostic| diagnostic.message.contains("legacy one-sided"))
         );
+        assert!(parsed.diagnostic_records().iter().any(|record| {
+            record.code == DiagnosticCode::ReaderInterpretation
+                && record.phase == DiagnosticPhase::Read
+                && record.kind == DiagnosticKind::Warning
+        }));
     }
 }
 
@@ -131,6 +136,11 @@ fn equation_number_suffix_is_accepted_and_reported_as_metadata_loss() {
                 .iter()
                 .any(|diagnostic| diagnostic.message.contains("equation-number metadata"))
         );
+        assert!(parsed.diagnostic_records().iter().any(|record| {
+            record.code == DiagnosticCode::ReaderInterpretation
+                && record.phase == DiagnosticPhase::Read
+                && record.kind == DiagnosticKind::Warning
+        }));
         assert_eq!(parsed.to_unicode_math().unwrap(), "█(E&=mc^2)");
     }
 }

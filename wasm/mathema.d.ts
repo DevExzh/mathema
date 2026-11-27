@@ -184,7 +184,19 @@ export interface Span {
 
 /** Diagnostic message from lenient parsing. */
 export interface Diagnostic {
-  kind: string;
+  kind: "Warning" | "Info";
   message: string;
   span?: Span;
+  /** Stable machine-readable category, e.g. `target_loss`. */
+  code:
+    | "reader_recovery"
+    | "reader_interpretation"
+    | "undefined_command"
+    | "target_loss"
+    | "render_missing_glyph"
+    | "render_color_fallback"
+    | "render_host_paint"
+    | "render_unrecognized_paint";
+  /** Conversion phase, either `read` or `write`. */
+  phase: "read" | "write";
 }

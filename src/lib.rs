@@ -50,6 +50,11 @@
 //! enforce [`Config::max_depth`] while constructing trees.
 //! `convert_with` and the `from_*` functions validate the configured depth on
 //! every parsed tree. Limit failures use [`Error::LimitExceeded`].
+//!
+//! Rendering uses embedded-outline SVG by default when the `render` feature is
+//! enabled. Choose the client-font text backend with [`SvgMode::Text`] through
+//! [`SvgOptions`]. `Config::with_source_ranges` enables conservative source
+//! byte ranges on compact nodes for editing clients.
 
 #![deny(missing_docs)]
 
@@ -75,11 +80,14 @@ pub use ast::arena::AstArena;
 pub use ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 pub use ast::{MathExpr, MathNode};
 pub use convert::{
-    ConvertResult, convert, convert_with, convert_with_config_and_diagnostics,
-    convert_with_diagnostics, from_latex, from_latex_with, from_mathml, from_mathml_with,
-    from_mtef, from_mtef_bytes, from_mtef_bytes_with, from_mtef_with, from_omml, from_omml_with,
-    from_unicode_math, from_unicode_math_with, write_compact_expr,
-    write_compact_expr_with_diagnostics, write_expr, write_expr_with_diagnostics,
+    ConvertResult, convert, convert_with, convert_with_config_and_diagnostic_records,
+    convert_with_config_and_diagnostics, convert_with_config_and_location,
+    convert_with_diagnostic_records, convert_with_diagnostics, convert_with_location, from_latex,
+    from_latex_with, from_mathml, from_mathml_with, from_mathml_with_location, from_mtef,
+    from_mtef_bytes, from_mtef_bytes_with, from_mtef_bytes_with_location, from_mtef_with,
+    from_omml, from_omml_with, from_omml_with_location, from_unicode_math, from_unicode_math_with,
+    from_unicode_math_with_location, write_compact_expr, write_compact_expr_with_diagnostics,
+    write_expr, write_expr_with_diagnostics,
 };
 #[cfg(feature = "render")]
 pub use convert::{
@@ -87,8 +95,9 @@ pub use convert::{
     convert_with_svg_options, convert_with_svg_options_and_diagnostics,
 };
 pub use error::{
-    Config, Diagnostic, DiagnosticKind, Error, Format, LatexProfile, LimitKind, ParseResult,
-    Result, Strictness, TypesettingPolicy, UndefinedCommands,
+    Config, Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticPhase, DiagnosticRecord, Error,
+    Format, LatexProfile, LimitKind, LocatedError, ParseResult, Result, Strictness,
+    TypesettingPolicy, UndefinedCommands,
 };
 pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
 pub use reader::omml::{OmmlJustification, OmmlParagraph};

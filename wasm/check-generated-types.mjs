@@ -90,6 +90,7 @@ for (const field of mathExprFields) {
 for (const signature of [
   'toAst(): MathExpr;',
   'diagnosticsStructured(): Diagnostic[];',
+  'diagnosticsFor(target: string): Diagnostic[];',
   'parseAsync(input: string): Promise<ParsedMath>;',
 ]) {
   if (!generated.includes(signature)) {
