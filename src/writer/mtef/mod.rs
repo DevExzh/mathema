@@ -428,6 +428,7 @@ impl MtefWriter {
         super::validate_compact_for_write(expr, config)?;
         crate::error::request_checkpoint(0)?;
         Self::write_bytes_with_diagnostics_validated(expr, config, options, limits)
+            .map_err(|error| remap_output_limit(error, limits))
     }
 
     /// Write hexadecimal MTEF with a maximum number of retained UTF-8 bytes.
@@ -463,7 +464,7 @@ impl MtefWriter {
                     limit: limits.max_bytes.unwrap_or(usize::MAX),
                 });
             },
-            result => result?,
+            result => result.map_err(|error| remap_output_limit(error, limits))?,
         };
         let hex_len = bytes
             .len()
@@ -566,13 +567,20 @@ impl MtefWriter {
     ) -> Result<(Vec<u8>, Vec<Diagnostic>, Option<CompactExpr>)> {
         limits.check_bytes(0)?;
         crate::error::request_checkpoint(0)?;
+        if let Some(limit) = limits.max_bytes
+            && options.ole_header
+            && limit < OLE_HEADER_LEN
+        {
+            return Err(crate::Error::OutputLimit { limit });
+        }
         let v5 = options.v5();
         let raw_limit = limits.max_bytes.map(|limit| {
-            limit.saturating_sub(if options.ole_header {
-                OLE_HEADER_LEN
-            } else {
-                0
-            })
+            limit
+                - if options.ole_header {
+                    OLE_HEADER_LEN
+                } else {
+                    0
+                }
         });
         let new_encoder = || {
             Encoder::new(
@@ -633,6 +641,12 @@ impl MtefWriter {
                 },
                 None => mtef.extend_from_slice(V5_PREFERENCES),
             }
+            // Static definitions use offsets from the complete preferences
+            // record. A bounded sink may already have stopped while those
+            // bytes were being appended. Check that failure before deriving
+            // backpatch positions from the retained length, because a short
+            // prefix can make the subtraction underflow.
+            mtef.check()?;
             for (at, style) in V5_DEFINED_STYLES.into_iter().zip(styles) {
                 let at = mtef.len() - at;
                 mtef.set_at(at, style);
@@ -734,4 +748,14 @@ fn hex_encode(data: &[u8]) -> String {
         hex.push(char::from(HEX[usize::from(b & 0x0F)]));
     }
     hex
+}
+
+/// Internal sinks use the MTEF payload ceiling when an OLE header is reserved.
+/// Preserve the caller's public ceiling in the error returned by the outer
+/// writer instead of exposing that adjusted internal coordinate.
+fn remap_output_limit(error: crate::Error, limits: &OutputLimits) -> crate::Error {
+    match (error, limits.max_bytes) {
+        (crate::Error::OutputLimit { .. }, Some(limit)) => crate::Error::OutputLimit { limit },
+        (error, _) => error,
+    }
 }

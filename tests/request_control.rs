@@ -524,3 +524,23 @@ fn composing_svg_limits_keeps_each_cancellation_source() {
         );
     }
 }
+
+#[cfg(feature = "render")]
+#[test]
+fn controlled_svg_conversion_keeps_an_output_limit_request_control() {
+    let output_request = RequestControl::new();
+    let conversion_request = RequestControl::new();
+    let limits = OutputLimits::unlimited().with_request_control(&output_request);
+    output_request.cancel();
+
+    let error = convert_with_control_and_limits(
+        "x",
+        Format::LaTeX,
+        Format::Svg,
+        &Config::default(),
+        &conversion_request,
+        &limits,
+    )
+    .expect_err("the output request cancellation must survive conversion composition");
+    assert!(matches!(error, Error::RequestCancelled));
+}
