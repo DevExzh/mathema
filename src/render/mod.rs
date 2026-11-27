@@ -692,6 +692,15 @@ fn collect_missing_glyphs(
                 record_missing_glyph(ch, font, *italic, seen, diagnostics);
             }
         },
+        BoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
+            if glyph_fallback::delimiter_is_notdef(*ch, *target_height, *scale) {
+                record_missing_glyph(*ch, fonts_registry::FontId::Math, false, seen, diagnostics);
+            }
+        },
         BoxKind::HBox { children } | BoxKind::VBox { children } => {
             for child in children {
                 collect_missing_glyphs(&child.layout, seen, diagnostics);
@@ -702,11 +711,7 @@ fn collect_missing_glyphs(
         | BoxKind::Reflected { child } => {
             collect_missing_glyphs(&child.layout, seen, diagnostics);
         },
-        BoxKind::Rule { .. }
-        | BoxKind::Kern
-        | BoxKind::Delimiter { .. }
-        | BoxKind::SvgPath(_)
-        | BoxKind::Phantom => {},
+        BoxKind::Rule { .. } | BoxKind::Kern | BoxKind::SvgPath(_) | BoxKind::Phantom => {},
     }
 }
 
@@ -742,6 +747,15 @@ fn collect_missing_glyphs_arena(
                 record_missing_glyph(ch, font, *italic, seen, diagnostics);
             }
         },
+        ArenaBoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
+            if glyph_fallback::delimiter_is_notdef(*ch, *target_height, *scale) {
+                record_missing_glyph(*ch, fonts_registry::FontId::Math, false, seen, diagnostics);
+            }
+        },
         ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
             for child in arena.children(*children) {
                 collect_missing_glyphs_arena(arena, child.id, seen, diagnostics);
@@ -754,7 +768,6 @@ fn collect_missing_glyphs_arena(
         },
         ArenaBoxKind::Rule { .. }
         | ArenaBoxKind::Kern
-        | ArenaBoxKind::Delimiter { .. }
         | ArenaBoxKind::SvgPath(_)
         | ArenaBoxKind::Phantom => {},
     }
@@ -1168,5 +1181,62 @@ mod font_embed_integration {
             diagnostic_svg,
             render_to_svg_standalone(&expr, &options).unwrap()
         );
+    }
+
+    #[test]
+    fn render_diagnostics_report_uncovered_stretchy_delimiters() {
+        let parsed =
+            crate::reader::latex::LatexReader::parse(r"\left中 x \right中", &Default::default())
+                .unwrap();
+        let options = RenderOptions::default();
+        let (svg, diagnostics) =
+            render_to_svg_standalone_with_diagnostics(&parsed.expr, &options).unwrap();
+        assert!(svg.matches("<text").count() >= 2, "{svg}");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.message.contains("U+4E2D"))
+                .count(),
+            1,
+            "{diagnostics:?}"
+        );
+
+        let compact = crate::reader::latex::LatexReader::parse_compact(
+            r"\left中 x \right中",
+            &Default::default(),
+        )
+        .unwrap();
+        let (_, compact_diagnostics) =
+            render_to_svg_standalone_compact_with_diagnostics(&compact.expr, &options).unwrap();
+        assert_eq!(
+            compact_diagnostics
+                .iter()
+                .filter(|d| d.message.contains("U+4E2D"))
+                .count(),
+            1,
+            "{compact_diagnostics:?}"
+        );
+
+        let covered =
+            crate::reader::latex::LatexReader::parse(r"\left( x \right)", &Default::default())
+                .unwrap();
+        let (_, covered_diagnostics) =
+            render_to_svg_standalone_with_diagnostics(&covered.expr, &options).unwrap();
+        assert!(covered_diagnostics.is_empty(), "{covered_diagnostics:?}");
+    }
+
+    #[test]
+    fn heap_diagnostic_svg_routes_validate_geometry_like_plain_routes() {
+        let expr = MathExpr::inline(vec![crate::ast::MathNode::Identifier("x".into())]);
+        for font_size_px in [1e-100, 1e100] {
+            let options = RenderOptions {
+                font_size_px,
+                ..RenderOptions::default()
+            };
+            assert!(render_to_svg(&expr, &options).is_err());
+            assert!(render_to_svg_with_diagnostics(&expr, &options).is_err());
+            assert!(render_to_svg_standalone(&expr, &options).is_err());
+            assert!(render_to_svg_standalone_with_diagnostics(&expr, &options).is_err());
+        }
     }
 }

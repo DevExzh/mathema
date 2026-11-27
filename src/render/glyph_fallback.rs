@@ -835,6 +835,28 @@ pub(crate) fn delimiter_needs_fallback(ch: char, target_height: f64) -> bool {
         && super::delimiter_paths::delimiter_path(ch, target_height, 1.0).is_none()
 }
 
+/// Whether a `Delimiter` box reaches the missing-glyph fallback in the
+/// emitters. Font variants, extensible assemblies, built-in paths, and vector
+/// recipes all draw without relying on a client font or a raster notdef box.
+#[inline]
+pub(crate) fn delimiter_is_notdef(ch: char, target_height: f64, scale: f64) -> bool {
+    if has_recipe(ch) || super::delimiter_paths::delimiter_path(ch, target_height, 1.0).is_some() {
+        return false;
+    }
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let target = target_height / scale;
+    if super::glyph_variants::delimiter_variant(ch, target).is_some()
+        || super::glyph_variants::vertical_assembly(ch, target).is_some()
+    {
+        return false;
+    }
+    is_notdef(ch, FontId::Math, false)
+}
+
 /// Fallback drawing of a stretchy delimiter: the glyph's ink is stretched
 /// vertically to span `height` above and `depth` below the baseline, keeping
 /// its natural width at font size `size`.
@@ -938,6 +960,13 @@ mod tests {
         assert!(text_run_needs_rewrite('\u{FE37}', FontId::RomanRegular));
         assert!(!text_run_needs_rewrite('a', FontId::RomanRegular));
         assert!(!text_run_needs_rewrite('\u{4E2D}', FontId::RomanRegular));
+    }
+
+    #[test]
+    fn delimiter_notdef_checks_variants_paths_and_recipes() {
+        assert!(delimiter_is_notdef('\u{4E2D}', 2.0, 1.0));
+        assert!(!delimiter_is_notdef('(', 2.0, 1.0));
+        assert!(!delimiter_is_notdef('\u{2605}', 2.0, 1.0));
     }
 
     #[test]
