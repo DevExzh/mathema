@@ -572,7 +572,18 @@ fn write_sequence(
             // (a minus read back as a binary operator gets one anyway).
             let space = needs_space(arena, prev, id)
                 || prev.is_some_and(|prev| adjacent_number_nodes_need_separator(arena, prev, id))
-                || (has_visible_prescripts(arena, id) && !buf.ends_with(' '))
+                // A prescript whose base is an authored nonzero space writes
+                // that space after its script markers. The leading `{}` is
+                // already a complete atom, so an extra ASCII separator here
+                // disappears when the output is parsed back as an empty-base
+                // script followed by a space.
+                || (has_visible_prescripts(arena, id)
+                    && !buf.ends_with(' ')
+                    && !matches!(
+                        *arena.node(id),
+                        CompactNode::PreScripts { base, .. }
+                            if is_bare_space_prescript_base(arena, base)
+                    ))
                 || (ends_with_command && node_starts_with_ascii_letter(arena, id));
             if space {
                 buf.push(' ');

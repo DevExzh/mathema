@@ -167,6 +167,20 @@ fn multi_atom_prescripts_keep_their_base_group_on_latex_rewrite() {
 }
 
 #[test]
+fn space_prescripts_do_not_gain_a_separator_after_escaped_commands() {
+    let source = concat!(r"\cha′1\ctilded\prescript\~{}\^x~\verb*+x y+\n", "\n");
+    let builder = from_latex(source).unwrap();
+    let first = builder.to_latex().unwrap();
+    let direct = mathema::convert(source, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
+    assert_eq!(first, direct);
+    assert_eq!(
+        from_latex(&first).unwrap().to_latex().unwrap(),
+        first,
+        "space-prescript rewrite is not stable: {first:?}"
+    );
+}
+
+#[test]
 fn incomplete_fraction_recovery_does_not_swallow_node_limits() {
     let config = lenient().with_max_nodes(Some(1));
     let result = from_latex_with(r"\frac{1", &config);
