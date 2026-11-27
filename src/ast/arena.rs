@@ -445,14 +445,15 @@ impl AstArena {
         &self.nodes[id.index()]
     }
 
-    /// Return a node when `id` belongs to this arena.
+    /// Return a node when `id` is a valid handle for this arena.
     ///
-    /// This is intentionally crate-private: public callers use [`node`](Self::node)
-    /// on handles they obtained from this arena, while validators at public
-    /// conversion boundaries must be able to reject a foreign or `NONE` handle
-    /// without indexing first.
+    /// Handles are arena-local. An id copied from another arena can still be
+    /// in range here and therefore cannot be distinguished from a local id by
+    /// this method. Use the checked accessors whenever a handle did not come
+    /// directly from this arena, and validate the complete expression before
+    /// writing or rendering it.
     #[inline]
-    pub(crate) fn try_node(&self, id: NodeId) -> Option<&CompactNode> {
+    pub fn try_node(&self, id: NodeId) -> Option<&CompactNode> {
         id.is_some().then(|| self.nodes.get(id.index())).flatten()
     }
 
@@ -470,6 +471,24 @@ impl AstArena {
             }
         }
         self.node_mut_in_place(id)
+    }
+
+    /// Return a mutable node in place when `id` is valid for this arena.
+    ///
+    /// This edit path preserves the node's typesetting attributes and source
+    /// provenance. It is intended for edits that keep the node's semantic
+    /// role, such as changing the interned string of an identifier. Replacing
+    /// a node with a different role can make attached metadata inappropriate,
+    /// so callers making that kind of structural edit should use
+    /// [`node_mut`](Self::node_mut), which removes the attributes first.
+    ///
+    /// As with [`try_node`](Self::try_node), an in-range id from another arena
+    /// cannot be identified as foreign. Handles remain local to their arena.
+    #[inline]
+    pub fn try_node_mut_in_place(&mut self, id: NodeId) -> Option<&mut CompactNode> {
+        id.is_some()
+            .then(|| self.nodes.get_mut(id.index()))
+            .flatten()
     }
 
     /// Like [`node_mut`](Self::node_mut) for an edit that leaves the node
@@ -807,8 +826,11 @@ impl AstArena {
     }
 
     /// Return a child span when it lies wholly within this arena.
+    ///
+    /// A [`NodeSpan`] is local to its arena. A span copied from another arena
+    /// can still be in range here and then names this arena's child slots.
     #[inline]
-    pub(crate) fn try_children(&self, span: NodeSpan) -> Option<&[NodeId]> {
+    pub fn try_children(&self, span: NodeSpan) -> Option<&[NodeId]> {
         let start = span.start() as usize;
         let end = start.checked_add(span.len() as usize)?;
         self.children.get(start..end)
@@ -826,9 +848,12 @@ impl AstArena {
         &self.strings[start..end]
     }
 
-    /// Return an interned string when `id` belongs to this arena.
+    /// Return an interned string when `id` is valid for this arena.
+    ///
+    /// String handles are arena-local. An in-range id copied from another
+    /// arena may therefore name a different string in this arena.
     #[inline]
-    pub(crate) fn try_str_val(&self, id: StrId) -> Option<&str> {
+    pub fn try_str_val(&self, id: StrId) -> Option<&str> {
         if id == StrId::EMPTY {
             return Some("");
         }
@@ -1161,6 +1186,72 @@ mod tests {
         let id = NodeId::new(0);
         assert!(!id.is_none());
         assert!(id.is_some());
+    }
+
+    #[test]
+    fn checked_accessors_reject_invalid_handles() {
+        let arena = AstArena::new();
+        assert_eq!(arena.try_node(NodeId::NONE), None);
+        assert_eq!(arena.try_node(NodeId::new(0)), None);
+        assert_eq!(arena.try_children(NodeSpan::new(0, 1)), None);
+        assert_eq!(arena.try_str_val(StrId::EMPTY), Some(""));
+        assert_eq!(arena.try_str_val(StrId::new(0)), None);
+    }
+
+    #[test]
+    fn checked_accessors_are_bounds_checked_but_not_arena_owners() {
+        let mut foreign = AstArena::new();
+        let foreign_text = foreign.push_str("foreign");
+        let foreign_id = foreign.push_node(CompactNode::Identifier(foreign_text));
+        let foreign_span = foreign.push_children(&[foreign_id]).unwrap();
+
+        let mut local = AstArena::new();
+        let local_text = local.push_str("local");
+        let local_id = local.push_node(CompactNode::Identifier(local_text));
+        let local_span = local.push_children(&[local_id]).unwrap();
+
+        // The raw handles are equal, so an in-range handle copied from another
+        // arena necessarily aliases the local entry. The checked accessors
+        // provide bounds safety, not ownership tracking.
+        assert_eq!(foreign_id, local_id);
+        assert_eq!(foreign_span, local_span);
+        assert_eq!(foreign_text, local_text);
+        assert_eq!(
+            local.try_node(foreign_id),
+            Some(&CompactNode::Identifier(local_text))
+        );
+        assert_eq!(local.try_children(foreign_span), Some(&[local_id][..]));
+        assert_eq!(local.try_str_val(foreign_text), Some("local"));
+
+        let foreign_extra = foreign.push_node(CompactNode::Newline);
+        assert!(local.try_node(foreign_extra).is_none());
+        let foreign_long_span = foreign.push_children(&[foreign_id, foreign_extra]).unwrap();
+        assert!(local.try_children(foreign_long_span).is_none());
+        let foreign_extra_text = foreign.push_str("extra");
+        assert!(local.try_str_val(foreign_extra_text).is_none());
+    }
+
+    #[test]
+    fn checked_mutation_preserves_node_attributes() {
+        let mut arena = AstArena::new();
+        let before = arena.push_str("before");
+        let after = arena.push_str("after");
+        let id = arena.push_node(CompactNode::Identifier(before));
+        let attrs = NodeAttrs::with_size(crate::ast::FontSize::Points(crate::ast::Rational::new(
+            11, 1,
+        )));
+        arena.add_attrs(id, &attrs);
+
+        if let Some(CompactNode::Identifier(text)) = arena.try_node_mut_in_place(id) {
+            *text = after;
+        } else {
+            panic!("expected an identifier");
+        }
+
+        assert_eq!(arena.try_node(id), Some(&CompactNode::Identifier(after)));
+        assert_eq!(arena.attrs(id), Some(&attrs));
+        assert!(arena.try_node_mut_in_place(NodeId::NONE).is_none());
+        assert!(arena.try_node_mut_in_place(NodeId::new(99)).is_none());
     }
 
     #[test]

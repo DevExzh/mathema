@@ -16,6 +16,13 @@ pub trait Visitor {
     fn visit_node(&mut self, node: &MathNode) {
         walk_node(self, node);
     }
+
+    /// Visit a `\\middle` separator in a fenced node.
+    ///
+    /// Separators are metadata of the fence rather than mathematical child
+    /// nodes, so the default walker does not send them to [`visit_node`](Self::visit_node).
+    /// Override this hook when a traversal needs to inspect them.
+    fn visit_fenced_separator(&mut self, _separator: &str) {}
 }
 
 /// Walk the children of a `MathExpr`.
@@ -53,8 +60,9 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
         },
         MathNode::Fenced { content, .. } => {
             for item in content {
-                if let FencedItem::Element(node) = item {
-                    v.visit_node(node);
+                match item {
+                    FencedItem::Element(node) => v.visit_node(node),
+                    FencedItem::Middle(separator) => v.visit_fenced_separator(separator),
                 }
             }
         },
@@ -194,6 +202,12 @@ pub trait MutVisitor {
     fn visit_node_mut(&mut self, node: &mut MathNode) {
         walk_node_mut(self, node);
     }
+
+    /// Visit a `\\middle` separator in a fenced node mutably.
+    ///
+    /// The default walker keeps separators out of [`visit_node_mut`](Self::visit_node_mut)
+    /// and calls this hook exactly once for each separator.
+    fn visit_fenced_separator_mut(&mut self, _separator: &mut String) {}
 }
 
 /// Walk and mutably visit children of a `MathExpr`.
@@ -231,8 +245,9 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
         },
         MathNode::Fenced { content, .. } => {
             for item in content {
-                if let FencedItem::Element(node) = item {
-                    v.visit_node_mut(node);
+                match item {
+                    FencedItem::Element(node) => v.visit_node_mut(node),
+                    FencedItem::Middle(separator) => v.visit_fenced_separator_mut(separator),
                 }
             }
         },
@@ -372,6 +387,15 @@ pub trait CompactVisitor {
     fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
         walk_compact_node(self, arena, id);
     }
+
+    /// Visit a compact `\\middle` separator in a fenced node.
+    ///
+    /// The separator is passed as its arena node id so callers can inspect its
+    /// interned text with [`AstArena::node`](AstArena::node) and
+    /// [`AstArena::str_val`](AstArena::str_val). It is not sent to
+    /// [`visit_node`](Self::visit_node), and the default walker calls this hook
+    /// exactly once for each separator.
+    fn visit_fenced_separator(&mut self, _arena: &AstArena, _id: NodeId) {}
 }
 
 /// Walk the root nodes of a `CompactExpr`.
@@ -408,7 +432,9 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         },
         CompactNode::Fenced { content, .. } => {
             for &child in arena.children(content) {
-                if !matches!(*arena.node(child), CompactNode::Middle(_)) {
+                if matches!(*arena.node(child), CompactNode::Middle(_)) {
+                    v.visit_fenced_separator(arena, child);
+                } else {
                     v.visit_node(arena, child);
                 }
             }
@@ -535,6 +561,13 @@ pub trait CompactMutVisitor {
     fn visit_node_mut(&mut self, arena: &mut AstArena, id: NodeId) {
         walk_compact_node_mut(self, arena, id);
     }
+
+    /// Visit a compact `\\middle` separator in a fenced node mutably.
+    ///
+    /// The separator is passed as its arena node id. It is not sent to
+    /// [`visit_node_mut`](Self::visit_node_mut), and the default walker calls
+    /// this hook exactly once for each separator.
+    fn visit_fenced_separator_mut(&mut self, _arena: &mut AstArena, _id: NodeId) {}
 }
 
 /// Walk and mutably visit the children of the compact node identified by `id` within `arena`.
@@ -571,7 +604,9 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         CompactNode::Fenced { content, .. } => {
             let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(content).into();
             for &child in &ids {
-                if !matches!(*arena.node(child), CompactNode::Middle(_)) {
+                if matches!(*arena.node(child), CompactNode::Middle(_)) {
+                    v.visit_fenced_separator_mut(arena, child);
+                } else {
                     v.visit_node_mut(arena, child);
                 }
             }
@@ -758,6 +793,55 @@ mod tests {
         assert_eq!(expr.nodes[2], MathNode::Number("10".into()));
     }
 
+    #[test]
+    fn heap_visitors_expose_fenced_separators_once() {
+        struct FenceVisitor {
+            nodes: usize,
+            separators: Vec<String>,
+        }
+
+        impl Visitor for FenceVisitor {
+            fn visit_node(&mut self, node: &MathNode) {
+                self.nodes += 1;
+                walk_node(self, node);
+            }
+
+            fn visit_fenced_separator(&mut self, separator: &str) {
+                self.separators.push(separator.to_owned());
+            }
+        }
+
+        let expr = MathExpr::inline(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Identifier("a".into())),
+                FencedItem::Middle("|".into()),
+                FencedItem::Element(MathNode::Identifier("b".into())),
+            ],
+        }]);
+        let mut visitor = FenceVisitor {
+            nodes: 0,
+            separators: Vec::new(),
+        };
+        visitor.visit_expr(&expr);
+        assert_eq!(visitor.nodes, 3);
+        assert_eq!(visitor.separators, ["|"]);
+
+        struct FenceEditor;
+        impl MutVisitor for FenceEditor {
+            fn visit_fenced_separator_mut(&mut self, separator: &mut String) {
+                *separator = ":".into();
+            }
+        }
+        let mut edited = expr;
+        FenceEditor.visit_expr_mut(&mut edited);
+        let MathNode::Fenced { content, .. } = &edited.nodes[0] else {
+            panic!("expected a fence");
+        };
+        assert!(matches!(&content[1], FencedItem::Middle(separator) if separator == ":"));
+    }
+
     // ── Compact visitor tests ──────────────────────────────────────────
 
     struct CompactNodeCounter {
@@ -833,5 +917,65 @@ mod tests {
         let restored = compact.to_math_expr();
         assert_eq!(restored.nodes[0], MathNode::Number("6".into()));
         assert_eq!(restored.nodes[2], MathNode::Number("10".into()));
+    }
+
+    #[test]
+    fn compact_visitors_expose_fenced_separators_once() {
+        struct FenceVisitor {
+            nodes: usize,
+            separators: Vec<String>,
+        }
+
+        impl CompactVisitor for FenceVisitor {
+            fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+                self.nodes += 1;
+                walk_compact_node(self, arena, id);
+            }
+
+            fn visit_fenced_separator(&mut self, arena: &AstArena, id: NodeId) {
+                let CompactNode::Middle(separator) = *arena.node(id) else {
+                    panic!("expected a compact separator");
+                };
+                self.separators.push(arena.str_val(separator).to_owned());
+            }
+        }
+
+        let expr = MathExpr::inline(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Identifier("a".into())),
+                FencedItem::Middle("|".into()),
+                FencedItem::Element(MathNode::Identifier("b".into())),
+            ],
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let mut visitor = FenceVisitor {
+            nodes: 0,
+            separators: Vec::new(),
+        };
+        visitor.visit_expr(&compact);
+        assert_eq!(visitor.nodes, 3);
+        assert_eq!(visitor.separators, ["|"]);
+
+        struct FenceEditor;
+        impl CompactMutVisitor for FenceEditor {
+            fn visit_fenced_separator_mut(&mut self, arena: &mut AstArena, id: NodeId) {
+                let separator = arena.push_str(":");
+                *arena
+                    .try_node_mut_in_place(id)
+                    .expect("separator belongs to arena") = CompactNode::Middle(separator);
+            }
+        }
+        let mut edited = compact;
+        let roots: smallvec::SmallVec<[NodeId; 8]> = edited.arena.children(edited.roots).into();
+        for id in roots {
+            FenceEditor.visit_node_mut(&mut edited.arena, id);
+        }
+        let restored = edited.to_math_expr();
+        let MathNode::Fenced { content, .. } = &restored.nodes[0] else {
+            panic!("expected a fence");
+        };
+        assert!(matches!(&content[1], FencedItem::Middle(separator) if separator == ":"));
     }
 }

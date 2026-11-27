@@ -112,7 +112,9 @@ impl StrId {
 
 // ── CompactNode ────────────────────────────────────────────────────────
 
-/// Arena-backed AST node. 37 variants. All data lives in the owning `AstArena`.
+/// Arena-backed AST node. Its variants encode the shared mathematical nodes
+/// plus compact-only helpers such as table alignment and fenced separators.
+/// All indexed data lives in the owning `AstArena`.
 ///
 /// This type is `Copy` — no heap allocations, no destructors. Nodes reference
 /// each other via `NodeId` and store strings via `StrId`, both indexing into

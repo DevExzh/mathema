@@ -116,7 +116,7 @@ Input string ──Reader──▸ MathExpr (AST) ──Writer──▸ Output s
                          rasterize ──▸ PNG/JPEG             (raster)
 ```
 
-The shared AST (`MathExpr` / `MathNode`) has 30 node variants covering the union of all supported formats. Readers parse format-specific input into this AST; writers serialize it back out.
+The shared AST (`MathExpr` / `MathNode`) models the union of all supported formats. Readers parse format-specific input into the heap AST; writers serialize it back out. `CompactExpr` stores the same expression in an arena, with compact-only helper nodes for table alignment and fenced separators plus side metadata for typesetting attributes and source provenance.
 
 The optional render pipeline applies core TeXBook typesetting rules (radicals — Rule 11; accent skew — Rule 12; axis centering — Rule 13a; fractions — Rule 15; sub/superscript positioning — Rules 18a/c–f) to produce positioned layout boxes, then emits them as SVG. The `raster` feature adds PNG/JPEG rasterization via `fontdue` + `tiny-skia`. Standalone SVG embeds glyph `<path>` outlines for rendering without external fonts; this is available under the `render` feature (the `font-embed` feature is currently an alias of `render`).
 
