@@ -17,6 +17,36 @@ const QUADRATIC: &str = "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}";
 const NESTED: &str = "\\frac{\\frac{a}{b}}{\\frac{c}{d}}";
 const SUM: &str = "\\sum_{i=0}^{n} \\frac{1}{i^2}";
 
+fn flat_row(terms: usize) -> String {
+    let mut formula = String::with_capacity(terms * 3);
+    for index in 0..terms {
+        if index != 0 {
+            formula.push('+');
+        }
+        formula.push('x');
+    }
+    formula
+}
+
+fn matrix_latex(size: usize) -> String {
+    let mut formula = String::from("\\begin{matrix}");
+    for row in 0..size {
+        if row != 0 {
+            formula.push_str("\\\\");
+        }
+        for column in 0..size {
+            if column != 0 {
+                formula.push('&');
+            }
+            formula.push('x');
+        }
+    }
+    formula.push_str("\\end{matrix}");
+    formula
+}
+
+const MACRO_HEAVY: &str = r"\def\dup#1{#1+#1}\dup{\dup{\dup{\dup{x}}}}";
+
 fn bench_latex_parse(c: &mut Criterion) {
     let config = Config::default();
     let mut group = c.benchmark_group("latex_parse");
@@ -130,6 +160,55 @@ fn bench_end_to_end(c: &mut Criterion) {
                 mathema::Format::UnicodeMath,
             )
         })
+    });
+    group.finish();
+}
+
+fn bench_convert_result_routes(c: &mut Criterion) {
+    let parsed = mathema::from_latex(QUADRATIC).unwrap();
+    let mut group = c.benchmark_group("convert_result_routes");
+    group.bench_function("builder_mathml", |b| {
+        b.iter(|| std::hint::black_box(&parsed).to_mathml())
+    });
+    group.bench_function("builder_mathml_diagnostics", |b| {
+        b.iter(|| std::hint::black_box(&parsed).to_mathml_with_diagnostics())
+    });
+    group.bench_function("builder_omml", |b| {
+        b.iter(|| std::hint::black_box(&parsed).to_omml())
+    });
+    group.bench_function("builder_unicode_math", |b| {
+        b.iter(|| std::hint::black_box(&parsed).to_unicode_math())
+    });
+    group.bench_function("one_shot_mathml_diagnostics", |b| {
+        b.iter(|| {
+            mathema::convert_with_diagnostics(
+                std::hint::black_box(QUADRATIC),
+                mathema::Format::LaTeX,
+                mathema::Format::MathML,
+            )
+        })
+    });
+    group.finish();
+}
+
+fn bench_reader_shapes(c: &mut Criterion) {
+    let config = Config::default();
+    let flat = flat_row(2_000);
+    let matrix = matrix_latex(10);
+    let matrix_mathml = MathmlWriter::write_compact(
+        &LatexReader::parse_compact(&matrix, &config).unwrap().expr,
+        &config,
+    )
+    .unwrap();
+    let mut group = c.benchmark_group("reader_shapes");
+    group.bench_function("latex_flat_2000", |b| {
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(&flat), &config))
+    });
+    group.bench_function("latex_macro_heavy", |b| {
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(MACRO_HEAVY), &config))
+    });
+    group.bench_function("mathml_matrix10", |b| {
+        b.iter(|| MathmlReader::parse_compact(std::hint::black_box(&matrix_mathml), &config))
     });
     group.finish();
 }
@@ -344,6 +423,8 @@ criterion_group!(
     bench_mathml_parse,
     bench_cross_format,
     bench_end_to_end,
+    bench_convert_result_routes,
+    bench_reader_shapes,
     bench_parse_compact_vs_legacy,
     bench_write_compact_vs_legacy,
     bench_ast_traversal,
