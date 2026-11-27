@@ -5,7 +5,7 @@
 use super::*;
 use crate::ast::compact::CompactNode;
 use crate::ast::{LimitStyle, MathNode};
-use crate::error::LimitKind;
+use crate::error::{LimitKind, Span};
 use crate::writer::Writer;
 
 // ── Builders ──────────────────────────────────────────────────────────────
@@ -510,6 +510,115 @@ fn v5_integral_limits_use_bits_0x10_and_0x20() {
             ..
         }
     ));
+}
+
+#[test]
+fn template_specific_layout_options_report_ast_losses() {
+    // A non-default fence alignment is accepted by MTEF but has no field in
+    // the shared AST. The reader must expose that loss even in Strict mode.
+    let fence = cat(&[
+        &[0x03, 0, 1, 0x03, 1], // TMPL, parentheses, both fences, centered on contents
+        &line5(&c5(0, 3, 'x')),
+        &[0],
+    ]);
+    let result = MtefReader::parse_bytes(&eq5(&fence), &Config::default()).unwrap();
+    let fence_diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("fence-alignment"))
+        .expect("fence alignment loss");
+    assert_eq!(fence_diagnostic.kind, DiagnosticKind::Info);
+    assert_eq!(fence_diagnostic.span, Some(Span::new(19, 20)));
+
+    // The default option and reserved values do not describe a representable
+    // loss. In particular, a reserved value must not be mislabeled as fence
+    // alignment metadata.
+    for option in [0, 3, 4, 0x80] {
+        let fence = cat(&[&[0x03, 0, 1, 0x03, option], &line5(&c5(0, 3, 'x')), &[0]]);
+        let result = MtefReader::parse_bytes(&eq5(&fence), &Config::default()).unwrap();
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("fence-alignment")),
+            "reserved/default option {option:#x} was mislabeled: {:?}",
+            result.diagnostics
+        );
+    }
+
+    // MTEF stores integral expansion both in the template options and in the
+    // variation. Neither spelling can be retained by the AST.
+    let expanding_option = cat(&[
+        &[0x03, 0, 15, 0x01, 1], // TMPL integral, fixed variation, expand option
+        &line5(&c5(0, 3, 'g')),
+        &c5(0, 6, '\u{222B}'),
+        &[0],
+    ]);
+    let result = MtefReader::parse_bytes(&eq5(&expanding_option), &Config::default()).unwrap();
+    let option_diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("expanding-integral"))
+        .expect("expanding integral option loss");
+    assert_eq!(option_diagnostic.kind, DiagnosticKind::Info);
+    assert_eq!(option_diagnostic.span, Some(Span::new(19, 20)));
+
+    let expanding_variation = cat(&[
+        &[0x03, 0, 15, 0x81, 0x01, 0], // tvINT_EXPAND in the high variation byte
+        &line5(&c5(0, 3, 'g')),
+        &c5(0, 6, '\u{222B}'),
+        &[0],
+    ]);
+    let result = MtefReader::parse_bytes(&eq5(&expanding_variation), &Config::default()).unwrap();
+    let variation_diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("expanding-integral"))
+        .expect("expanding integral loss");
+    assert_eq!(variation_diagnostic.kind, DiagnosticKind::Info);
+    // The high variation byte carries tvINT_EXPAND and precedes the options
+    // byte by one position. This is a decoded-wire offset.
+    assert_eq!(variation_diagnostic.span, Some(Span::new(19, 20)));
+
+    // Hex input uses the same decoded-wire offsets as binary input.
+    let data = eq5(&expanding_variation);
+    let hex: String = data.iter().map(|byte| format!("{byte:02x}")).collect();
+    let result = MtefReader::parse(&hex, &Config::default()).unwrap();
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("expanding-integral"))
+        .expect("hex expanding integral loss");
+    assert_eq!(diagnostic.span, Some(Span::new(19, 20)));
+
+    // An Equation Native header contributes 28 bytes to the wire offset.
+    let length = u32::try_from(data.len()).unwrap();
+    let result =
+        MtefReader::parse_bytes(&ole(&data, 0x0002_0000, length), &Config::default()).unwrap();
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("expanding-integral"))
+        .expect("OLE expanding integral loss");
+    assert_eq!(diagnostic.span, Some(Span::new(47, 48)));
+}
+
+#[test]
+fn legacy_template_options_use_the_mtef3_selector_layout() {
+    // MTEF 3 selector 1 is the parenthesis fence. Its tag has no options
+    // byte, while the selector's template-specific option follows variation.
+    let fence = cat(&[&[0x03, 1, 0, 1], &line3(&c3(0, 3, 'x')), &[0]]);
+    let data = eq3(&fence);
+    let result = MtefReader::parse_bytes(&data, &Config::default()).unwrap();
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("fence-alignment"))
+        .expect("legacy fence alignment loss");
+    assert_eq!(diagnostic.kind, DiagnosticKind::Info);
+    // MTEF 3 has a five-byte header, then FULL, LINE, TMPL, selector,
+    // variation, and the template-specific option.
+    assert_eq!(diagnostic.span, Some(Span::new(10, 11)));
 }
 
 #[test]

@@ -377,6 +377,9 @@ pub(super) struct Decoder<'a> {
     reported_nudge: bool,
     reported_line_spacing: bool,
     reported_tab_stops: bool,
+    /// Whether template-specific layout metadata has already been reported.
+    reported_fence_alignment: bool,
+    reported_integral_expansion: bool,
 }
 
 impl<'a> Decoder<'a> {
@@ -429,6 +432,8 @@ impl<'a> Decoder<'a> {
             reported_nudge: false,
             reported_line_spacing: false,
             reported_tab_stops: false,
+            reported_fence_alignment: false,
+            reported_integral_expansion: false,
         }
     }
 
@@ -1511,12 +1516,24 @@ impl<'a> Decoder<'a> {
         self.check_v2_selector(start, selector)?;
         let first = self.u8()?;
         // MTEF 5 writes a two-byte variation when the high bit is set.
-        let variation = if self.v5 && first & 0x80 != 0 {
-            u16::from(first & 0x7F) | (u16::from(self.u8()?) << 8)
+        let (variation, variation_expansion_at) = if self.v5 && first & 0x80 != 0 {
+            let high_at = self.pos;
+            let high = self.u8()?;
+            (
+                u16::from(first & 0x7F) | (u16::from(high) << 8),
+                (high & 0x01 != 0).then_some(high_at),
+            )
         } else {
-            u16::from(first)
+            (u16::from(first), None)
         };
-        let _template_options = self.u8()?;
+        let template_options_at = self.pos;
+        let template_options = self.u8()?;
+        self.note_template_option_losses(
+            template_options_at,
+            variation_expansion_at,
+            selector,
+            template_options,
+        );
         // The lines of a template are assembled relative to its colour.
         let color = self.color;
         let outer = std::mem::replace(&mut self.color_context, color);
@@ -1554,6 +1571,50 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Template-specific alignment and integral-expansion flags affect
+    /// placement or glyph sizing that the shared AST cannot represent. Keep
+    /// reading the records, but make the accepted loss visible to callers.
+    fn note_template_option_losses(
+        &mut self,
+        options_offset: usize,
+        variation_expansion_offset: Option<usize>,
+        selector: u8,
+        options: u8,
+    ) {
+        let fence = if self.v5 {
+            selector <= 9
+        } else {
+            selector <= 12
+        };
+        if fence && matches!(options, 1 | 2) && !self.reported_fence_alignment {
+            self.reported_fence_alignment = true;
+            self.note_at(
+                options_offset,
+                "MTEF fence-alignment metadata was dropped because the AST has no fence-alignment field",
+            );
+        }
+
+        let integral = if self.v5 {
+            selector == 15
+        } else {
+            (21..=26).contains(&selector)
+        };
+        let expanding_option = options == 1;
+        let expanding = expanding_option || variation_expansion_offset.is_some();
+        if integral && expanding && !self.reported_integral_expansion {
+            self.reported_integral_expansion = true;
+            let offset = if expanding_option {
+                options_offset
+            } else {
+                variation_expansion_offset.expect("expanding variation always has a source offset")
+            };
+            self.note_at(
+                offset,
+                "MTEF expanding-integral metadata was dropped because the AST has no integral-expansion field",
+            );
+        }
     }
 
     fn parse_pile(&mut self, options: u8) -> Result<NodeId> {

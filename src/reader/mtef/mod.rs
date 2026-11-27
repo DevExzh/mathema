@@ -20,7 +20,7 @@
 //! with one informational diagnostic per category. Explicit fonts retain their
 //! bold/italic and math-alphabet effects; equation preferences are used for
 //! sizes where possible. Template options without an AST equivalent (fence
-//! alignment, expanding integrals) are still dropped without a separate
+//! alignment, expanding integrals) are dropped with an informational
 //! diagnostic. Dotted partition lines become dashed ones. Operator and
 //! decimal-point column alignment become left and right alignment.
 //!
