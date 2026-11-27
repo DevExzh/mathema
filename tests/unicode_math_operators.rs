@@ -504,6 +504,22 @@ fn unicode_math_emits_native_nary_placement_controls() {
 }
 
 #[test]
+fn unicode_math_separates_a_numeric_sibling_after_an_empty_nary_operator() {
+    let source = r#"<math><mo>∮</mo><msup><mn>1</mn><mrow><mi>x</mi><mi>x</mi></mrow></msup><mi>x</mi></math>"#;
+    let parsed = mathema::from_mathml(source).unwrap();
+    let expected = "∮ 1^xx x";
+
+    assert_eq!(parsed.to_unicode_math().unwrap(), expected);
+    assert_eq!(
+        convert(source, Format::MathML, Format::UnicodeMath).unwrap(),
+        expected
+    );
+    let round_trip = convert(expected, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(round_trip.contains("<msup><mn>1</mn>"), "{round_trip}");
+    assert!(!round_trip.contains("<msup><mo>∮</mo>"), "{round_trip}");
+}
+
+#[test]
 fn unicode_math_groups_compound_mathop_bases_before_scripts() {
     let parsed = mathema::from_latex(r"\mathop{\mathrm{Res}}_{x} f").unwrap();
     let (written, diagnostics) = parsed.to_unicode_math_with_diagnostics().unwrap();

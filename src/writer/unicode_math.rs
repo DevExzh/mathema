@@ -2664,6 +2664,10 @@ fn separate_following_operand(
                 '"' | ')' | ']' | '}' | '〗' | '\u{27E9}' | '\u{2309}' | '\u{230B}' => false,
                 _ => !breaks_naryand(first),
             });
+    // A digit immediately after an n-ary glyph is a UTN 28 placement control
+    // when it is adjacent to that glyph. Keep an independently scripted (or
+    // plain) numeric sibling separate from an empty n-ary operator.
+    let nary_control = previous == OperandEdge::NaryOperator && first.is_ascii_digit();
     // A script that is only a sign takes an operand after it (`x^- y` is
     // not `x^-y`, UTN #28 appendix A `soperand`).
     let sign = previous_operator
@@ -2680,6 +2684,7 @@ fn separate_following_operand(
         || (takes_prime && is_prime_char(first))
         || digits
         || fraction
+        || nary_control
         || sign;
     if joins && !out[..start].ends_with(' ') {
         out.insert(start, ' ');
@@ -3026,6 +3031,10 @@ enum OperandEdge {
     /// space: it ends the operand before it (as the reader's
     /// `breaks_operand`).
     Break,
+    /// An n-ary operator with no n-aryand. A following digit must be
+    /// separated because UnicodeMath uses digits immediately after an n-ary
+    /// glyph for its placement control (`∮ 1^x`, rather than `∮1^x`).
+    NaryOperator,
     /// A factor of an operand.
     Operand,
     /// A fraction: its operands are whole, so it is not a factor of the
@@ -3059,6 +3068,11 @@ fn symbol_edge(glyph: &str) -> OperandEdge {
 fn operand_edge(node: &MathNode) -> OperandEdge {
     match node {
         MathNode::Fraction { .. } => OperandEdge::Fraction,
+        MathNode::Symbol(SymbolKind::LargeOp, glyph)
+            if glyph.chars().next().is_some_and(is_nary_char) && glyph.chars().nth(1).is_none() =>
+        {
+            OperandEdge::NaryOperator
+        },
         MathNode::Symbol(_, glyph) => symbol_edge(glyph),
         // Leading scripts end where their base ends.
         MathNode::PreScripts { base, .. } => operand_edge(base),
@@ -3130,6 +3144,9 @@ fn operand_edge(node: &MathNode) -> OperandEdge {
         MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } if width.as_f64() <= 0.0 => {
             OperandEdge::Operand
         },
+        MathNode::Nary { body, .. } if matches!(&**body, MathNode::Row(children) if children.is_empty()) => {
+            OperandEdge::NaryOperator
+        },
         MathNode::Nary { .. }
         | MathNode::Space(_)
         | MathNode::ExplicitSpace { .. }
@@ -3141,6 +3158,12 @@ fn operand_edge(node: &MathNode) -> OperandEdge {
 fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
     match *arena.node(id) {
         CompactNode::Fraction { .. } => OperandEdge::Fraction,
+        CompactNode::Symbol(SymbolKind::LargeOp, sid)
+            if arena.str_val(sid).chars().next().is_some_and(is_nary_char)
+                && arena.str_val(sid).chars().nth(1).is_none() =>
+        {
+            OperandEdge::NaryOperator
+        },
         CompactNode::Symbol(_, sid) => symbol_edge(arena.str_val(sid)),
         // Leading scripts end where their base ends.
         CompactNode::PreScripts { base, .. } => operand_edge_c(arena, base),
@@ -3213,6 +3236,9 @@ fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
         },
         // A dropped space is an operand character (U+200B).
         CompactNode::Space(width) if width.as_f64() <= 0.0 => OperandEdge::Operand,
+        CompactNode::Nary { body, .. } if matches!(*arena.node(body), CompactNode::Row(span) if span.is_empty()) => {
+            OperandEdge::NaryOperator
+        },
         CompactNode::Nary { .. } | CompactNode::Space(_) | CompactNode::Text(..) => {
             OperandEdge::Break
         },
