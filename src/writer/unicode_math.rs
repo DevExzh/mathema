@@ -277,7 +277,10 @@ impl UnicodeMathWriter {
     ) -> Result<(String, Vec<Diagnostic>)> {
         let prepared = super::prepare_leading_scripts(expr, config)?;
         let output = write_compact_limited_validated(&prepared, limits)?;
-        Ok((output, Self::compact_diagnostics(&prepared, config)))
+        Ok((
+            output,
+            Self::compact_diagnostics_checked(&prepared, config)?,
+        ))
     }
 
     pub(crate) fn write_compact_with_limits_trusted(
@@ -296,12 +299,22 @@ impl UnicodeMathWriter {
     ) -> Result<(String, Vec<Diagnostic>)> {
         let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
         let output = write_compact_limited_validated(&prepared, limits)?;
-        Ok((output, Self::compact_diagnostics(&prepared, config)))
+        Ok((
+            output,
+            Self::compact_diagnostics_checked(&prepared, config)?,
+        ))
     }
 
     pub(crate) fn compact_diagnostics(expr: &CompactExpr, config: &Config) -> Vec<Diagnostic> {
+        Self::compact_diagnostics_checked(expr, config).unwrap_or_default()
+    }
+
+    fn compact_diagnostics_checked(expr: &CompactExpr, config: &Config) -> Result<Vec<Diagnostic>> {
         let mut visitor = UnicodeMathLossVisitor::default();
         visitor.visit_expr(expr);
+        if let Some(error) = visitor.error {
+            return Err(error);
+        }
         let mut diagnostics = visitor.diagnostics;
         if expr.arena.has_attrs() && config.typesetting == TypesettingPolicy::Preserve {
             diagnostics.push(Diagnostic {
@@ -310,7 +323,7 @@ impl UnicodeMathWriter {
                 span: None,
             });
         }
-        diagnostics
+        Ok(diagnostics)
     }
 
     /// Collect loss diagnostics without retaining UnicodeMath output.
@@ -321,7 +334,7 @@ impl UnicodeMathWriter {
     ) -> Result<Vec<Diagnostic>> {
         limits.check_cancelled()?;
         let prepared = super::prepare_leading_scripts(expr, config)?;
-        let diagnostics = Self::compact_diagnostics(&prepared, config);
+        let diagnostics = Self::compact_diagnostics_checked(&prepared, config)?;
         limits.check_cancelled()?;
         Ok(diagnostics)
     }
@@ -349,12 +362,16 @@ impl UnicodeMathWriter {
 #[derive(Default)]
 struct UnicodeMathLossVisitor {
     diagnostics: Vec<Diagnostic>,
+    error: Option<crate::Error>,
 }
 
 impl UnicodeMathLossVisitor {
     fn visit_sequence(&mut self, arena: &AstArena, ids: &[NodeId]) {
         let mut opens: SmallVec<[(&str, NodeId); 4]> = SmallVec::new();
         for &id in ids {
+            if self.error.is_some() {
+                return;
+            }
             match *arena.node(id) {
                 CompactNode::Symbol(SymbolKind::Open, sid)
                     if matches!(arena.str_val(sid), "(" | "[" | "{") =>
@@ -383,6 +400,13 @@ impl CompactVisitor for UnicodeMathLossVisitor {
     }
 
     fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+        if self.error.is_some() {
+            return;
+        }
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.error = Some(error);
+            return;
+        }
         let node = arena.node(id);
         // The `█(...)` spelling is a native aligned-row form. Its alignment
         // is preserved in the AST and in the writer, so it does not carry a
