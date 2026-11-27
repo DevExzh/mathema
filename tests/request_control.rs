@@ -90,6 +90,50 @@ fn every_reader_has_a_work_checkpoint() {
 }
 
 #[test]
+fn controlled_text_writers_charge_work_during_emission() {
+    let input = "x+".repeat(1_000);
+    for target in [
+        Format::LaTeX,
+        Format::MathML,
+        Format::Omml,
+        Format::UnicodeMath,
+    ] {
+        let control = RequestControl::with_max_work(5_000);
+        let result =
+            convert_with_control(&input, Format::LaTeX, target, &Config::default(), &control);
+        assert!(
+            matches!(
+                result,
+                Err(Error::LimitExceeded {
+                    kind: mathema::LimitKind::Work,
+                    limit: 5_000,
+                })
+            ),
+            "{target:?} completed without charging emission work: {result:?}"
+        );
+        assert_eq!(control.work(), 5_000, "{target:?}");
+    }
+}
+
+#[test]
+fn controlled_direct_writer_charges_compact_validation() {
+    use mathema::writer::Writer;
+    use mathema::writer::mathml::MathmlWriter;
+
+    let parsed = mathema::from_latex("x+y+z").unwrap();
+    let control = RequestControl::with_max_work(0);
+    let result =
+        control.scope(|| MathmlWriter::write_compact(parsed.compact_expr(), &Config::default()));
+    assert!(matches!(
+        result,
+        Err(Error::LimitExceeded {
+            kind: mathema::LimitKind::Work,
+            limit: 0,
+        })
+    ));
+}
+
+#[test]
 fn one_shot_control_carries_cancellation_and_output_limits_through_emission() {
     let control = RequestControl::with_max_work(10_000);
     let error = convert_with_control_and_limits(

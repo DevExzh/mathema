@@ -467,6 +467,10 @@ impl BoundedText {
         let Some(limits) = self.limits.as_ref() else {
             return true;
         };
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.failure = Some(OutputFailure::from_error(error));
+            return false;
+        }
         if limits.is_cancelled() {
             self.failure = Some(OutputFailure::Cancelled);
             return false;

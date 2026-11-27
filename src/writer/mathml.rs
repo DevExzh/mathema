@@ -282,7 +282,7 @@ pub(crate) fn write_with_options_validated(
     options: &MathmlOptions,
 ) -> Result<(String, Vec<Diagnostic>)> {
     let (output, replaced) = write_compact_text(expr);
-    let mut diagnostics = super::collect_loss_diagnostics(expr, mathml_loss);
+    let mut diagnostics = super::collect_loss_diagnostics(expr, mathml_loss)?;
     if replaced {
         diagnostics.push(Diagnostic {
             kind: DiagnosticKind::Warning,
@@ -323,7 +323,7 @@ fn write_limited_with_diagnostics(
     limits: &OutputLimits,
 ) -> Result<(String, Vec<Diagnostic>)> {
     let (output, replaced) = write_compact_limited_validated_with_replacement(prepared, limits)?;
-    let mut diagnostics = super::collect_loss_diagnostics(prepared, mathml_loss);
+    let mut diagnostics = super::collect_loss_diagnostics(prepared, mathml_loss)?;
     if replaced {
         diagnostics.push(Diagnostic {
             kind: DiagnosticKind::Warning,
@@ -885,6 +885,10 @@ impl MathOutput<String> {
         let Some(limits) = self.limits.as_ref() else {
             return true;
         };
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.failure = Some(OutputFailure::from_error(error));
+            return false;
+        }
         if limits.is_cancelled() {
             self.failure = Some(OutputFailure::Cancelled);
             return false;

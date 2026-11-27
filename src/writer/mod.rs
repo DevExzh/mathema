@@ -104,16 +104,27 @@ fn effective_cell_alignment(
 /// the warning message for a lossy node (or `None`). Shared by the format
 /// writers so AST→format data loss is reported consistently (see
 /// `write_compact_with_diagnostics`).
-pub(crate) fn collect_loss_diagnostics<F>(expr: &CompactExpr, classify: F) -> Vec<Diagnostic>
+pub(crate) fn collect_loss_diagnostics<F>(
+    expr: &CompactExpr,
+    classify: F,
+) -> Result<Vec<Diagnostic>>
 where
     F: Fn(&AstArena, &CompactNode) -> Option<String>,
 {
     struct LossVisitor<F> {
         diagnostics: Vec<Diagnostic>,
         classify: F,
+        error: Option<crate::error::Error>,
     }
     impl<F: Fn(&AstArena, &CompactNode) -> Option<String>> CompactVisitor for LossVisitor<F> {
         fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+            if self.error.is_some() {
+                return;
+            }
+            if let Err(error) = crate::error::request_checkpoint(1) {
+                self.error = Some(error);
+                return;
+            }
             if let Some(message) = (self.classify)(arena, arena.node(id)) {
                 self.diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::Warning,
@@ -127,9 +138,13 @@ where
     let mut visitor = LossVisitor {
         diagnostics: Vec::new(),
         classify,
+        error: None,
     };
     visitor.visit_expr(expr);
-    visitor.diagnostics
+    match visitor.error {
+        Some(error) => Err(error),
+        None => Ok(visitor.diagnostics),
+    }
 }
 
 /// Trait for serializing the shared AST into a math format.

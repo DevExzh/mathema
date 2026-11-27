@@ -62,6 +62,10 @@ impl LimitedUnicode {
         if self.failure.is_some() {
             return false;
         }
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.failure = Some(crate::writer::limits::OutputFailure::from_error(error));
+            return false;
+        }
         if self.limits.is_cancelled() {
             self.failure = Some(crate::writer::limits::OutputFailure::Cancelled);
             return false;

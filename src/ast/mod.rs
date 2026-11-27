@@ -1215,6 +1215,7 @@ fn visit_compact_graph(
     heights: &mut [usize],
     limit: Option<usize>,
 ) -> crate::error::Result<()> {
+    crate::error::request_checkpoint(1)?;
     if state[start.index()] == 2 {
         if let Some(limit) = limit
             && heights[start.index()] > limit
@@ -1321,6 +1322,7 @@ fn check_compact_span(
         .try_children(span)
         .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
     for &id in children {
+        crate::error::request_checkpoint(1)?;
         check_compact_id(arena, id, true)?;
     }
     Ok(())
@@ -1623,6 +1625,7 @@ fn check_compact_depth_checked(
     depth: usize,
     limit: usize,
 ) -> crate::error::Result<()> {
+    crate::error::request_checkpoint(1)?;
     if depth > limit {
         return Err(depth_error(limit));
     }
@@ -1636,6 +1639,7 @@ fn check_compact_depth_checked(
 }
 
 fn check_node_depth(node: &MathNode, depth: usize, limit: usize) -> crate::error::Result<()> {
+    crate::error::request_checkpoint(1)?;
     if depth > limit {
         return Err(depth_error(limit));
     }

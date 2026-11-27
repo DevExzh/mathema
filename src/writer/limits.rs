@@ -47,6 +47,7 @@ impl OutputLimits {
     /// Check a byte count and the optional cancellation flag before retaining
     /// an output buffer.
     pub(crate) fn check_bytes(&self, bytes: usize) -> crate::Result<()> {
+        crate::error::request_checkpoint(1)?;
         if self.is_cancelled() {
             return Err(crate::Error::RequestCancelled);
         }
@@ -100,6 +101,7 @@ impl OutputLimits {
 pub(crate) enum OutputFailure {
     Bytes(usize),
     Cancelled,
+    Work(usize),
 }
 
 impl OutputFailure {
@@ -107,6 +109,21 @@ impl OutputFailure {
         match self {
             Self::Bytes(limit) => crate::Error::OutputLimit { limit },
             Self::Cancelled => crate::Error::RequestCancelled,
+            Self::Work(limit) => crate::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Work,
+                limit,
+            },
+        }
+    }
+
+    pub(crate) fn from_error(error: crate::Error) -> Self {
+        match error {
+            crate::Error::RequestCancelled => Self::Cancelled,
+            crate::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Work,
+                limit,
+            } => Self::Work(limit),
+            _ => unreachable!("request checkpoints only return cancellation or work errors"),
         }
     }
 }
