@@ -1,6 +1,7 @@
 use mathema::writer::Writer;
 use mathema::writer::mathml::{MathmlOptions, MathmlProfile, MathmlWriter};
 use mathema::{MathExpr, MathNode, from_latex, from_mathml};
+use std::process::Command;
 
 #[test]
 fn standard_profile_removes_private_round_trip_attributes() {
@@ -125,4 +126,42 @@ fn compact_writer_options_match_builder_output() {
     let heap = result.expr();
     let ordinary = MathmlWriter::write(&heap, &Default::default()).unwrap();
     assert!(ordinary.contains("<math"));
+}
+
+#[test]
+#[ignore = "needs xmllint and MATHEMA_MATHML_XSD"]
+fn standard_profile_validates_with_external_mathml_schema() {
+    let schema = std::env::var_os("MATHEMA_MATHML_XSD")
+        .expect("set MATHEMA_MATHML_XSD to the MathML 3 mathml3.xsd");
+    assert!(
+        Command::new("xmllint")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success()),
+        "xmllint is not installed"
+    );
+    let temp = tempfile::tempdir().unwrap();
+    for (index, source) in [
+        r"\boxed{\frac{a_1}{b^2}}",
+        r"\colorbox{#f00}{x^2}+\color{blue}{\frac{a}{b}}",
+        r"\colorbox{#ff0000}{x}+\fcolorbox{blue}{red}{y}",
+        r"\begin{smallmatrix}a&\color{red}{b}\\c&d\end{smallmatrix}",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = from_latex(source)
+            .unwrap()
+            .to_mathml_with_options(&MathmlOptions::standard())
+            .unwrap();
+        let path = temp.path().join(format!("formula-{index}.mathml"));
+        std::fs::write(&path, output).unwrap();
+        let status = Command::new("xmllint")
+            .args(["--noout", "--schema"])
+            .arg(&schema)
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{source}");
+    }
 }

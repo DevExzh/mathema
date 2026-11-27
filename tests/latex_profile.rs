@@ -17,6 +17,8 @@ fn portable_colored_math_compiles_and_reimports() {
         r"\colorbox{red}{x^2+\frac{a}{b}}",
         r"\fcolorbox{red}{#ff0000}{x^2+\frac{a}{b}}",
         r"\fcolorbox{#ff0000}{green}{x^2}",
+        r"\colorbox{red}{\fcolorbox{#f00}{blue}{x^2+\frac{a}{b}}}",
+        r"\fcolorbox{#f00}{green}{\colorbox{blue}{\frac{a_1}{b^2}}}",
     ] {
         let result = from_latex_with(input, &config).expect(input);
         let latex = result.to_latex_with(&config).expect(input);

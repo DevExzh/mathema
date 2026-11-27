@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -167,3 +168,59 @@ jobs:
             esac
             echo "::endgroup::"
           done
+
+  compatibility:
+    name: external compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install external validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libxml2-utils texlive-latex-recommended unzip
+      - name: Download MathML 3 schema
+        env:
+          MATHML_XSD_URL: https://www.w3.org/Math/XMLSchema/mathml3-xsd.zip
+          MATHML_XSD_SHA256: 921cba0eaf1ec3c2756849425d0ca4c7b2d5f549eda7dd1e0d7f1351ba173a8d
+        run: |
+          curl --fail --location --retry 3 "$MATHML_XSD_URL" \
+            --output "$RUNNER_TEMP/mathml3-xsd.zip"
+          printf '%s  %s\n' "$MATHML_XSD_SHA256" \
+            "$RUNNER_TEMP/mathml3-xsd.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/mathml3-xsd.zip" -d "$RUNNER_TEMP/mathml3"
+      - name: Download ECMA-376 Transitional schemas
+        env:
+          ECMA_XSD_URL: https://ecma-international.org/wp-content/uploads/ECMA-376-4_5th_edition_december_2016.zip
+          ECMA_XSD_SHA256: bd25da1109f73762356596918bf5ff8b74a1331642dba5f1c1d1dfc6bed34ecd
+          ECMA_INNER_SHA256: d34187520749998af306faf1b730e568b0ca6d88ad24638a407c0a9bb4ca04fc
+        run: |
+          curl --fail --location --retry 3 "$ECMA_XSD_URL" \
+            --output "$RUNNER_TEMP/ecma376-part4.zip"
+          printf '%s  %s\n' "$ECMA_XSD_SHA256" \
+            "$RUNNER_TEMP/ecma376-part4.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/ecma376-part4.zip" -d "$RUNNER_TEMP/ecma376"
+          unzip -p "$RUNNER_TEMP/ecma376-part4.zip" \
+            OfficeOpenXML-XMLSchema-Transitional.zip \
+            >"$RUNNER_TEMP/ecma-transitional.zip"
+          printf '%s  %s\n' "$ECMA_INNER_SHA256" \
+            "$RUNNER_TEMP/ecma-transitional.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/ecma-transitional.zip" \
+            -d "$RUNNER_TEMP/ecma-transitional"
+      - name: Download W3C XML namespace schema
+        env:
+          XML_XSD_URL: https://www.w3.org/2001/xml.xsd
+          XML_XSD_SHA256: 61960fb3131e38022caad5360e2f33a3382578ab3c80cd58bd74320ede61b20c
+        run: |
+          curl --fail --location --retry 3 "$XML_XSD_URL" \
+            --output "$RUNNER_TEMP/xml.xsd"
+          printf '%s  %s\n' "$XML_XSD_SHA256" \
+            "$RUNNER_TEMP/xml.xsd" | sha256sum --check
+      - name: Run external compatibility subset
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/mathema-target
+          MATHEMA_MATHML_XSD: ${{ runner.temp }}/mathml3/mathml3/mathml3.xsd
+          MATHEMA_OMML_XSD: ${{ runner.temp }}/ecma-transitional/shared-math.xsd
+          MATHEMA_XML_XSD: ${{ runner.temp }}/xml.xsd
+        run: scripts/external_compat.sh
