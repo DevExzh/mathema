@@ -121,6 +121,8 @@ pub(super) fn is_content_element(name: &str) -> bool {
             | "piece"
             | "otherwise"
             | "lambda"
+            | "bind"
+            | "share"
             | "declare"
             | "sep"
     ) || content_constant(name).is_some()
@@ -259,6 +261,26 @@ fn is_op_token(name: &str) -> bool {
             | "momentabout"
             | "card"
     )
+}
+
+/// Validate the digit spelling of a base-qualified Content MathML integer.
+/// MathML permits an optional sign, followed by alphanumeric digits whose
+/// values must fit the declared radix.
+fn valid_based_integer_literal(value: &str, base: u32) -> bool {
+    let digits = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    !digits.is_empty()
+        && digits.chars().all(|ch| {
+            let value = match ch {
+                '0'..='9' => u32::from(ch as u8 - b'0'),
+                'A'..='Z' => u32::from(ch as u8 - b'A') + 10,
+                'a'..='z' => u32::from(ch as u8 - b'a') + 10,
+                _ => return false,
+            };
+            value < base
+        })
 }
 
 impl<'a> MathmlCompactParser<'a> {
@@ -556,6 +578,10 @@ impl<'a> MathmlCompactParser<'a> {
             "cn" => self.parse_cn(start),
             "csymbol" => {
                 let t = self.read_text_content("csymbol")?;
+                self.style_warning(
+                    "Content MathML <csymbol> operator identity was lowered to an ordinary identifier"
+                        .into(),
+                );
                 Ok(self.c_ident(t.trim()))
             },
             "set" => self.parse_container("set", "{", "}"),
@@ -566,8 +592,18 @@ impl<'a> MathmlCompactParser<'a> {
             "matrixrow" => self.parse_container("matrixrow", "(", ")"),
             "piecewise" => self.parse_piecewise(),
             "lambda" => self.parse_lambda(),
+            "bind" => self.parse_bind(),
+            "share" => {
+                self.style_warning(
+                    "Content MathML <share> references are not represented; the referenced expression was lowered inline"
+                        .into(),
+                );
+                self.parse_child_id("share")
+            },
             "declare" => {
-                // Declarations produce no visible output.
+                self.style_warning(
+                    "Content MathML <declare> metadata is not represented and was dropped".into(),
+                );
                 self.skip_element("declare")?;
                 Ok(self.empty_row())
             },
@@ -626,9 +662,25 @@ impl<'a> MathmlCompactParser<'a> {
             | "otherwise"
             | "declare"
             | "sep" => Ok(self.empty_row()),
+            "bind" => {
+                self.style_warning(
+                    "Content MathML empty <bind> has no visible binding body".into(),
+                );
+                Ok(self.empty_row())
+            },
+            "share" => {
+                self.style_warning("Content MathML empty <share> reference was dropped".into());
+                Ok(self.empty_row())
+            },
             "ci" => Ok(self.c_ident("")),
             "cn" => Ok(self.c_num("")),
-            "csymbol" => Ok(self.c_ident("")),
+            "csymbol" => {
+                self.style_warning(
+                    "Content MathML <csymbol> operator identity was lowered to an empty identifier"
+                        .into(),
+                );
+                Ok(self.c_ident(""))
+            },
             "set" => Ok(self.c_fenced("{", "}", &[])),
             "list" => Ok(self.c_fenced("[", "]", &[])),
             "interval" => {
@@ -697,6 +749,7 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn parse_cn(&mut self, start: &quick_xml::events::BytesStart<'_>) -> Result<NodeId> {
         let ty = get_attr(start, "type").unwrap_or_default();
+        let base = get_attr(start, "base");
         // Collect text parts separated by <sep/>.
         let mut parts: Vec<String> = vec![String::new()];
         loop {
@@ -731,13 +784,68 @@ impl<'a> MathmlCompactParser<'a> {
             }
         }
         let parts: Vec<String> = parts.iter().map(|s| s.trim().to_owned()).collect();
+        let expected_parts = match ty.as_str() {
+            "rational" | "complex-cartesian" | "complex-polar" | "e-notation" | "enotation" => {
+                Some(2)
+            },
+            "" | "integer" | "real" => Some(1),
+            _ => None,
+        };
+        let separator_arity_ok = expected_parts.is_none_or(|expected| parts.len() == expected);
+        if let Some(expected) = expected_parts
+            && parts.len() != expected
+        {
+            self.style_warning(format!(
+                "Content MathML <cn type=\"{}\"> expects {} separated part{}; got {}",
+                if ty.is_empty() { "number" } else { ty.as_str() },
+                expected,
+                if expected == 1 { "" } else { "s" },
+                parts.len()
+            ));
+        }
+        if let Some(base) = base.as_deref() {
+            let radix = base.parse::<u32>().ok();
+            let valid_radix = radix.is_some_and(|value| (2..=36).contains(&value));
+            let digits = parts.join("");
+            let decimal_type = matches!(
+                ty.as_str(),
+                "" | "integer" | "real" | "rational" | "e-notation" | "enotation"
+            );
+            let valid_decimal_integer =
+                matches!(ty.as_str(), "" | "integer") && valid_based_integer_literal(&digits, 10);
+            let valid_nondecimal_integer = matches!(ty.as_str(), "" | "integer")
+                && radix.is_some_and(|value| valid_based_integer_literal(&digits, value));
+            if decimal_type
+                && valid_radix
+                && separator_arity_ok
+                && ((base == "10" && (ty == "real" || valid_decimal_integer))
+                    || (base != "10" && valid_nondecimal_integer))
+            {
+                if base == "10" {
+                    return Ok(self.c_num(&digits));
+                }
+                // A base-qualified integer has no dedicated AST node. A
+                // visible radix subscript preserves the authored base and
+                // keeps the value together as one mathematical token.
+                let value = self.c_text(&digits);
+                let radix = self.c_num(base);
+                return Ok(self.c_sub(value, radix));
+            }
+            if base != "10" || !decimal_type || !valid_radix {
+                self.style_warning(format!(
+                    "Content MathML <cn type=\"{}\" base=\"{}\"> has no faithful numeric-base representation",
+                    if ty.is_empty() { "unknown" } else { ty.as_str() },
+                    base
+                ));
+            }
+        }
         match ty.as_str() {
-            "rational" if parts.len() >= 2 => {
+            "rational" if parts.len() == 2 => {
                 let n = self.c_num(&parts[0]);
                 let d = self.c_num(&parts[1]);
                 Ok(self.c_frac(n, d))
             },
-            "complex-cartesian" if parts.len() >= 2 => {
+            "complex-cartesian" if parts.len() == 2 => {
                 let re = self.c_num(&parts[0]);
                 let plus = self.c_sym("+", SymbolKind::BinaryOp);
                 let im = self.c_num(&parts[1]);
@@ -745,13 +853,17 @@ impl<'a> MathmlCompactParser<'a> {
                 let row = [re, plus, im, i];
                 Ok(self.c_row(&row))
             },
-            "complex-polar" if parts.len() >= 2 => {
+            "complex-polar" if parts.len() == 2 => {
                 let r = self.c_num(&parts[0]);
                 let theta = self.c_num(&parts[1]);
-                let row = [r, theta];
+                // Keep the modulus/argument boundary visible. Adjacent
+                // numbers are ambiguous and were previously read back as
+                // two unrelated operands.
+                let angle = self.c_sym("\u{2220}", SymbolKind::BinaryOp);
+                let row = [r, angle, theta];
                 Ok(self.c_row(&row))
             },
-            "e-notation" | "enotation" if parts.len() >= 2 => {
+            "e-notation" | "enotation" if parts.len() == 2 => {
                 let m = self.c_num(&parts[0]);
                 let times = self.c_sym("\u{00D7}", SymbolKind::BinaryOp);
                 let ten = self.c_num("10");
@@ -830,6 +942,12 @@ impl<'a> MathmlCompactParser<'a> {
             "condition" => acc.condition = Some(self.parse_qualifier(name, is_empty)?),
             "domainofapplication" | "momentabout" => {
                 acc.domain = Some(self.parse_qualifier(name, is_empty)?);
+            },
+            "codomain" | "image" => {
+                self.style_warning(format!(
+                    "Content MathML qualifier <{name}> is not represented and was dropped"
+                ));
+                let _ = self.parse_qualifier(name, is_empty)?;
             },
             "interval" => {
                 acc.interval = Some(if is_empty {
@@ -1258,6 +1376,64 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(self.c_row(&row))
     }
 
+    /// Lower a Content MathML `<bind>` to a visible function-like form while
+    /// reporting that binding semantics and declaration scope are outside the
+    /// presentation AST. Keeping the operator, binders, and body visible is
+    /// preferable to silently returning only the body.
+    fn parse_bind(&mut self) -> Result<NodeId> {
+        self.bump_depth("bind")?;
+        let mut head: Option<NodeId> = None;
+        let mut bvars: Vec<NodeId> = Vec::new();
+        let mut body: Option<NodeId> = None;
+        loop {
+            match self.reader_read_event()? {
+                Event::Start(e) => {
+                    let name = e.local_name().into_inner();
+                    if name == "bvar" {
+                        let (var, _) = self.parse_bvar()?;
+                        bvars.push(var);
+                    } else {
+                        let id = self.parse_element_by_name(name, &e)?;
+                        if head.is_none() {
+                            head = Some(id);
+                        } else if body.is_none() {
+                            body = Some(id);
+                        }
+                    }
+                },
+                Event::Empty(e) => {
+                    let name = e.local_name().into_inner();
+                    if name == "bvar" {
+                        bvars.push(self.empty_row());
+                    } else {
+                        let id = self.parse_empty_element(name, &e)?;
+                        if head.is_none() {
+                            head = Some(id);
+                        } else if body.is_none() {
+                            body = Some(id);
+                        }
+                    }
+                },
+                Event::End(e) if e.local_name().into_inner() == "bind" => break,
+                Event::Eof => break,
+                _ => {},
+            }
+        }
+        self.unbump_depth();
+        self.style_warning(
+            "Content MathML <bind> binding scope was lowered to a visible presentation form".into(),
+        );
+        let head = head.unwrap_or_else(|| self.empty_row());
+        let binders = if bvars.is_empty() {
+            self.empty_row()
+        } else {
+            self.c_fenced("(", ")", &bvars)
+        };
+        let body = body.unwrap_or_else(|| self.empty_row());
+        let colon = self.c_sym(":", SymbolKind::Punctuation);
+        Ok(self.c_row(&[head, binders, colon, body]))
+    }
+
     fn c_text(&mut self, s: &str) -> NodeId {
         let sid = self.arena.push_str(s);
         self.arena
@@ -1285,6 +1461,14 @@ impl<'a> MathmlCompactParser<'a> {
     fn build_token_apply(&mut self, token: &str, a: Applied) -> NodeId {
         use SymbolKind::*;
         let args = &a.args;
+        if matches!(
+            token,
+            "selector" | "domain" | "codomain" | "image" | "moment" | "momentabout"
+        ) {
+            self.style_warning(format!(
+                "Content MathML operator <{token}> was lowered generically; its semantic metadata is not represented"
+            ));
+        }
         if token == "minus" && args.len() == 1 {
             let m = self.c_sym("\u{2212}", SymbolKind::BinaryOp);
             let arg = self.parenthesize(args[0]);

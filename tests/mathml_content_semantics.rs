@@ -2,7 +2,7 @@
 //! MathML cannot show by itself.
 
 use mathema::error::{Config, Strictness};
-use mathema::{Format, convert_with, from_mathml_with};
+use mathema::{Format, convert_with, from_latex, from_mathml_with};
 
 fn latex(body: &str) -> String {
     let source = format!("<math>{body}</math>");
@@ -126,4 +126,113 @@ fn content_integral_retains_interval_and_domain_qualifiers() {
             .iter()
             .any(|diagnostic| diagnostic.message.contains("interval closure"))
     );
+}
+
+#[test]
+fn content_based_integer_keeps_a_visible_radix() {
+    let output = latex(r#"<cn type="integer" base="16">FF</cn>"#);
+    assert!(output.contains("FF") && output.contains("16"), "{output}");
+    assert!(output.contains("_{16}"), "{output}");
+    let roundtrip = from_latex(&output).unwrap().to_mathml().unwrap();
+    assert!(
+        roundtrip.contains("<mtext>FF</mtext>") && roundtrip.contains("<mn>16</mn>"),
+        "{roundtrip}"
+    );
+
+    let parsed = from_mathml_with(
+        r#"<math><cn type="integer" base="16">FF</cn></math>"#,
+        &Config::default(),
+    )
+    .unwrap();
+    assert_eq!(parsed.to_latex().unwrap(), output);
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
+    );
+    let repeated = latex(r#"<cn base="16">FF</cn>"#);
+    assert!(
+        repeated.contains("FF") && repeated.contains("16"),
+        "{repeated}"
+    );
+    let decimal = from_mathml_with(
+        r#"<math><cn type="real" base="10">2</cn></math>"#,
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(
+        decimal.diagnostics().is_empty(),
+        "{:?}",
+        decimal.diagnostics()
+    );
+    let malformed = from_mathml_with(
+        r#"<math><cn type="integer" base="16">F<sep/><sep/>F</cn></math>"#,
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(
+        malformed
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("separated part")),
+        "{:?}",
+        malformed.diagnostics()
+    );
+}
+
+#[test]
+fn content_polar_complex_keeps_modulus_and_argument_boundary() {
+    let source = r#"<cn type="complex-polar">2<sep/>3</cn>"#;
+    let output = latex(source);
+    assert!(output.contains("\\angle"), "{output}");
+    assert!(output.contains('2') && output.contains('3'), "{output}");
+    let builder = from_mathml_with(&format!("<math>{source}</math>"), &Config::default())
+        .unwrap()
+        .to_latex()
+        .unwrap();
+    assert!(builder.contains("\\angle"), "{builder}");
+}
+
+#[test]
+fn content_unsupported_semantics_are_diagnosed_on_builder_and_one_shot_paths() {
+    let config = Config::default().with_strictness(Strictness::Lenient);
+    let cases = [
+        (
+            r#"<math><cn type="real" base="2">2</cn></math>"#,
+            "numeric-base",
+        ),
+        (
+            r#"<math><apply><bind><plus/><bvar><ci>x</ci></bvar><ci>x</ci></bind></apply></math>"#,
+            "bind",
+        ),
+        (r#"<math><apply><share/><ci>x</ci></apply></math>"#, "share"),
+        (
+            r#"<math><apply><codomain/><ci>f</ci><ci>D</ci></apply></math>"#,
+            "codomain",
+        ),
+    ];
+    for (source, marker) in cases {
+        let builder = from_mathml_with(source, &config).unwrap();
+        assert!(
+            builder
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(marker)),
+            "builder diagnostics for {marker}: {:?}",
+            builder.diagnostics()
+        );
+        let (_, diagnostics) = mathema::convert_with_config_and_diagnostics(
+            source,
+            Format::MathML,
+            Format::LaTeX,
+            &config,
+        )
+        .unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(marker)),
+            "one-shot diagnostics for {marker}: {diagnostics:?}"
+        );
+    }
 }
