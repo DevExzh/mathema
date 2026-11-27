@@ -403,6 +403,7 @@ pub(crate) fn request_checkpoint(units: usize) -> Result<()> {
 
 /// Whether the current thread is inside a controlled request. This lets
 /// optional work accounting avoid adding a tree walk to ordinary rendering.
+#[cfg(feature = "render")]
 pub(crate) fn request_control_active() -> bool {
     ACTIVE_CONTROL.with(|slot| slot.borrow().is_some())
 }
