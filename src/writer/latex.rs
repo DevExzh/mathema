@@ -579,11 +579,7 @@ fn write_sequence(
                 // script followed by a space.
                 || (has_visible_prescripts(arena, id)
                     && !buf.ends_with(' ')
-                    && !matches!(
-                        *arena.node(id),
-                        CompactNode::PreScripts { base, .. }
-                            if is_bare_space_prescript_base(arena, base)
-                    ))
+                    && !prescript_has_non_attachable_base(arena, id))
                 || (ends_with_command && node_starts_with_ascii_letter(arena, id));
             if space {
                 buf.push(' ');
@@ -1995,12 +1991,15 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // delimiters and gives the writer a stable, package-free spelling.
             let grouped_base = match *arena.node(base) {
                 CompactNode::Row(span) => {
-                    arena.children(span).len() > 1 && !is_idotsint_row(arena, base)
+                    let children = arena.children(span);
+                    (children.len() > 1 && !is_idotsint_row(arena, base))
+                        || (children.len() <= 1 && prescript_base_needs_group(arena, base))
                 },
                 // A nested leading-script node begins with its own empty-base
                 // script. Without an atom boundary the outer script can be
                 // detached when TeX reparses the nested group.
                 CompactNode::PreScripts { .. } => has_visible_prescripts(arena, base),
+                _ if prescript_base_needs_group(arena, base) => true,
                 _ => false,
             };
             if grouped_base {
@@ -3852,6 +3851,9 @@ fn write_literal_delimiter(buf: &mut LatexBuffer, delim: &str, wrapper: &str) {
 fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
     match *arena.node(base) {
         CompactNode::Space(width) => width.num != 0,
+        CompactNode::Row(span) => {
+            matches!(arena.children(span), [only] if is_bare_space_prescript_base(arena, *only))
+        },
         CompactNode::Symbol(_, sid) => single_math_space(arena.str_val(sid)).is_some(),
         CompactNode::MathAtom {
             atom_type: MathAtomType::Ord,
@@ -3859,6 +3861,47 @@ fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
         } => authored_math_space_symbol(arena, content).is_some(),
         _ => false,
     }
+}
+
+/// Whether a `PreScripts` base needs an invisible atom boundary to survive
+/// LaTeX reparsing. Rows with several visible children are handled by the
+/// caller, and empty rows intentionally lead the scripts to the next atom.
+/// A one-child row is inspected because parser groups can retain style or line
+/// break helpers around the actual base node.
+fn prescript_base_needs_group(arena: &AstArena, base: NodeId) -> bool {
+    if is_script_with_empty_base(arena, base) {
+        return true;
+    }
+    match *arena.node(base) {
+        CompactNode::Row(span) => match arena.children(span) {
+            [] => false,
+            [only] => prescript_base_needs_group(arena, *only),
+            _ => false,
+        },
+        CompactNode::PreScripts { .. } => has_visible_prescripts(arena, base),
+        CompactNode::Space(_) => false,
+        CompactNode::Newline
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_) => true,
+        _ => {
+            !crate::ast::normalize::can_take_prescripts(*arena.node(base))
+                && !is_bare_space_prescript_base(arena, base)
+                && !crate::ast::normalize::is_effectively_empty_node(arena, base)
+        },
+    }
+}
+
+/// Whether a visible `PreScripts` base writes an authored positive space after
+/// its script markers. That space is the separator for the base itself, so the
+/// generic leading-script separator would be discarded when the output is
+/// reparsed. Other non-attachable bases are wrapped in `\mathinner` instead.
+fn prescript_has_non_attachable_base(arena: &AstArena, id: NodeId) -> bool {
+    let CompactNode::PreScripts { base, .. } = *arena.node(id) else {
+        return false;
+    };
+    is_bare_space_prescript_base(arena, base)
 }
 
 /// Write the (non-empty) body of an n-ary operator, after its separator.

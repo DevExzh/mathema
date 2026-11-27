@@ -181,6 +181,28 @@ fn space_prescripts_do_not_gain_a_separator_after_escaped_commands() {
 }
 
 #[test]
+fn non_attachable_prescript_bases_keep_their_fixed_point() {
+    for source in [
+        r"\foo\prescript{a}{b}{\displaystyle}x",
+        r"\foo\prescript{a}{b}{\small}x",
+        r"\foo\prescript{a}{b}{\\}x",
+        r"\foo\prescript{a}{b}{\prescript{c}{d}{X}}Y",
+        r"\foo\prescript{a}.{_{a}}\overbracke",
+    ] {
+        let first = from_latex(source).unwrap().to_latex().unwrap();
+        assert!(
+            first.contains(r"\mathinner{"),
+            "non-attachable prescript base lost its atom boundary: {source:?} -> {first:?}"
+        );
+        assert_eq!(
+            from_latex(&first).unwrap().to_latex().unwrap(),
+            first,
+            "non-attachable prescript base is not stable: {source:?} -> {first:?}"
+        );
+    }
+}
+
+#[test]
 fn incomplete_fraction_recovery_does_not_swallow_node_limits() {
     let config = lenient().with_max_nodes(Some(1));
     let result = from_latex_with(r"\frac{1", &config);
