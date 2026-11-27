@@ -175,6 +175,31 @@ fn equation_array_alignment_alternates_alignment_and_spacer_columns() {
 }
 
 #[test]
+fn prefix_wide_braces_keep_their_operand_and_label_structure() {
+    for (source, accent) in [("⏟(x+y+z)_(>0)", "⏟"), ("⏞(x+y+z)^(>0)", "⏞")] {
+        let parsed = from_unicode_math_with(source, &Config::default()).expect("wide brace");
+        let mathml = parsed.to_mathml().expect("MathML");
+        assert!(!mathml.contains("<mtext>"), "{source}: {mathml}");
+        assert!(mathml.contains(accent), "{source}: {mathml}");
+        assert!(
+            mathml.contains(if accent == "⏟" { "<munder" } else { "<mover" }),
+            "{source}: {mathml}"
+        );
+        assert!(mathml.contains("<msub>") || mathml.contains("<msup>"));
+
+        // The canonical suffix spelling may differ from UTN's prefix form,
+        // but it must describe the same AST on the next read.
+        let canonical = parsed.to_unicode_math().expect("canonical UnicodeMath");
+        let reparsed = from_unicode_math_with(&canonical, &Config::default()).expect("reparse");
+        assert_eq!(
+            mathml,
+            reparsed.to_mathml().expect("reparsed MathML"),
+            "{source} => {canonical}"
+        );
+    }
+}
+
+#[test]
 fn phantom_and_smash_shortcuts_preserve_the_modeled_kind() {
     for (source, written, kind) in [
         ("⟡(x)", "⟡x", PhantomKind::Full),

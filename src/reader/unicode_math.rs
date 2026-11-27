@@ -1705,6 +1705,7 @@ impl CompactParser {
         try_alt!(
             self,
             input,
+            parse_wide_accent,
             parse_box_phantom,
             parse_sqrt,
             parse_cbrt,
@@ -1728,6 +1729,38 @@ impl CompactParser {
             input,
             nom::error::ErrorKind::Alt,
         )))
+    }
+
+    /// Parse the prefix form of a wide over/under accent from UTN 28.  The
+    /// brace glyph is an operator that takes one operand, for example
+    /// `⏟(x+y)_(>0)` is an underbrace with a lower label.  The ordinary
+    /// suffix spelling (`x┬⏟`) remains supported for output from this writer.
+    fn parse_wide_accent<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (position, accent) = match input.chars().next() {
+            Some('\u{23DE}') => (AccentPosition::Above, '\u{23DE}'),
+            Some('\u{23DF}') => (AccentPosition::Below, '\u{23DF}'),
+            _ => return Err(parse_error(input, nom::error::ErrorKind::Char)),
+        };
+        let rest = &input[accent.len_utf8()..];
+        self.enter(rest)?;
+        let parsed = if rest.starts_with('(') {
+            // Parentheses around an accent operand are UnicodeMath grouping,
+            // not visible fences. This is the standard spelling in UTN 28.
+            self.parse_absorbing_paren_group(rest)
+        } else {
+            // Parse one atom without its attached scripts. Those scripts are
+            // labels of the brace and must be consumed after the Accent node.
+            self.parse_atom(rest)
+        };
+        self.depth -= 1;
+        let (rest, base) = parsed?;
+        let accented = self.push_node(CompactNode::Accent {
+            base,
+            accent,
+            position,
+            wide: true,
+        });
+        self.parse_attached_scripts(rest, accented)
     }
 
     /// UTN #28 sections 2.1 and 4.1: `/` before an operator negates it
