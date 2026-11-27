@@ -64,6 +64,11 @@ name = "fuzz_render_paths"
 path = "fuzz_targets/fuzz_render_paths.rs"
 doc = false
 
+[[bin]]
+name = "fuzz_controlled_convert"
+path = "fuzz_targets/fuzz_controlled_convert.rs"
+doc = false
+
 [workspace]
 
 [[bin]]

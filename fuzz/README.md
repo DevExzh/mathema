@@ -8,6 +8,11 @@ The LaTeX targets (`fuzz_latex`, `fuzz_latex_roundtrip`, `fuzz_layout`,
 libFuzzer needs to reach
 environments and packages it would not spell by chance:
 
+`fuzz_controlled_convert` uses the same LaTeX dictionary and seeds while
+checking controlled one-shot output caps, diagnostics, cancellation and work
+budgets. Its MTEF branch replays successful hex output through the binary
+reader route.
+
 ```sh
 mkdir -p fuzz/corpus/fuzz_latex
 cargo +nightly fuzz run fuzz_latex fuzz/corpus/fuzz_latex fuzz/seeds/latex -- \
