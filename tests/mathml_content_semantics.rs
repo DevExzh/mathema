@@ -97,6 +97,87 @@ fn content_derivative_preserves_large_order_and_reports_missing_bvar() {
 }
 
 #[test]
+fn content_diff_without_bvar_keeps_the_standard_prime_form() {
+    let parsed = from_mathml_with(
+        "<math><apply><diff/><ci>f</ci></apply></math>",
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
+    );
+    let output = parsed.to_latex().unwrap();
+    assert!(
+        output.contains("f") && output.contains(r"\prime"),
+        "{output}"
+    );
+}
+
+#[test]
+fn content_partialdiff_function_form_keeps_indices_and_function() {
+    let parsed = from_mathml_with(
+        "<math><apply><partialdiff/><list><cn>1</cn><cn>1</cn><cn>3</cn></list>\
+         <ci type=\"function\">f</ci></apply></math>",
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
+    );
+    let output = parsed.to_latex().unwrap();
+    assert!(
+        output.contains("D") && output.contains("1") && output.contains("3"),
+        "{output}"
+    );
+    assert!(output.contains("f"), "function body was dropped: {output}");
+}
+
+#[test]
+fn content_partialdiff_function_form_groups_a_compound_body() {
+    let parsed = from_mathml_with(
+        "<math><apply><partialdiff/><list><cn>1</cn></list>\
+         <apply><plus/><ci>f</ci><ci>g</ci></apply></apply></math>",
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
+    );
+    let output = parsed.to_latex().unwrap();
+    assert!(
+        output.contains("D_{1}") && output.contains("f") && output.contains("g"),
+        "{output}"
+    );
+    assert!(
+        output.contains(r"\left(") && output.contains(r"\right)"),
+        "{output}"
+    );
+}
+
+#[test]
+fn content_partialdiff_without_indices_reports_loss() {
+    let parsed = from_mathml_with(
+        "<math><apply><partialdiff/><ci>f</ci></apply></math>",
+        &Config::default(),
+    )
+    .unwrap();
+    assert!(
+        parsed
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("function index list")),
+        "missing partialdiff indices must be diagnosed: {:?}",
+        parsed.diagnostics()
+    );
+}
+
+#[test]
 fn content_integral_retains_interval_and_domain_qualifiers() {
     let interval =
         latex("<apply><int/><interval><cn>0</cn><cn>1</cn></interval><ci>f</ci></apply>");

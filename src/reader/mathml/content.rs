@@ -1914,17 +1914,56 @@ impl<'a> MathmlCompactParser<'a> {
         self.parenthesize(id)
     }
 
+    /// Lower the standard function form of `<partialdiff>`.  In this form the
+    /// first argument is a Content MathML list of argument positions and the
+    /// second argument is the function itself, for example
+    /// `partialdiff(list(1, 1, 3), f)`.  The presentation AST has no dedicated
+    /// partial-derivative operator, so retain the complete operation as
+    /// `D_(1,1,3) f` instead of returning only the list or only the function.
+    fn partialdiff_function_form(&mut self, args: &[NodeId]) -> Option<NodeId> {
+        let [list, function] = args else {
+            return None;
+        };
+        let CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } = *self.arena.node(*list)
+        else {
+            return None;
+        };
+        if self.arena.str_val(open) != "[" || self.arena.str_val(close) != "]" {
+            return None;
+        }
+        let indices = self.arena.children(content).to_vec();
+        if indices.is_empty() {
+            return None;
+        }
+        let d = self.c_ident("D");
+        let index_list = self.c_row(&indices);
+        let derivative = self.c_sub(d, index_list);
+        let function = self.derivative_body(*function);
+        Some(self.c_row(&[derivative, function]))
+    }
+
     fn derivative(&mut self, a: Applied, partial: bool) -> NodeId {
         let f = a.args.first().copied().unwrap_or_else(|| self.empty_row());
         if a.bvars.is_empty() {
-            if a.degree.is_some_and(|id| !self.is_empty_node(id)) {
-                self.style_warning(format!(
-                    "Content MathML {} degree has no bound variable; derivative order was not represented",
-                    if partial { "partialdiff" } else { "diff" }
-                ));
-            }
             if partial {
+                if let Some(function_form) = self.partialdiff_function_form(&a.args) {
+                    return function_form;
+                }
+                self.style_warning(
+                    "Content MathML partialdiff has no bound variable or function index list; partial derivative was not represented"
+                        .into(),
+                );
                 return f;
+            }
+            if a.degree.is_some_and(|id| !self.is_empty_node(id)) {
+                self.style_warning(
+                    "Content MathML diff degree has no bound variable; derivative order was not represented"
+                        .into(),
+                );
             }
             // With no bound variable there is no faithful denominator.  Keep
             // the historical prime fallback rather than inventing one.
