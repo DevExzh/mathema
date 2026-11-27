@@ -280,6 +280,24 @@ impl ScriptMarker {
     }
 }
 
+/// Whether a script marker has reached a token boundary without an argument.
+/// An unmatched opening group is treated the same way, since a lenient editor
+/// parse should preserve that incomplete group as text and keep later siblings
+/// at the enclosing list boundary.
+#[inline]
+fn script_marker_has_no_argument(input: &str, marker: ScriptMarker) -> bool {
+    let marker_len = input.chars().next().map_or(0, char::len_utf8);
+    let after = &input[marker_len..];
+    let after = &after[skip_ws_bytes(after.as_bytes())..];
+    script_argument_boundary(after)
+        // A valid braced argument never reaches this helper: `script_fields`
+        // returns it successfully. Treating an opening brace as a boundary
+        // here avoids rescanning the whole remaining source when the group is
+        // incomplete.
+        || after.starts_with('{')
+        || (marker.is_unicode() && after.is_empty())
+}
+
 /// True when an n-ary operator has reached a grammar boundary where an empty
 /// body is valid. Other input must be parsed as a real element so malformed
 /// bodies propagate their original parser error.
@@ -2087,6 +2105,16 @@ enum UndefinedKind {
     Dangerous,
 }
 
+/// Whether a parser invocation is reading the caller's source or a generated
+/// rewrite. Lenient editor recovery belongs to the former. Generated rewrites
+/// must fail back to their owning command so it can report the rewrite and keep
+/// the original source as text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecoveryContext {
+    UserSource,
+    GeneratedRewrite,
+}
+
 impl UndefinedKind {
     fn of(spelling: &str) -> Self {
         if crate::ast::undefined::is_dangerous_command(spelling)
@@ -2179,6 +2207,9 @@ pub(crate) struct LatexCompactParser {
     /// whose `\middle` delimiters stay its direct children (a nested group
     /// clears it). A `\color` switch read there stops at such a `\middle`.
     fence_list: bool,
+    /// Recovery policy for the current parser buffer. Generated rewrites use
+    /// strict syntax so their owner can issue a format-specific loss report.
+    recovery_context: RecoveryContext,
     /// A `\color` switch read in a fence's own list that stopped at a
     /// `\middle`: its color and the place of that `\middle`, so the fence
     /// resumes the color after the delimiter, as the switch is in force to
@@ -2248,6 +2279,7 @@ impl LatexCompactParser {
             font_scope_preserve_breaks: false,
             in_left_right: false,
             fence_list: false,
+            recovery_context: RecoveryContext::UserSource,
             color_at_middle: None,
             command_depth: 0,
             grouped_operator: None,
@@ -2267,6 +2299,45 @@ impl LatexCompactParser {
             kind: DiagnosticKind::Warning,
             message: message.into(),
             span: None,
+        });
+    }
+
+    /// Run a parser for generated notation with editor recovery disabled.
+    /// Restore the caller's context even when the nested parser returns an
+    /// error so a following sibling still uses the original policy.
+    fn with_generated_context<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(
+            &mut self.recovery_context,
+            RecoveryContext::GeneratedRewrite,
+        );
+        let result = f(self);
+        self.recovery_context = previous;
+        result
+    }
+
+    #[inline]
+    fn editor_recovery_enabled(&self) -> bool {
+        self.lenient && self.recovery_context == RecoveryContext::UserSource && self.abort.is_none()
+    }
+
+    /// Report a script marker whose argument has not been entered yet.
+    fn warn_missing_script_argument(&mut self, input: &str, marker: ScriptMarker) {
+        let marker_len = input.chars().next().map_or(0, char::len_utf8);
+        let marker_text = &input[..marker_len];
+        let role = if marker.is_subscript() {
+            "subscript"
+        } else {
+            "superscript"
+        };
+        let span = self
+            .source_span_of(input)
+            .map(|source| Span::new(source.start, source.start + marker_len));
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!(
+                "missing {role} argument after `{marker_text}`; retained the preceding expression"
+            ),
+            span,
         });
     }
 
@@ -3010,7 +3081,24 @@ impl LatexCompactParser {
         };
         // `parse_element` returns an infix fraction command before its scripts.
         debug_assert!(!self.is_infix_marker_id(base));
-        let (rest, (sub, sup)) = self.script_fields(start, false, self.is_empty_row(base), None)?;
+        let (rest, (sub, sup)) = self
+            .script_fields(start, false, self.is_empty_row(base), None)
+            .or_else(|error| {
+                // A trailing script marker is a common editor input while a
+                // user is still typing its argument. Keep the valid base and
+                // consume only the marker so following tokens remain at their
+                // normal list boundary. Other script errors retain their
+                // existing strict/lenient behavior.
+                if self.editor_recovery_enabled()
+                    && let Some(marker) = self.script_marker_at(start)
+                    && script_marker_has_no_argument(start, marker)
+                {
+                    self.warn_missing_script_argument(start, marker);
+                    let marker_len = start.chars().next().map_or(0, char::len_utf8);
+                    return Ok((&start[marker_len..], (NodeId::NONE, NodeId::NONE)));
+                }
+                Err(error)
+            })?;
         let node = match (sub.is_some(), sup.is_some()) {
             (true, true) => CompactNode::SubSup { base, sub, sup },
             (true, false) => CompactNode::Subscript { base, sub },
@@ -3733,9 +3821,10 @@ impl LatexCompactParser {
             // `preprocess_cow` before dispatch.
             "plim" => self.parse_plim(input),
             // --- Fractions ---
-            "frac" => self.parse_frac(input, FractionKind::Normal),
-            "dfrac" | "cfrac" => self.parse_frac(input, FractionKind::Display),
-            "tfrac" => self.parse_frac(input, FractionKind::Inline),
+            "frac" => self.parse_frac(input, FractionKind::Normal, name),
+            "dfrac" => self.parse_frac(input, FractionKind::Display, name),
+            "cfrac" => self.parse_frac(input, FractionKind::Display, name),
+            "tfrac" => self.parse_frac(input, FractionKind::Inline, name),
             "binom" => self.parse_binom(input),
 
             // --- Roots ---
@@ -3880,6 +3969,9 @@ impl LatexCompactParser {
                 } else {
                     input
                 };
+                self.warn(
+                    "\\tag equation metadata was dropped; equation numbering is not represented",
+                );
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -4317,6 +4409,7 @@ impl LatexCompactParser {
             // --- Label (consume and discard) ---
             "label" => {
                 let (input, _) = self.parse_required_group(input)?;
+                self.warn("\\label equation metadata was dropped; cross-reference labels are not represented");
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -4651,8 +4744,13 @@ impl LatexCompactParser {
             // Line-break hints and equation tags are layout no-ops in this
             // renderer, and a placement control that follows no operator has
             // nothing to place.
-            "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak" | "limits"
-            | "nolimits" | "displaylimits" => {
+            "nonumber" | "notag" => {
+                self.warn(format!(
+                    "\\{name} equation metadata was dropped; equation numbering is not represented"
+                ));
+                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
+            },
+            "nobreak" | "allowbreak" | "goodbreak" | "limits" | "nolimits" | "displaylimits" => {
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
             // Font sizing commands — emit SizeScale nodes for the layout engine
@@ -4922,7 +5020,7 @@ impl LatexCompactParser {
             nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
         })?;
         self.open_buffer(input, &processed);
-        let parsed = self.parse_math_list(&processed);
+        let parsed = self.with_generated_context(|parser| parser.parse_math_list(&processed));
         self.close_buffer();
         let failure = match parsed {
             Ok(("", ids)) => return Ok((rest, self.flatten_single(&ids))),
@@ -5003,9 +5101,33 @@ impl LatexCompactParser {
         ))
     }
 
-    fn parse_frac<'a>(&mut self, input: &'a str, kind: FractionKind) -> IResult<&'a str, NodeId> {
-        let (input, num_id) = self.parse_required_group(input)?;
-        let (input, den_id) = self.parse_required_group(input)?;
+    fn parse_frac<'a>(
+        &mut self,
+        input: &'a str,
+        kind: FractionKind,
+        name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let source = input;
+        let (input, num_id) = match self.parse_required_group(input) {
+            Ok(parsed) => parsed,
+            Err(error)
+                if self.editor_recovery_enabled()
+                    && matches!(&error, nom::Err::Error(_) | nom::Err::Incomplete(_)) =>
+            {
+                return self.recover_incomplete_command(name, source, error);
+            },
+            Err(error) => return Err(error),
+        };
+        let (input, den_id) = match self.parse_required_group(input) {
+            Ok(parsed) => parsed,
+            Err(error)
+                if self.editor_recovery_enabled()
+                    && matches!(&error, nom::Err::Error(_) | nom::Err::Incomplete(_)) =>
+            {
+                return self.recover_incomplete_command(name, source, error);
+            },
+            Err(error) => return Err(error),
+        };
         Ok((
             input,
             self.arena.push_node(CompactNode::Fraction {
@@ -5013,6 +5135,54 @@ impl LatexCompactParser {
                 num: num_id,
                 den: den_id,
             }),
+        ))
+    }
+
+    /// Preserve a malformed fraction command as one literal text node. This
+    /// keeps a cut-off command such as `\frac{1` together at the command/token
+    /// boundary instead of retrying it one character at a time as `f r a c`.
+    /// If the command appears inside a surrounding group, leave that group's
+    /// closing delimiter for its owner to consume.
+    fn recover_incomplete_command<'a>(
+        &mut self,
+        name: &str,
+        source: &'a str,
+        error: nom::Err<nom::error::Error<&'a str>>,
+    ) -> IResult<&'a str, NodeId> {
+        let error_input = match error {
+            nom::Err::Error(inner) | nom::Err::Failure(inner) => inner.input,
+            nom::Err::Incomplete(_) => "",
+        };
+        let (literal, rest) = if source.ends_with(error_input) {
+            let consumed = source.len() - error_input.len();
+            (&source[..consumed], error_input)
+        } else {
+            (source, "")
+        };
+        let text = format!("\\{name}{literal}");
+        let sid = self.arena.push_str(&text);
+        let span = self.source_span_of_command(name).map(|command| {
+            let end = self
+                .source_span_of(literal)
+                .map_or(command.end, |source| source.end);
+            Span::new(command.start, end)
+        });
+        let message = format!("incomplete \\{name} command; kept the source as text");
+        if !self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == message && diagnostic.span == span)
+        {
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span,
+            });
+        }
+        Ok((
+            rest,
+            self.arena
+                .push_node(CompactNode::Text(TextStyle::Normal, sid)),
         ))
     }
 
@@ -8630,7 +8800,7 @@ impl LatexCompactParser {
     /// Math in a box of its own.
     fn parse_empheq_math<'a>(&mut self, math: &'a str) -> IResult<&'a str, Option<NodeId>> {
         let fence = std::mem::replace(&mut self.in_left_right, false);
-        let parsed = self.parse_node_list(math);
+        let parsed = self.with_generated_context(|parser| parser.parse_node_list(math));
         self.in_left_right = fence;
         let (rest, ids) = match parsed {
             Ok(parsed) => parsed,
