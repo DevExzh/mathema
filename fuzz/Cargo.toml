@@ -12,7 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.mathema]
 path = ".."
-features = ["render", "font-embed"]
+features = ["render", "raster"]
 
 [[bin]]
 name = "fuzz_latex"
@@ -57,6 +57,11 @@ doc = false
 [[bin]]
 name = "fuzz_svg_embed"
 path = "fuzz_targets/fuzz_svg_embed.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_render_paths"
+path = "fuzz_targets/fuzz_render_paths.rs"
 doc = false
 
 [workspace]

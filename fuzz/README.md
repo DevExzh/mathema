@@ -4,7 +4,8 @@ One target per reader, plus round trips and rendering (`cargo +nightly fuzz list
 The corpora (`fuzz/corpus/`) and artifacts are not committed.
 
 The LaTeX targets (`fuzz_latex`, `fuzz_latex_roundtrip`, `fuzz_layout`,
-`fuzz_svg_embed`) have a dictionary and seeds, which libFuzzer needs to reach
+`fuzz_svg_embed`, `fuzz_render_paths`) have a dictionary and seeds, which
+libFuzzer needs to reach
 environments and packages it would not spell by chance:
 
 ```sh
