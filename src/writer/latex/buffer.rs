@@ -8,10 +8,13 @@ use super::LossReport;
 use crate::ast::Rational;
 use crate::error::LatexProfile;
 use crate::unicode::tex_letters::is_tex_letter;
+use crate::writer::limits::{OutputFailure, OutputLimits};
 
 /// A named operator gives literal punctuation different TeX math codes.
 pub(super) struct LatexBuffer {
     text: String,
+    limits: Option<OutputLimits>,
+    failure: Option<OutputFailure>,
     /// Where the output ended when it last ended with a control word.
     word_end: usize,
     pub(super) in_operator_name: bool,
@@ -93,13 +96,25 @@ fn excerpt<'a>(text: &'a str, word: &str) -> &'a str {
 }
 
 impl LatexBuffer {
+    #[allow(dead_code)]
     pub(super) fn new(
         keep_undefined: bool,
         report: LossReport,
         latex_profile: LatexProfile,
     ) -> Self {
+        Self::new_with_limits(keep_undefined, report, latex_profile, None)
+    }
+
+    pub(super) fn new_with_limits(
+        keep_undefined: bool,
+        report: LossReport,
+        latex_profile: LatexProfile,
+        limits: Option<OutputLimits>,
+    ) -> Self {
         Self {
             text: String::with_capacity(256),
+            limits,
+            failure: None,
             word_end: usize::MAX,
             in_operator_name: false,
             keep_undefined,
@@ -111,10 +126,39 @@ impl LatexBuffer {
         }
     }
 
+    #[inline]
+    pub(super) fn stopped(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    fn reserve_output(&mut self, additional: usize) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        let Some(limits) = self.limits.as_ref() else {
+            return true;
+        };
+        if limits.is_cancelled() {
+            self.failure = Some(OutputFailure::Cancelled);
+            return false;
+        }
+        if let Some(limit) = limits.max_bytes
+            && self.text.len().saturating_add(additional) > limit
+        {
+            self.failure = Some(OutputFailure::Bytes(limit));
+            return false;
+        }
+        true
+    }
+
     /// Write a character that is not the start of a control sequence.
     #[inline]
     pub(super) fn push(&mut self, ch: char) {
-        if self.word_end == self.text.len() && extends_word(ch) {
+        let separator = self.word_end == self.text.len() && extends_word(ch);
+        if !self.reserve_output(ch.len_utf8() + usize::from(separator)) {
+            return;
+        }
+        if separator {
             self.text.push(' ');
         }
         self.text.push(ch);
@@ -123,6 +167,10 @@ impl LatexBuffer {
     /// Write `text`, which holds the control words in it whole.
     #[inline]
     pub(super) fn push_str(&mut self, text: &str) {
+        let extra = usize::from(self.word_end == self.text.len() && text.starts_with(extends_word));
+        if !self.reserve_output(text.len() + extra) {
+            return;
+        }
         if self.word_end == self.text.len() && text.starts_with(extends_word) {
             self.text.push(' ');
         }
@@ -135,7 +183,9 @@ impl LatexBuffer {
 
     /// Write `width` times `multiplier` as a decimal number.
     pub(super) fn push_decimal(&mut self, width: Rational, multiplier: u32) {
-        width.write_scaled_decimal(&mut self.text, multiplier);
+        let mut decimal = String::new();
+        width.write_scaled_decimal(&mut decimal, multiplier);
+        self.push_str(&decimal);
     }
 
     /// Write the control sequence `\name`.
@@ -146,6 +196,10 @@ impl LatexBuffer {
 
     /// Write the control sequence `\name` + `suffix`.
     pub(super) fn command_with_suffix(&mut self, name: &str, suffix: &str) {
+        let extra = 1 + name.len() + suffix.len();
+        if !self.reserve_output(extra) {
+            return;
+        }
         #[cfg(debug_assertions)]
         let start = self.text.len();
         self.text.push('\\');
@@ -181,6 +235,9 @@ impl LatexBuffer {
     /// control word, at byte offset `at`, keeping the recorded ends on the
     /// same output.
     pub(super) fn insert_text(&mut self, at: usize, text: &str) {
+        if !self.reserve_output(text.len()) {
+            return;
+        }
         debug_assert!(!text.starts_with(extends_word) && !ends_with_word(text));
         self.record(text);
         self.text.insert_str(at, text);
@@ -199,6 +256,9 @@ impl LatexBuffer {
         let Some(&first) = at.first() else {
             return;
         };
+        if !self.reserve_output(text.len().saturating_mul(at.len())) {
+            return;
+        }
         debug_assert!(!text.starts_with(extends_word) && !ends_with_word(text));
         self.record(text);
         let tail = self.text.split_off(first);
@@ -221,7 +281,13 @@ impl LatexBuffer {
     /// Replace the character at byte offset `at` by `text`, which is at least
     /// as long.
     pub(super) fn replace_char(&mut self, at: usize, text: &str) {
+        if self.failure.is_some() || at > self.text.len() {
+            return;
+        }
         let len = self.text[at..].chars().next().map_or(0, char::len_utf8);
+        if !self.reserve_output(text.len().saturating_sub(len)) {
+            return;
+        }
         self.record(text);
         self.text.replace_range(at..at + len, &text[..len]);
         for end in self
@@ -238,6 +304,9 @@ impl LatexBuffer {
 
     /// Cut the output back to `len` bytes.
     pub(super) fn truncate_text(&mut self, len: usize) {
+        if self.failure.is_some() || len > self.text.len() {
+            return;
+        }
         self.text.truncate(len);
         self.command_ends.retain(|&end| end <= len);
         self.word_end = if ends_with_word(&self.text) {
@@ -249,12 +318,24 @@ impl LatexBuffer {
 
     /// The finished output. After each undefined command, put `\relax`
     /// before a group that would read back as one more of its arguments.
-    pub(super) fn finish(mut self) -> String {
+    #[allow(dead_code)]
+    pub(super) fn finish(self) -> String {
+        self.finish_result()
+            .expect("unlimited LaTeX buffer cannot fail")
+    }
+
+    pub(super) fn finish_result(mut self) -> crate::Result<String> {
+        if let Some(failure) = self.failure {
+            return Err(failure.into_error());
+        }
         self.command_ends.sort_unstable();
         self.command_ends.dedup();
         for at in std::mem::take(&mut self.command_ends).into_iter().rev() {
             if self.text[at..].trim_start().starts_with('{') {
                 self.record("\\relax");
+                if !self.reserve_output(6) {
+                    return Err(self.failure.expect("reserve failure").into_error());
+                }
                 self.text.insert_str(at, "\\relax");
             }
         }
@@ -266,7 +347,10 @@ impl LatexBuffer {
                 excerpt(&self.text, word)
             );
         }
-        self.text
+        if let Some(limits) = &self.limits {
+            limits.check_bytes(self.text.len())?;
+        }
+        Ok(self.text)
     }
 }
 

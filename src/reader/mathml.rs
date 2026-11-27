@@ -127,8 +127,19 @@ const MAX_PARSE_DEPTH: u32 = 128;
 fn is_limit(error: &Error) -> bool {
     matches!(
         error,
-        Error::LimitExceeded { .. } | Error::InputTooLarge { .. }
+        Error::LimitExceeded { .. } | Error::InputTooLarge { .. } | Error::RequestCancelled
     )
+}
+
+fn event_error(parent_tag: &str, error: Error) -> Error {
+    match error {
+        control @ (Error::RequestCancelled
+        | Error::LimitExceeded { .. }
+        | Error::InputTooLarge { .. }) => control,
+        error => Error::MathmlParse {
+            message: format!("XML error in <{parent_tag}>: {error}"),
+        },
+    }
 }
 
 /// Cells already have their final compact representation. Row lengths are
@@ -283,6 +294,7 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let (element, empty) = loop {
+            crate::error::request_checkpoint(1)?;
             self.arena.check_limits()?;
             match self.reader_read_event() {
                 Ok(Event::Start(e)) => break (e, false),
@@ -312,11 +324,7 @@ impl<'a> MathmlCompactParser<'a> {
                     });
                 },
                 Ok(_) => continue,
-                Err(e) => {
-                    return Err(Error::MathmlParse {
-                        message: format!("XML error: {e}"),
-                    });
-                },
+                Err(e) => return Err(event_error("math", e)),
             }
         };
         let name = element.local_name().into_inner();
@@ -700,6 +708,7 @@ impl<'a> MathmlCompactParser<'a> {
         }
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
+            crate::error::request_checkpoint(1)?;
             self.arena.check_limits()?;
             let event = self.reader_read_event();
             if nodes.len() >= max_children {
@@ -725,8 +734,19 @@ impl<'a> MathmlCompactParser<'a> {
                         break;
                     },
                     Err(e) => {
-                        return Err(Error::MathmlParse {
-                            message: format!("XML error in <{parent_tag}>: {e}"),
+                        return Err(match e {
+                            Error::RequestCancelled => Error::RequestCancelled,
+                            Error::LimitExceeded { kind, limit } => Error::LimitExceeded {
+                                kind: *kind,
+                                limit: *limit,
+                            },
+                            Error::InputTooLarge { size, limit } => Error::InputTooLarge {
+                                size: *size,
+                                limit: *limit,
+                            },
+                            error => Error::MathmlParse {
+                                message: format!("XML error in <{parent_tag}>: {error}"),
+                            },
                         });
                     },
                     _ => continue,
@@ -788,11 +808,7 @@ impl<'a> MathmlCompactParser<'a> {
                     self.note_unclosed(parent_tag);
                     break;
                 },
-                Err(e) => {
-                    return Err(Error::MathmlParse {
-                        message: format!("XML error in <{parent_tag}>: {e}"),
-                    });
-                },
+                Err(e) => return Err(event_error(parent_tag, e)),
                 Ok(event) => {
                     let Some(text) = character_data(event) else {
                         continue;
@@ -892,6 +908,7 @@ impl<'a> MathmlCompactParser<'a> {
     /// Read the next XML event, mapping reader errors to our error type.
     /// Shared by the Content MathML lowering in the `content` submodule.
     fn reader_read_event(&mut self) -> Result<Event<'a>> {
+        crate::error::request_checkpoint(1)?;
         self.arena.check_limits()?;
         self.event_start = self.reader.buffer_position() as usize;
         self.last_error_position = Some(self.event_start);
@@ -2803,11 +2820,7 @@ impl<'a> MathmlCompactParser<'a> {
                     self.note_unclosed(parent_tag);
                     break;
                 },
-                Err(error) => {
-                    return Err(Error::MathmlParse {
-                        message: format!("XML error: {error}"),
-                    });
-                },
+                Err(error) => return Err(event_error(parent_tag, error)),
                 _ => {},
             }
         }
@@ -2824,6 +2837,7 @@ impl<'a> MathmlCompactParser<'a> {
         let start = table.cells.len();
         let mut label_consumed = parent_tag != "mlabeledtr";
         loop {
+            crate::error::request_checkpoint(1)?;
             self.arena.check_limits()?;
             let index = table.cells.len() - start;
             let event = self.reader_read_event();
@@ -3221,6 +3235,7 @@ impl<'a> MathmlCompactParser<'a> {
     fn skip_element_body(&mut self, tag_name: &str) -> Result<()> {
         let mut nested = 0usize;
         loop {
+            crate::error::request_checkpoint(1)?;
             self.arena.check_limits()?;
             match self.reader_read_event() {
                 Ok(Event::Start(e)) => {
@@ -3240,11 +3255,7 @@ impl<'a> MathmlCompactParser<'a> {
                     self.note_unclosed(tag_name);
                     break;
                 },
-                Err(e) => {
-                    return Err(Error::MathmlParse {
-                        message: format!("XML error in <{tag_name}>: {e}"),
-                    });
-                },
+                Err(e) => return Err(event_error(tag_name, e)),
                 _ => continue,
             }
         }
@@ -3268,6 +3279,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut in_pre = false;
 
         loop {
+            crate::error::request_checkpoint(1)?;
             self.arena.check_limits()?;
             match self.reader_read_event() {
                 Ok(Event::Start(e)) => {
@@ -3320,11 +3332,7 @@ impl<'a> MathmlCompactParser<'a> {
                     self.note_unclosed(parent_tag);
                     break;
                 },
-                Err(e) => {
-                    return Err(Error::MathmlParse {
-                        message: format!("XML error in <{parent_tag}>: {e}"),
-                    });
-                },
+                Err(e) => return Err(event_error(parent_tag, e)),
                 Ok(event) => {
                     let Some(text) = character_data(event) else {
                         continue;

@@ -1833,6 +1833,13 @@ fn shorten(text: &str) -> std::borrow::Cow<'_, str> {
 
 fn expansion_error(failure: ExpansionFailure) -> Error {
     Error::from(match failure {
+        ExpansionFailure::RequestCancelled => return Error::RequestCancelled,
+        ExpansionFailure::RequestWork { limit } => {
+            return Error::LimitExceeded {
+                kind: crate::error::LimitKind::Work,
+                limit,
+            };
+        },
         ExpansionFailure::OutputBytes { limit } => LatexParseError::ExpansionLimit { limit },
         ExpansionFailure::Work { limit } => LatexParseError::ExpansionWorkLimit { limit },
         ExpansionFailure::Depth { limit } => LatexParseError::ExpansionDepthLimit { limit },
@@ -2501,6 +2508,13 @@ impl LatexCompactParser {
         &mut self,
         input: &'a str,
     ) -> std::result::Result<(), nom::Err<nom::error::Error<&'a str>>> {
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.abort = Some(error);
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
         if self.check_node_limit() {
             Err(nom::Err::Failure(nom::error::Error::new(
                 input,

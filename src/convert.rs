@@ -9,7 +9,7 @@ use crate::ast::normalize::{
 };
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticCode, DiagnosticRecord, Format, LocatedError,
-    Result,
+    RequestControl, Result,
 };
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -19,6 +19,7 @@ use crate::reader::omml::OmmlReader;
 use crate::reader::unicode_math::UnicodeMathReader;
 use crate::writer::Writer;
 use crate::writer::latex::LatexWriter;
+use crate::writer::limits::OutputLimits;
 use crate::writer::mathml::MathmlWriter;
 use crate::writer::mtef::{MtefWriteOptions, MtefWriter};
 use crate::writer::omml::OmmlWriter;
@@ -278,6 +279,172 @@ pub fn convert_with_config_and_location(
         .map_err(|error| LocatedError::with_span(error, None, None))
 }
 
+/// Conversion with a caller-controlled cooperative work budget or cancellation
+/// signal. The control is scoped to this request and is safe to share with a
+/// worker that calls [`RequestControl::cancel`].
+pub fn convert_with_control(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<String> {
+    convert_with_control_and_limits(input, from, to, config, control, &OutputLimits::unlimited())
+}
+
+/// One-shot conversion with cooperative request control and bounded text
+/// output. The ceiling counts UTF-8 bytes, including the hex representation
+/// of MTEF. Raster images have a separate binary output API.
+pub fn convert_with_control_and_limits(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    control: &RequestControl,
+    limits: &OutputLimits,
+) -> Result<String> {
+    convert_bounded(input, from, to, config, control, limits, false).map(|(output, _)| output)
+}
+
+/// Controlled one-shot conversion with bounded output and writer diagnostics.
+/// Parsing, normalization, and emission run under one request control, so a
+/// caller can cancel the complete operation without a second writer call.
+pub fn convert_with_config_and_control_and_limits(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    control: &RequestControl,
+    limits: &OutputLimits,
+) -> Result<(String, Vec<Diagnostic>)> {
+    convert_bounded(input, from, to, config, control, limits, true)
+}
+
+fn convert_bounded(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    control: &RequestControl,
+    limits: &OutputLimits,
+    report: bool,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let limits = limits.clone().with_request_control(control);
+    control.scope(|| {
+        limits.check_cancelled()?;
+        let mut parsed = parse_checked(input, from, config)?;
+        if report
+            && to == Format::LaTeX
+            && has_loss_dropped_by_target_normalization(&parsed.expr, to)
+        {
+            let (output, writer) = LatexWriter::write_after_normalization(
+                &mut parsed.expr,
+                config,
+                Some(&limits),
+                |expr| normalize_for(expr, from, to),
+            )?;
+            parsed.diagnostics.extend(writer);
+            return Ok((output, parsed.diagnostics));
+        }
+        let before = if report {
+            pre_normalization_diagnostics(&parsed.expr, to, config, &limits)?
+        } else {
+            None
+        };
+        normalize_for(&mut parsed.expr, from, to)?;
+        let (output, writer) = write_bounded_target(
+            &parsed.expr,
+            to,
+            config,
+            control,
+            &limits,
+            report && before.is_none(),
+        )?;
+        if report {
+            parsed.diagnostics.extend(before.unwrap_or(writer));
+        }
+        Ok((output, parsed.diagnostics))
+    })
+}
+
+fn write_bounded_target(
+    expr: &CompactExpr,
+    to: Format,
+    config: &Config,
+    _control: &RequestControl,
+    limits: &OutputLimits,
+    report: bool,
+) -> Result<(String, Vec<Diagnostic>)> {
+    crate::writer::validate_compact_trusted(expr, config)?;
+    let plain = |output| (output, Vec::new());
+    match (to, report) {
+        (Format::LaTeX, true) => {
+            LatexWriter::write_compact_with_diagnostics_and_limits_trusted(expr, config, limits)
+        },
+        (Format::LaTeX, false) => {
+            LatexWriter::write_compact_with_limits_trusted(expr, config, limits).map(plain)
+        },
+        (Format::MathML, true) => {
+            MathmlWriter::write_compact_with_diagnostics_and_limits_trusted(expr, config, limits)
+        },
+        (Format::MathML, false) => {
+            MathmlWriter::write_compact_with_limits_trusted(expr, config, limits).map(plain)
+        },
+        (Format::Omml, true) => {
+            OmmlWriter::write_compact_with_diagnostics_and_limits_trusted(expr, config, limits)
+        },
+        (Format::Omml, false) => {
+            OmmlWriter::write_compact_with_limits_trusted(expr, config, limits).map(plain)
+        },
+        (Format::UnicodeMath, true) => {
+            UnicodeMathWriter::write_compact_with_diagnostics_and_limits_trusted(
+                expr, config, limits,
+            )
+        },
+        (Format::UnicodeMath, false) => {
+            UnicodeMathWriter::write_compact_with_limits_trusted(expr, config, limits).map(plain)
+        },
+        (Format::Mtef, true) => MtefWriter::write_compact_with_diagnostics_and_limits(
+            expr,
+            config,
+            &MtefWriteOptions::default(),
+            limits,
+        ),
+        (Format::Mtef, false) => MtefWriter::write_compact_with_limits(
+            expr,
+            config,
+            &MtefWriteOptions::default(),
+            limits,
+        )
+        .map(plain),
+        #[cfg(feature = "render")]
+        (Format::Svg, _) => {
+            let options = crate::render::SvgOptions::default();
+            let svg_limits = crate::render::SvgLimits::default()
+                .with_output_limits(limits)
+                .with_request_control(_control);
+            if report {
+                crate::render::render_to_svg_compact_with_options_and_limits_and_diagnostics(
+                    expr,
+                    &options,
+                    &svg_limits,
+                )
+            } else {
+                crate::render::render_to_svg_compact_with_options_and_limits(
+                    expr,
+                    &options,
+                    &svg_limits,
+                )
+                .map(plain)
+            }
+        },
+        #[cfg(feature = "raster")]
+        (Format::Png | Format::Jpeg, _) => Err(crate::Error::Unsupported(
+            "use raster limits for bounded image output".into(),
+        )),
+    }
+}
+
 /// One-liner conversion that also returns diagnostics from both phases of the
 /// conversion: reader diagnostics collected while parsing `input`, followed by
 /// diagnostics for information the target format cannot represent.
@@ -370,46 +537,55 @@ fn write_converted_with_diagnostics(
     to: Format,
     config: &Config,
 ) -> Result<(String, Vec<Diagnostic>)> {
-    // `normalize_for` deliberately lowers colors and typesetting attributes
-    // for LaTeX, OMML and UnicodeMath before their ordinary writer runs. Keep
-    // a loss report from the pre-lowered tree for those targets, otherwise
-    // target normalization would make the loss invisible. UnicodeMath has a
-    // traversal-only collector; LaTeX and OMML need their emitting collector
-    // only when normalization actually has something to remove.
-    let mut writer_diagnostics = Vec::new();
-    let needs_pre_normalization_report =
-        matches!(to, Format::LaTeX | Format::Omml | Format::UnicodeMath);
-    let needs_pre_normalization_serialization =
-        needs_pre_normalization_report && has_loss_dropped_by_target_normalization(expr, to);
-    if needs_pre_normalization_report {
-        writer_diagnostics = if to == Format::UnicodeMath {
-            // UnicodeMath already exposes a traversal-only loss collector, so
-            // keep this target to one serialization even though normalization
-            // clears its attributes before the ordinary writer runs.
-            UnicodeMathWriter::compact_diagnostics(expr, config)
-        } else if needs_pre_normalization_serialization {
-            // LaTeX and OMML currently discover some losses while emitting;
-            // collect them before normalization makes those nodes disappear.
-            write_compact_with_diagnostics(expr, to, config)?.1
-        } else {
-            Vec::new()
-        };
+    if to == Format::LaTeX && has_loss_dropped_by_target_normalization(expr, to) {
+        return LatexWriter::write_after_normalization(expr, config, None, |expr| {
+            normalize_for(expr, from, to)
+        });
     }
-
+    let before = pre_normalization_diagnostics(expr, to, config, &OutputLimits::unlimited())?;
     normalize_for(expr, from, to)?;
-    let (output, final_writer_diagnostics) =
-        if needs_pre_normalization_serialization || to == Format::UnicodeMath {
-            // The writer already ran once above to collect losses. Avoid running
-            // its diagnostic path a second time: normalization may have removed
-            // exactly the nodes that need reporting, while this plain write is the
-            // established one-shot output path. UnicodeMath's traversal-only
-            // collector likewise already covered the whole pre-normalized tree.
-            (write_compact(expr, to, config)?, Vec::new())
-        } else {
-            write_compact_with_diagnostics(expr, to, config)?
-        };
-    writer_diagnostics.extend(final_writer_diagnostics);
-    Ok((output, writer_diagnostics))
+    if let Some(records) = before {
+        Ok((write_compact(expr, to, config)?, records))
+    } else {
+        write_compact_with_diagnostics(expr, to, config)
+    }
+}
+
+// The source tree still holds any formatting that target normalization will
+// remove. A complete report collected here also covers losses on surviving nodes.
+fn pre_normalization_diagnostics(
+    expr: &CompactExpr,
+    to: Format,
+    config: &Config,
+    limits: &OutputLimits,
+) -> Result<Option<Vec<Diagnostic>>> {
+    match to {
+        Format::UnicodeMath => {
+            UnicodeMathWriter::compact_diagnostics_only(expr, config, limits).map(Some)
+        },
+        Format::Omml if has_loss_dropped_by_target_normalization(expr, to) => {
+            OmmlWriter::compact_diagnostics_only(expr, config, limits).map(Some)
+        },
+        _ => Ok(None),
+    }
+}
+
+/// Controlled counterpart of [`convert_with_config_and_diagnostics`].
+pub fn convert_with_config_and_diagnostics_control(
+    input: &str,
+    from: Format,
+    to: Format,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<(String, Vec<Diagnostic>)> {
+    convert_with_config_and_control_and_limits(
+        input,
+        from,
+        to,
+        config,
+        control,
+        &OutputLimits::unlimited(),
+    )
 }
 
 /// Normalize a freshly read expression. The letters of an operator's name are
@@ -640,14 +816,15 @@ impl ConvertResult {
         options: &crate::writer::omml::OmmlOptions,
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
         let expr = self.output_expr()?;
-        let written = OmmlWriter::write_with_options_trusted(expr, config, options)?;
         if options.run_properties == crate::writer::omml::OmmlRunProperties::None
             && let Some(plain) = self.in_pure_omml()?
         {
+            let diagnostics =
+                OmmlWriter::compact_diagnostics_only(expr, config, &OutputLimits::unlimited())?;
             let (output, _) = OmmlWriter::write_with_options_trusted(&plain, config, options)?;
-            return Ok((output, written.1));
+            return Ok((output, diagnostics));
         }
-        Ok(written)
+        OmmlWriter::write_with_options_trusted(expr, config, options)
     }
 
     /// Serialize the parsed expression to LaTeX.
@@ -751,6 +928,32 @@ impl ConvertResult {
         MtefWriter::write_compact_trusted(expr, &self.config)
     }
 
+    /// Serialize hexadecimal MTEF under a retained-byte budget. The budget
+    /// counts the UTF-8 hex text, so it is twice the binary byte count.
+    pub fn to_mtef_with_limits(&self, limits: &OutputLimits) -> Result<String> {
+        MtefWriter::write_compact_with_limits(
+            self.output_expr()?,
+            &self.config,
+            &MtefWriteOptions::default(),
+            limits,
+        )
+    }
+
+    /// Serialize hexadecimal MTEF under cooperative request control.
+    pub fn to_mtef_with_control(
+        &self,
+        limits: &OutputLimits,
+        control: &RequestControl,
+    ) -> Result<String> {
+        MtefWriter::write_compact_with_control(
+            self.output_expr()?,
+            &self.config,
+            &MtefWriteOptions::default(),
+            limits,
+            control,
+        )
+    }
+
     /// Serialize the parsed expression to binary MTEF.
     ///
     /// `options` selects MTEF 5 (MathType, the default) or MTEF 3 (Equation
@@ -778,6 +981,33 @@ impl ConvertResult {
         let expr = self.output_expr()?;
         MtefWriter::write_bytes_with_diagnostics_trusted(expr, &self.config, options)
             .map(|(bytes, _)| bytes)
+    }
+
+    /// Serialize to binary MTEF under a caller-selected retained-byte budget.
+    /// The budget includes an optional Equation Native header.
+    pub fn to_mtef_bytes_with_limits(
+        &self,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+    ) -> Result<Vec<u8>> {
+        MtefWriter::write_bytes_with_limits(self.output_expr()?, &self.config, options, limits)
+    }
+
+    /// Serialize to binary MTEF with cooperative cancellation and work
+    /// checkpoints supplied by a shared request control.
+    pub fn to_mtef_bytes_with_control(
+        &self,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+        control: &RequestControl,
+    ) -> Result<Vec<u8>> {
+        MtefWriter::write_bytes_with_control(
+            self.output_expr()?,
+            &self.config,
+            options,
+            limits,
+            control,
+        )
     }
 
     /// Serialize to binary MTEF, also returning writer-side loss
@@ -1258,6 +1488,15 @@ pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
     })
 }
 
+/// Parse LaTeX under a cooperative request control.
+pub fn from_latex_with_control(
+    input: &str,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<ConvertResult> {
+    control.run(|| from_latex_with(input, config))
+}
+
 /// Parse MathML input into a reusable conversion result.
 pub fn from_mathml(input: &str) -> Result<ConvertResult> {
     from_mathml_with(input, &Config::default())
@@ -1302,6 +1541,15 @@ pub fn from_unicode_math_with_location(
     })
 }
 
+/// Parse MathML under a cooperative request control.
+pub fn from_mathml_with_control(
+    input: &str,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<ConvertResult> {
+    control.run(|| from_mathml_with(input, config))
+}
+
 /// Parse OMML input into a reusable conversion result.
 pub fn from_omml(input: &str) -> Result<ConvertResult> {
     from_omml_with(input, &Config::default())
@@ -1328,6 +1576,15 @@ pub fn from_omml_with_location(
     })
 }
 
+/// Parse OMML under a cooperative request control.
+pub fn from_omml_with_control(
+    input: &str,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<ConvertResult> {
+    control.run(|| from_omml_with(input, config))
+}
+
 /// Parse MTEF input (hex-encoded binary) into a reusable conversion result.
 ///
 /// The bytes the hex string encodes are read like [`from_mtef_bytes`] reads
@@ -1344,6 +1601,15 @@ pub fn from_mtef(input: &str) -> Result<ConvertResult> {
 pub fn from_mtef_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let (compact, info) = MtefReader::parse_hex_with_info(input, config)?;
     finish_mtef(compact, info, config)
+}
+
+/// Parse hexadecimal MTEF under a cooperative request control.
+pub fn from_mtef_with_control(
+    input: &str,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<ConvertResult> {
+    control.run(|| from_mtef_with(input, config))
 }
 
 /// Parse binary MTEF data into a reusable conversion result.
@@ -1385,6 +1651,15 @@ pub fn from_mtef_bytes_with(bytes: &[u8], config: &Config) -> Result<ConvertResu
     finish_mtef(compact, info, config)
 }
 
+/// Parse binary MTEF under a cooperative request control.
+pub fn from_mtef_bytes_with_control(
+    bytes: &[u8],
+    config: &Config,
+    control: &RequestControl,
+) -> Result<ConvertResult> {
+    control.run(|| from_mtef_bytes_with(bytes, config))
+}
+
 /// Refuse trees deeper than [`Config::max_depth`] before handing them out.
 fn check_depth(compact: &CompactParseResult, config: &Config) -> Result<()> {
     crate::ast::validate_compact_depth_with(
@@ -1420,6 +1695,15 @@ pub fn from_unicode_math(input: &str) -> Result<ConvertResult> {
 /// Parse UnicodeMath with custom configuration.
 pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertResult> {
     from_unicode_math_with_location(input, config).map_err(LocatedError::into_error)
+}
+
+/// Parse UnicodeMath under a cooperative request control.
+pub fn from_unicode_math_with_control(
+    input: &str,
+    config: &Config,
+    control: &RequestControl,
+) -> Result<ConvertResult> {
+    control.run(|| from_unicode_math_with(input, config))
 }
 
 #[cfg(test)]

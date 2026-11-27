@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit choice through `to_svg_text`, `SvgMode::Text`, `--svg-mode text`, or
   `toSvgText`. `SvgOptions` can add a title, an ARIA label, and an XML-safe ID
   prefix for composing inline documents. SVG accepts output-byte and cancellation
-  limits, and raster accepts a pixel budget.
+  limits. Raster can cap pixel allocation and PNG/JPEG encoding separately.
+- `RequestControl` adds cooperative work budgets and cancellation to conversion.
+  `OutputLimits` bounds UTF-8 and binary output as the writers emit it.
+  `release_thread_render_cache()` releases pooled layout storage on the calling thread.
 - `Config::with_source_ranges(true)` retains conservative source byte ranges
   through text and binary reads and normalization. Tracking is opt-in.
 - Rust and WASM callers can retrieve reader and target diagnostics together

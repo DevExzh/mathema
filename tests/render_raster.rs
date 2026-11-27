@@ -3,7 +3,7 @@
 //!
 //! Run with: `cargo test --features raster --test render_raster`
 
-use mathema::{Format, ImageFormat, RasterOptions, from_latex, render_to_svg};
+use mathema::{Format, ImageFormat, OutputLimits, RasterOptions, from_latex, render_to_svg};
 
 #[test]
 fn latex_to_png() {
@@ -71,6 +71,30 @@ fn render_to_image_api() {
     let options = RasterOptions::default();
     let png = mathema::render_to_image(&expr.expr(), &options).unwrap();
     assert_eq!(&png[..4], b"\x89PNG");
+}
+
+#[test]
+fn png_and_jpeg_output_limits_bound_the_encoder_sink() {
+    let parsed = from_latex(r"\frac{a^2+b^2}{c^2+d^2}").unwrap();
+    for format in [ImageFormat::Png, ImageFormat::Jpeg] {
+        let options = RasterOptions {
+            format,
+            ..RasterOptions::default()
+        };
+        let ordinary = mathema::render_to_image(&parsed.expr(), &options).unwrap();
+        let exact = mathema::RasterLimits::default()
+            .with_output_limits(OutputLimits::with_max_bytes(ordinary.len()));
+        assert_eq!(
+            mathema::render_to_image_with_limits(&parsed.expr(), &options, &exact).unwrap(),
+            ordinary
+        );
+        let short = mathema::RasterLimits::default()
+            .with_output_limits(OutputLimits::with_max_bytes(ordinary.len() - 1));
+        assert!(matches!(
+            mathema::render_to_image_with_limits(&parsed.expr(), &options, &short),
+            Err(mathema::Error::OutputLimit { .. })
+        ));
+    }
 }
 
 #[test]

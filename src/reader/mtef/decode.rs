@@ -1049,6 +1049,7 @@ impl<'a> Decoder<'a> {
 
     /// Read records up to and including the END that closes the list.
     pub(super) fn parse_list(&mut self) -> Result<Vec<Item>> {
+        crate::error::request_checkpoint(1)?;
         self.parse_object_list(false)
     }
 
@@ -1059,6 +1060,7 @@ impl<'a> Decoder<'a> {
         self.enter()?;
         let mut items = Vec::with_capacity(8);
         loop {
+            crate::error::request_checkpoint(1)?;
             if self.pos >= self.end {
                 if top
                     && items

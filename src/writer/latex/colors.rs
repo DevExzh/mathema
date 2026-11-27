@@ -379,13 +379,17 @@ fn ordinary(content: NodeId) -> CompactNode {
 
 /// Report the colors dropped from the expression (the arena may also hold
 /// nodes that are not part of it).
-pub(super) fn report_dropped(expr: &CompactExpr, report: &mut LossReport) {
+pub(super) fn report_dropped(
+    expr: &CompactExpr,
+    report: &mut LossReport,
+) -> crate::error::Result<()> {
     if !report.is_collecting() {
-        return;
+        return Ok(());
     }
     let arena = &expr.arena;
     let mut stack = arena.children(expr.roots).to_vec();
     while let Some(id) = stack.pop() {
+        crate::error::request_checkpoint(1)?;
         let node = arena.node(id);
         if let CompactNode::Color { color, .. }
         | CompactNode::Boxed {
@@ -397,4 +401,5 @@ pub(super) fn report_dropped(expr: &CompactExpr, report: &mut LossReport) {
         }
         stack.extend(crate::ast::compact_children(arena, node));
     }
+    Ok(())
 }

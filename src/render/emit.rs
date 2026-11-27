@@ -75,11 +75,9 @@ impl BoundedSvg {
 
     pub(crate) fn finish(self) -> Result<String> {
         match self.failure {
-            Some(SvgFailure::Cancelled) => Err(crate::error::Error::Render {
-                message: "SVG rendering was cancelled".into(),
-            }),
-            Some(SvgFailure::OutputLimit) => Err(crate::error::Error::Render {
-                message: "SVG output exceeded the configured byte limit".into(),
+            Some(SvgFailure::Cancelled) => Err(crate::error::Error::RequestCancelled),
+            Some(SvgFailure::OutputLimit) => Err(crate::error::Error::OutputLimit {
+                limit: self.limits.max_bytes.unwrap_or(usize::MAX),
             }),
             _ => Ok(self.output),
         }

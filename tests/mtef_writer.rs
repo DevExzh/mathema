@@ -6,9 +6,10 @@ use std::path::Path;
 
 use mathema::ast::normalize::normalize_compact_expr;
 use mathema::ast::{DisplayStyle, FencedItem, LimitStyle, MathNode};
+use mathema::writer::mtef::MtefWriter;
 use mathema::{
-    CompactExpr, Config, MathExpr, MtefVersion, MtefWriteOptions, from_latex, from_latex_with,
-    from_mtef_bytes,
+    CompactExpr, Config, Error, MathExpr, MtefVersion, MtefWriteOptions, OutputLimits,
+    RequestControl, from_latex, from_latex_with, from_mtef_bytes,
 };
 
 fn fixtures() -> Vec<(String, Vec<u8>)> {
@@ -378,6 +379,166 @@ fn latex_round_trips_through_mtef3() {
     for latex in BOTH {
         assert_round_trip(latex, MtefVersion::V3);
     }
+}
+
+#[test]
+fn mtef_binary_and_hex_limits_count_their_own_output_units() {
+    let result = from_latex(r"x^2+y^2").unwrap();
+    let options = MtefWriteOptions::default();
+    let bytes = result.to_mtef_bytes(&options).unwrap();
+    let hex = result.to_mtef().unwrap();
+    assert_eq!(hex.len(), bytes.len() * 2);
+
+    let exact_bytes = MtefWriter::write_bytes_with_limits(
+        result.compact_expr(),
+        &Config::default(),
+        &options,
+        &OutputLimits::with_max_bytes(bytes.len()),
+    )
+    .unwrap();
+    assert_eq!(exact_bytes, bytes);
+    assert!(matches!(
+        MtefWriter::write_bytes_with_limits(
+            result.compact_expr(),
+            &Config::default(),
+            &options,
+            &OutputLimits::with_max_bytes(bytes.len() - 1),
+        ),
+        Err(Error::OutputLimit { limit }) if limit == bytes.len() - 1
+    ));
+
+    let exact_hex = MtefWriter::write_compact_with_limits(
+        result.compact_expr(),
+        &Config::default(),
+        &options,
+        &OutputLimits::with_max_bytes(hex.len()),
+    )
+    .unwrap();
+    assert_eq!(exact_hex, hex);
+    assert!(matches!(
+        MtefWriter::write_compact_with_limits(
+            result.compact_expr(),
+            &Config::default(),
+            &options,
+            &OutputLimits::with_max_bytes(hex.len() - 1),
+        ),
+        Err(Error::OutputLimit { limit }) if limit == hex.len() - 1
+    ));
+
+    assert_eq!(
+        result
+            .to_mtef_bytes_with_limits(&options, &OutputLimits::with_max_bytes(bytes.len()))
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(
+        result
+            .to_mtef_with_limits(&OutputLimits::with_max_bytes(hex.len()))
+            .unwrap(),
+        hex
+    );
+}
+
+#[test]
+fn mtef_limits_include_the_ole_header() {
+    let result = from_latex("x").unwrap();
+    let options = MtefWriteOptions::default().with_ole_header(true);
+    let bytes = result.to_mtef_bytes(&options).unwrap();
+    assert!(bytes.len() > 28);
+    assert_eq!(
+        MtefWriter::write_bytes_with_limits(
+            result.compact_expr(),
+            &Config::default(),
+            &options,
+            &OutputLimits::with_max_bytes(bytes.len()),
+        )
+        .unwrap(),
+        bytes
+    );
+    assert!(matches!(
+        MtefWriter::write_bytes_with_limits(
+            result.compact_expr(),
+            &Config::default(),
+            &options,
+            &OutputLimits::with_max_bytes(bytes.len() - 1),
+        ),
+        Err(Error::OutputLimit { .. })
+    ));
+}
+
+#[test]
+fn mtef_request_control_cancels_before_encoding_and_at_node_checkpoints() {
+    let result = from_latex("x^2+y^2").unwrap();
+    let cancelled = RequestControl::new();
+    cancelled.cancel();
+    assert!(matches!(
+        MtefWriter::write_bytes_with_control(
+            result.compact_expr(),
+            &Config::default(),
+            &MtefWriteOptions::default(),
+            &OutputLimits::unlimited(),
+            &cancelled,
+        ),
+        Err(Error::RequestCancelled)
+    ));
+
+    let no_work = RequestControl::with_max_work(0);
+    assert!(matches!(
+        MtefWriter::write_compact_with_control(
+            result.compact_expr(),
+            &Config::default(),
+            &MtefWriteOptions::default(),
+            &OutputLimits::unlimited(),
+            &no_work,
+        ),
+        Err(Error::LimitExceeded {
+            kind: mathema::LimitKind::Work,
+            limit: 0
+        })
+    ));
+
+    let cancelled = RequestControl::new();
+    cancelled.cancel();
+    assert!(matches!(
+        result.to_mtef_with_control(&OutputLimits::unlimited(), &cancelled),
+        Err(Error::RequestCancelled)
+    ));
+}
+
+#[test]
+fn tiny_mtef_budget_stops_a_single_large_text_run_early() {
+    let source = format!(r"\text{{{}}}", "x".repeat(200_000));
+    let result = from_latex(&source).unwrap();
+    let error = MtefWriter::write_bytes_with_limits(
+        result.compact_expr(),
+        &Config::default(),
+        &MtefWriteOptions::default(),
+        &OutputLimits::with_max_bytes(16),
+    )
+    .expect_err("a large text run cannot fit a tiny MTEF budget");
+    assert!(matches!(error, Error::OutputLimit { limit: 16 }));
+}
+
+#[test]
+fn request_work_budget_stops_inside_a_large_text_run() {
+    let source = format!(r"\text{{{}}}", "x".repeat(10_000));
+    let result = from_latex(&source).unwrap();
+    let control = RequestControl::with_max_work(2);
+    let error = MtefWriter::write_bytes_with_control(
+        result.compact_expr(),
+        &Config::default(),
+        &MtefWriteOptions::default(),
+        &OutputLimits::unlimited(),
+        &control,
+    )
+    .expect_err("a work budget must stop a long token at a glyph boundary");
+    assert!(matches!(
+        error,
+        Error::LimitExceeded {
+            kind: mathema::LimitKind::Work,
+            limit: 2
+        }
+    ));
 }
 
 /// A write that succeeds reads back, in every mode; an AST the reader would

@@ -161,7 +161,7 @@ impl UnicodeMathReader {
                 ))
             },
             // Resource limits hold in every mode.
-            Err(e @ Error::LimitExceeded { .. }) => Err(e.into()),
+            Err(e @ (Error::LimitExceeded { .. } | Error::RequestCancelled)) => Err(e.into()),
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let mut arena = AstArena::new();
@@ -620,6 +620,13 @@ impl CompactParser {
 
     fn parse_element_inner<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         self.last_failure_offset = Some(self.offset(input));
+        if let Err(error) = crate::error::request_checkpoint(1) {
+            self.abort = Some(error);
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
         let baseless_ok = std::mem::take(&mut self.baseless_ok);
         self.enter(input)?;
         let result = self.parse_operand(input, baseless_ok);

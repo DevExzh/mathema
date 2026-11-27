@@ -34,9 +34,10 @@ mod tests;
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr, Rational};
-use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, RequestControl, Result};
 use crate::reader::mtef::{MtefInfo, MtefProduct, MtefVersion};
 use crate::writer::Writer as MathWriter;
+use crate::writer::limits::OutputLimits;
 use encode::Encoder;
 
 /// Writer for MTEF equations.
@@ -323,7 +324,12 @@ impl MtefWriter {
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         super::validate_compact_trusted(expr, config)?;
-        Self::write_bytes_with_diagnostics_validated(expr, config, options)
+        Self::write_bytes_with_diagnostics_validated(
+            expr,
+            config,
+            options,
+            &OutputLimits::unlimited(),
+        )
     }
 
     /// Trusted compact writer used by the parse-once conversion result.
@@ -392,30 +398,135 @@ impl MtefWriter {
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         super::validate_compact_for_write(expr, config)?;
-        Self::write_bytes_with_diagnostics_validated(expr, config, options)
+        Self::write_bytes_with_diagnostics_validated(
+            expr,
+            config,
+            options,
+            &OutputLimits::unlimited(),
+        )
+    }
+
+    /// Write binary MTEF with a maximum number of retained output bytes.
+    /// The byte count includes an optional 28-byte `Equation Native` header.
+    pub fn write_bytes_with_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+    ) -> Result<Vec<u8>> {
+        Self::write_bytes_with_diagnostics_and_limits(expr, config, options, limits)
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Write binary MTEF with a byte budget and loss diagnostics.
+    pub fn write_bytes_with_diagnostics_and_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
+        super::validate_compact_for_write(expr, config)?;
+        crate::error::request_checkpoint(0)?;
+        Self::write_bytes_with_diagnostics_validated(expr, config, options, limits)
+    }
+
+    /// Write hexadecimal MTEF with a maximum number of retained UTF-8 bytes.
+    /// The budget counts the two hex characters for every binary byte.
+    pub fn write_compact_with_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        Self::write_compact_with_diagnostics_and_limits(expr, config, options, limits)
+            .map(|(hex, _)| hex)
+    }
+
+    /// Write hexadecimal MTEF with a byte budget and loss diagnostics.
+    pub fn write_compact_with_diagnostics_and_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_for_write(expr, config)?;
+        crate::error::request_checkpoint(0)?;
+        let binary_limits = limits.with_byte_ceiling(limits.max_bytes.map(|bytes| bytes / 2));
+        let (bytes, diagnostics) = match Self::write_bytes_with_diagnostics_validated(
+            expr,
+            config,
+            options,
+            &binary_limits,
+        ) {
+            Err(crate::Error::OutputLimit { .. }) => {
+                return Err(crate::Error::OutputLimit {
+                    limit: limits.max_bytes.unwrap_or(usize::MAX),
+                });
+            },
+            result => result?,
+        };
+        let hex_len = bytes
+            .len()
+            .checked_mul(2)
+            .ok_or(crate::Error::OutputLimit {
+                limit: limits.max_bytes.unwrap_or(usize::MAX),
+            })?;
+        limits.check_bytes(hex_len)?;
+        Ok((hex_encode(&bytes), diagnostics))
+    }
+
+    /// Write binary MTEF under a cooperative cancellation/work control.
+    pub fn write_bytes_with_control(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+        control: &RequestControl,
+    ) -> Result<Vec<u8>> {
+        control.run(|| Self::write_bytes_with_limits(expr, config, options, limits))
+    }
+
+    /// Write hexadecimal MTEF under a cooperative cancellation/work control.
+    pub fn write_compact_with_control(
+        expr: &CompactExpr,
+        config: &Config,
+        options: &MtefWriteOptions,
+        limits: &OutputLimits,
+        control: &RequestControl,
+    ) -> Result<String> {
+        control.run(|| Self::write_compact_with_limits(expr, config, options, limits))
     }
 
     fn write_bytes_with_diagnostics_validated(
         expr: &CompactExpr,
         config: &Config,
         options: &MtefWriteOptions,
+        limits: &OutputLimits,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
-        let (mtef, diagnostics, reading) = match Self::encode(expr, config, options) {
+        let (mtef, diagnostics, reading) = match Self::encode(expr, config, options, limits) {
             Ok(written) => written,
-            Err(error) => return Self::write_unsized(expr, config, options, error),
+            Err(error) => return Self::write_unsized(expr, config, options, limits, error),
         };
+        let binary_len = mtef.len().saturating_add(if options.ole_header {
+            OLE_HEADER_LEN
+        } else {
+            0
+        });
+        limits.check_bytes(binary_len)?;
         // The reading can nest deeper than the tree written. Where that could
         // matter, refuse a tree whose reading cannot be written again.
         if let Some(mut reading) = reading {
             crate::ast::normalize::normalize_compact_expr_trusted(&mut reading)?;
             // Any other error is reported when that tree is written.
             if let Err(limit @ crate::error::Error::LimitExceeded { .. }) =
-                Self::encode(&reading, config, options)
+                Self::encode(&reading, config, options, limits)
             {
-                return Self::write_unsized(expr, config, options, limit);
+                return Self::write_unsized(expr, config, options, limits, limit);
             }
         }
-        Self::finish(mtef, diagnostics, options, options.v5())
+        let finished = Self::finish(mtef, diagnostics, options, options.v5())?;
+        limits.check_bytes(finished.0.len())?;
+        Ok(finished)
     }
 
     /// Write without the font sizes what exceeds a limit with them: the
@@ -426,6 +537,7 @@ impl MtefWriter {
         expr: &CompactExpr,
         config: &Config,
         options: &MtefWriteOptions,
+        limits: &OutputLimits,
         error: crate::error::Error,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         if !matches!(error, crate::error::Error::LimitExceeded { .. }) || !expr.arena.has_attrs() {
@@ -433,7 +545,8 @@ impl MtefWriter {
         }
         let mut plain = expr.clone();
         plain.arena.clear_attrs();
-        let (bytes, mut diagnostics) = Self::write_bytes_with_diagnostics(&plain, config, options)?;
+        let (bytes, mut diagnostics) =
+            Self::write_bytes_with_diagnostics_and_limits(&plain, config, options, limits)?;
         diagnostics.push(Diagnostic {
             kind: DiagnosticKind::Warning,
             message: "the font sizes were dropped: with them the equation exceeds the limits"
@@ -449,8 +562,18 @@ impl MtefWriter {
         expr: &CompactExpr,
         config: &Config,
         options: &MtefWriteOptions,
+        limits: &OutputLimits,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>, Option<CompactExpr>)> {
+        limits.check_bytes(0)?;
+        crate::error::request_checkpoint(0)?;
         let v5 = options.v5();
+        let raw_limit = limits.max_bytes.map(|limit| {
+            limit.saturating_sub(if options.ole_header {
+                OLE_HEADER_LEN
+            } else {
+                0
+            })
+        });
         let new_encoder = || {
             Encoder::new(
                 &expr.arena,
@@ -458,6 +581,7 @@ impl MtefWriter {
                 v5,
                 expr.display,
                 crate::ast::attrs::base_size_pt(expr.meta.as_deref()),
+                raw_limit,
             )
         };
         let mut encoder = new_encoder();
@@ -468,12 +592,12 @@ impl MtefWriter {
             encoder.equation(expr.roots)?;
         }
         let styles = encoder.defined_styles();
-        let body = std::mem::take(&mut encoder.out);
+        let body = std::mem::take(&mut encoder.out).finish()?;
         let diagnostics = std::mem::take(&mut encoder.diagnostics);
 
         let far_east = encoder.far_east;
         let alphabets = encoder.alphabets;
-        let mut mtef = Vec::with_capacity(body.len() + 256);
+        let mut mtef = encode::OutputSink::new(raw_limit);
         // Header (MTEFv5.md "Header record", MTEFv3.md "MTEF header").
         mtef.push(if v5 { 5 } else { 3 });
         // Platform: Windows, whose encodings the writer uses.
@@ -497,7 +621,7 @@ impl MtefWriter {
                 let start = mtef.len();
                 mtef.extend_from_slice(V5_FAR_EAST_DEFINITIONS);
                 if alphabets {
-                    mtef[start + FAR_EAST_ENCODING_AT] += 2;
+                    mtef.add_at(start + FAR_EAST_ENCODING_AT, 2);
                 }
             }
             let base = expr.meta.as_deref().and_then(crate::ast::ExprMeta::base);
@@ -511,11 +635,12 @@ impl MtefWriter {
             }
             for (at, style) in V5_DEFINED_STYLES.into_iter().zip(styles) {
                 let at = mtef.len() - at;
-                mtef[at] = style;
+                mtef.set_at(at, style);
             }
             mtef.extend_from_slice(far_east_style(far_east, alphabets));
         }
         mtef.extend_from_slice(&body);
+        let mtef = mtef.finish()?;
 
         // The reader rebuilds the AST with rows around slots and cells, so it
         // can nest deeper than the AST written. Read the output back with the
@@ -579,6 +704,7 @@ impl MathWriter for MtefWriter {
             &compact,
             config,
             &MtefWriteOptions::default(),
+            &OutputLimits::unlimited(),
         )?;
         Ok(hex_encode(&bytes))
     }

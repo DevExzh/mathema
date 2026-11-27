@@ -623,7 +623,10 @@ fn omml_err(message: impl Into<String>) -> Error {
 
 /// Whether `e` reports a resource limit, which Lenient mode must not hide.
 fn is_limit(e: &Error) -> bool {
-    matches!(e, Error::LimitExceeded { .. } | Error::InputTooLarge { .. })
+    matches!(
+        e,
+        Error::LimitExceeded { .. } | Error::InputTooLarge { .. } | Error::RequestCancelled
+    )
 }
 
 /// Push `ids` as a child span, refusing spans the arena cannot index.
@@ -756,6 +759,7 @@ impl<'i> Parser<'i> {
     }
 
     fn next_item(&mut self) -> Result<Item<'i>> {
+        crate::error::request_checkpoint(1)?;
         self.arena.check_limits()?;
         loop {
             self.event_start = self.reader.buffer_position() as usize;

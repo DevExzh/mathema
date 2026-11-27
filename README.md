@@ -64,6 +64,24 @@ returns both phases. `convert_with_location` keeps the underlying typed error
 and the reader's original byte range when available. MTEF offsets refer to the
 decoded wire bytes for both binary and hex input.
 
+A service can give one conversion a work ceiling and an output-byte limit.
+Clones of the request control share the counter and cancellation flag. A
+worker can call `cancel()` on its clone to stop the request at a checkpoint.
+
+```rust
+use mathema::{Config, Format, OutputLimits, RequestControl, convert_with_control_and_limits};
+
+let request = RequestControl::with_max_work(50_000);
+let mathml = convert_with_control_and_limits(
+    "x^2", Format::LaTeX, Format::MathML, &Config::default(),
+    &request, &OutputLimits::with_max_bytes(4096),
+)?;
+Ok::<(), mathema::Error>(())
+```
+
+`RasterLimits` can cap allocated pixels and encoded PNG/JPEG bytes. Long-lived
+workers can reclaim their pooled layout scratch with `release_thread_render_cache()`.
+
 ## CLI
 
 ```sh

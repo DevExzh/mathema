@@ -4,7 +4,7 @@ pub mod mtef;
 pub mod omml;
 pub mod unicode_math;
 
-use crate::error::{CompactParseResult, Config, ParseResult, Result};
+use crate::error::{CompactParseResult, Config, ParseResult, RequestControl, Result};
 
 /// Trait for parsing a math format into the shared AST.
 pub trait Reader {
@@ -17,5 +17,18 @@ pub trait Reader {
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         let result = Self::parse(input, config)?;
         CompactParseResult::from_parse_result(&result)
+    }
+
+    /// Parse into the compact arena while cooperatively observing a request
+    /// control. Native readers also checkpoint during their traversal.
+    fn parse_compact_with_control(
+        input: &str,
+        config: &Config,
+        control: &RequestControl,
+    ) -> Result<CompactParseResult> {
+        control.run(|| {
+            control.checkpoint(input.len())?;
+            Self::parse_compact(input, config)
+        })
     }
 }

@@ -993,6 +993,7 @@ fn normalize_span_keeping_breaks(
     rules: Rules,
     keep_break_groups: bool,
 ) -> crate::error::Result<NodeSpan> {
+    crate::error::request_checkpoint(1)?;
     if depth > super::MAX_AST_DEPTH {
         return Ok(span);
     }
@@ -1499,6 +1500,7 @@ fn normalize_compact_node_with_identifiers(
     depth: usize,
     rules: Rules,
 ) -> crate::error::Result<()> {
+    crate::error::request_checkpoint(1)?;
     if depth > super::MAX_AST_DEPTH {
         return Ok(());
     }

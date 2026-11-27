@@ -1,4 +1,5 @@
 pub mod latex;
+pub mod limits;
 pub mod mathml;
 pub mod mtef;
 pub mod omml;
@@ -42,6 +43,17 @@ pub(crate) fn prepare_leading_scripts<'a>(
     config: &Config,
 ) -> Result<Cow<'a, CompactExpr>> {
     validate_compact_for_write(expr, config)?;
+    prepare_leading_scripts_trusted(expr, config)
+}
+
+/// Prepare a compact tree that was already validated by a parser or by the
+/// containing conversion operation. This avoids a second full arena graph
+/// walk on bounded writer hot paths while retaining the transformed-depth
+/// check after a rare leading-script rewrite.
+pub(crate) fn prepare_leading_scripts_trusted<'a>(
+    expr: &'a CompactExpr,
+    config: &Config,
+) -> Result<Cow<'a, CompactExpr>> {
     if !crate::ast::normalize::compact_has_empty_base_script(expr) {
         return Ok(Cow::Borrowed(expr));
     }

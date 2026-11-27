@@ -24,6 +24,7 @@ use crate::reader::omml::{
     FUNCTION_APPLICATION, MATH_SPACES, OmmlJustification, OmmlParagraph, argument_style, cell_style,
 };
 use crate::writer::Writer as MathWriter;
+use crate::writer::limits::{OutputFailure, OutputLimits};
 
 const MATH_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 const WML_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -127,6 +128,70 @@ impl MathWriter for OmmlWriter {
 }
 
 impl OmmlWriter {
+    /// Write compact OMML while enforcing output limits and cancellation.
+    pub fn write_compact_with_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        Self::write_with_options_limited(&prepared, &OmmlOptions::default(), limits)
+            .map(|(output, _)| output)
+    }
+
+    /// Write compact OMML with diagnostics and output controls.
+    pub fn write_compact_with_diagnostics_and_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        Self::write_with_options_limited(&prepared, &OmmlOptions::default(), limits)
+    }
+
+    pub(crate) fn write_compact_with_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
+        Self::write_with_options_limited(&prepared, &OmmlOptions::default(), limits)
+            .map(|(output, _)| output)
+    }
+
+    pub(crate) fn write_compact_with_diagnostics_and_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
+        Self::write_with_options_limited(&prepared, &OmmlOptions::default(), limits)
+    }
+
+    /// Collect OMML loss diagnostics without retaining the pre-normalization
+    /// document. This is used by bounded one-shot conversion so a discarded
+    /// pure-OMML pass cannot consume the final output byte budget.
+    pub(crate) fn compact_diagnostics_only(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<Vec<Diagnostic>> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        let mut e = Emitter::diagnostics(
+            &prepared.arena,
+            OmmlOptions::default().run_properties,
+            MathStyle::from(prepared.display),
+            limits,
+        );
+        e.open_root("m:oMath");
+        e.start(&prepared);
+        e.seq(prepared.arena.children(prepared.roots), Fmt::default());
+        e.buf.push_str("</m:oMath>");
+        let diagnostics = e.diags;
+        e.buf.finish_limited()?;
+        Ok(diagnostics)
+    }
+
     /// Fast internal bridge for an expression returned by a parser or checked
     /// conversion result. Public option calls retain strict arena validation.
     pub(crate) fn write_with_options_trusted(
@@ -170,14 +235,31 @@ impl OmmlWriter {
         Self::write_with_options_validated(&prepared, options)
     }
 
+    fn write_with_options_limited(
+        expr: &CompactExpr,
+        options: &OmmlOptions,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        Self::write_with_options_validated_and_limits(expr, options, Some(limits))
+    }
+
     fn write_with_options_validated(
         expr: &CompactExpr,
         options: &OmmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        Self::write_with_options_validated_and_limits(expr, options, None)
+    }
+
+    fn write_with_options_validated_and_limits(
+        expr: &CompactExpr,
+        options: &OmmlOptions,
+        limits: Option<&OutputLimits>,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let mut e = Emitter::new(
             &expr.arena,
             options.run_properties,
             MathStyle::from(expr.display),
+            limits.cloned(),
         );
         if options.display_block {
             e.host_style = MathStyle::Display;
@@ -193,7 +275,7 @@ impl OmmlWriter {
         if options.display_block {
             e.buf.push_str("</m:oMathPara>");
         }
-        Ok((e.buf, e.diags))
+        Ok((e.buf.finish_limited()?, e.diags))
     }
 
     /// Write a display-math paragraph (`m:oMathPara`) holding one `m:oMath`
@@ -223,7 +305,7 @@ impl OmmlWriter {
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let empty = AstArena::new();
-        let mut e = Emitter::new(&empty, options.run_properties, MathStyle::Text);
+        let mut e = Emitter::new(&empty, options.run_properties, MathStyle::Text, None);
         e.open_root("m:oMathPara");
         e.paragraph_props(paragraph.justification.or(options.justification));
         for eq in &paragraph.equations {
@@ -242,7 +324,7 @@ impl OmmlWriter {
             e.buf.push_str("<m:oMath></m:oMath>");
         }
         e.buf.push_str("</m:oMathPara>");
-        Ok((e.buf, e.diags))
+        Ok((e.buf.finish_limited()?, e.diags))
     }
 }
 
@@ -349,8 +431,107 @@ enum Leaf {
     Symbol,
 }
 
+struct BoundedText {
+    text: String,
+    logical_len: usize,
+    retain: bool,
+    limits: Option<OutputLimits>,
+    failure: Option<OutputFailure>,
+}
+
+impl BoundedText {
+    fn new(limits: Option<OutputLimits>) -> Self {
+        Self {
+            text: String::with_capacity(512),
+            logical_len: 0,
+            retain: true,
+            limits,
+            failure: None,
+        }
+    }
+
+    fn diagnostics(limits: &OutputLimits) -> Self {
+        Self {
+            text: String::new(),
+            logical_len: 0,
+            retain: false,
+            limits: Some(limits.with_byte_ceiling(None)),
+            failure: None,
+        }
+    }
+
+    fn check(&mut self, additional: usize) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        let Some(limits) = self.limits.as_ref() else {
+            return true;
+        };
+        if limits.is_cancelled() {
+            self.failure = Some(OutputFailure::Cancelled);
+            return false;
+        }
+        if let Some(max) = limits.max_bytes
+            && self.logical_len.saturating_add(additional) > max
+        {
+            self.failure = Some(OutputFailure::Bytes(max));
+            return false;
+        }
+        true
+    }
+
+    fn push(&mut self, value: char) {
+        if self.check(value.len_utf8()) {
+            self.logical_len += value.len_utf8();
+            if self.retain {
+                self.text.push(value);
+            }
+        }
+    }
+
+    fn push_str(&mut self, value: &str) {
+        if self.check(value.len()) {
+            self.logical_len += value.len();
+            if self.retain {
+                self.text.push_str(value);
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.logical_len
+    }
+
+    fn truncate(&mut self, len: usize) {
+        self.logical_len = len;
+        if self.retain {
+            self.text.truncate(len);
+        }
+    }
+
+    fn finish_limited(self) -> Result<String> {
+        if let Some(failure) = self.failure {
+            return Err(failure.into_error());
+        }
+        Ok(self.text)
+    }
+}
+
+impl std::ops::Deref for BoundedText {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.text
+    }
+}
+
+impl std::ops::DerefMut for BoundedText {
+    fn deref_mut(&mut self) -> &mut String {
+        &mut self.text
+    }
+}
+
 struct Emitter<'a> {
-    buf: String,
+    buf: BoundedText,
     arena: &'a AstArena,
     host: OmmlRunProperties,
     /// The size of ordinary text in points.
@@ -386,9 +567,37 @@ struct NameRun {
 }
 
 impl<'a> Emitter<'a> {
-    fn new(arena: &'a AstArena, host: OmmlRunProperties, style: MathStyle) -> Self {
+    fn new(
+        arena: &'a AstArena,
+        host: OmmlRunProperties,
+        style: MathStyle,
+        limits: Option<OutputLimits>,
+    ) -> Self {
         Self {
-            buf: String::with_capacity(512),
+            buf: BoundedText::new(limits),
+            arena,
+            host,
+            base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
+            run_size: None,
+            style,
+            host_style: style,
+            sized: false,
+            entered: false,
+            diags: Vec::new(),
+            seen: HashSet::new(),
+            in_name: false,
+            name_run: None,
+        }
+    }
+
+    fn diagnostics(
+        arena: &'a AstArena,
+        host: OmmlRunProperties,
+        style: MathStyle,
+        limits: &OutputLimits,
+    ) -> Self {
+        Self {
+            buf: BoundedText::diagnostics(limits),
             arena,
             host,
             base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),

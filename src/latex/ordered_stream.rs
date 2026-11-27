@@ -193,6 +193,17 @@ struct WorkBudget {
 
 impl WorkBudget {
     fn charge(&mut self, amount: usize) -> ExpansionResult<()> {
+        match crate::error::request_checkpoint(amount) {
+            Ok(()) => {},
+            Err(crate::error::Error::RequestCancelled) => {
+                return Err(ExpansionFailure::RequestCancelled);
+            },
+            Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Work,
+                limit,
+            }) => return Err(ExpansionFailure::RequestWork { limit }),
+            Err(_) => {},
+        }
         if self.failed {
             return Err(ExpansionFailure::Work {
                 limit: self.work_cap,

@@ -292,6 +292,14 @@ impl LayoutArena {
     pub fn is_empty(&self) -> bool {
         self.boxes.is_empty()
     }
+
+    /// Approximate bytes reserved by the layout arena's backing vectors.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn capacity_bytes(&self) -> usize {
+        self.boxes.capacity() * std::mem::size_of::<ArenaLayoutBox>()
+            + self.children.capacity() * std::mem::size_of::<ArenaPositionedBox>()
+    }
 }
 
 impl Default for LayoutArena {

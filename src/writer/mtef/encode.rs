@@ -28,6 +28,7 @@ use crate::ast::{
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 use crate::reader::mtef::chars::{is_bold_symbol, negated};
+use crate::writer::limits::OutputFailure;
 
 // Record types (MTEFv3.md "Tag byte structure", MTEFv5.md "Record types").
 const END: u8 = 0;
@@ -190,11 +191,110 @@ enum Leaf {
     Text,
 }
 
+/// A bounded sink for the encoder's wire bytes.
+///
+/// The ordinary writer keeps an unlimited `Vec` and therefore pays no limit
+/// checks. A bounded request uses the same push/extend calls, but retains at
+/// most the configured number of bytes and records the first failure. The
+/// encoder checks this state at every node and glyph boundary, so a long text
+/// run stops without constructing its complete token.
+#[derive(Debug, Default)]
+pub(super) struct OutputSink {
+    bytes: Vec<u8>,
+    limit: Option<usize>,
+    failure: Option<OutputFailure>,
+}
+
+impl OutputSink {
+    pub(super) fn new(limit: Option<usize>) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit.map_or(256, |limit| limit.min(256))),
+            limit,
+            failure: None,
+        }
+    }
+
+    #[inline]
+    pub(super) fn push(&mut self, byte: u8) {
+        if self.failure.is_some() {
+            return;
+        }
+        if self.limit.is_some_and(|limit| self.bytes.len() >= limit) {
+            self.failure = self.limit.map(OutputFailure::Bytes);
+            return;
+        }
+        self.bytes.push(byte);
+    }
+
+    #[inline]
+    pub(super) fn extend<I>(&mut self, bytes: I)
+    where
+        I: IntoIterator<Item = u8>,
+    {
+        for byte in bytes {
+            self.push(byte);
+            if self.failure.is_some() {
+                break;
+            }
+        }
+    }
+
+    #[inline]
+    pub(super) fn extend_from_slice(&mut self, bytes: &[u8]) {
+        if self.failure.is_some() {
+            return;
+        }
+        let remaining = self
+            .limit
+            .map_or(bytes.len(), |limit| limit.saturating_sub(self.bytes.len()));
+        if bytes.len() > remaining {
+            self.bytes.extend_from_slice(&bytes[..remaining]);
+            self.failure = self.limit.map(OutputFailure::Bytes);
+        } else {
+            self.bytes.extend_from_slice(bytes);
+        }
+    }
+
+    #[inline]
+    pub(super) fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    #[inline]
+    pub(super) fn check(&self) -> Result<()> {
+        self.failure
+            .map_or(Ok(()), |failure| Err(failure.into_error()))
+    }
+
+    pub(super) fn finish(self) -> Result<Vec<u8>> {
+        self.check()?;
+        Ok(self.bytes)
+    }
+
+    #[inline]
+    pub(super) fn add_at(&mut self, index: usize, amount: u8) {
+        if self.failure.is_none()
+            && let Some(value) = self.bytes.get_mut(index)
+        {
+            *value = value.saturating_add(amount);
+        }
+    }
+
+    #[inline]
+    pub(super) fn set_at(&mut self, index: usize, value: u8) {
+        if self.failure.is_none()
+            && let Some(slot) = self.bytes.get_mut(index)
+        {
+            *slot = value;
+        }
+    }
+}
+
 pub(super) struct Encoder<'a> {
     arena: &'a AstArena,
     v5: bool,
     display: DisplayStyle,
-    pub(super) out: Vec<u8>,
+    pub(super) out: OutputSink,
     /// The size in effect at the end of `out` (`None` before the first).
     size: Option<SizeRecord>,
     /// The font size of the node being written, if it is not a typesize.
@@ -286,12 +386,13 @@ impl<'a> Encoder<'a> {
         v5: bool,
         display: DisplayStyle,
         base_pt: f64,
+        output_limit: Option<usize>,
     ) -> Self {
         Self {
             arena,
             v5,
             display,
-            out: Vec::with_capacity(256),
+            out: OutputSink::new(output_limit),
             size: None,
             own_size: None,
             sized: arena.has_attrs(),
@@ -739,6 +840,8 @@ impl<'a> Encoder<'a> {
         func_start: bool,
         embells: &[u8],
     ) -> Result<()> {
+        crate::error::request_checkpoint(1)?;
+        self.out.check()?;
         if matches!(
             glyph.typeface,
             FN_TEXT | FN_FUNCTION | FN_UCGREEK | chars::FN_TEXT_FE
@@ -1020,6 +1123,8 @@ impl<'a> Encoder<'a> {
     // ── Nodes ──────────────────────────────────────────────────────────
 
     fn node(&mut self, id: NodeId, mut size: Size) -> Result<()> {
+        crate::error::request_checkpoint(1)?;
+        self.out.check()?;
         self.enter()?;
         if self.sized {
             let outer = self.own_size;
@@ -3472,5 +3577,25 @@ fn font_bits(style: TextStyle) -> u8 {
         TextStyle::Italic => 2,
         TextStyle::BoldItalic => 3,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod output_sink_tests {
+    use super::OutputSink;
+    use crate::error::Error;
+
+    #[test]
+    fn a_tiny_sink_never_retains_bytes_past_its_ceiling() {
+        let mut sink = OutputSink::new(Some(16));
+        for _ in 0..1_000_000 {
+            sink.push(b'x');
+        }
+        assert_eq!(sink.bytes.len(), 16);
+        assert!(sink.bytes.capacity() <= 16);
+        assert!(matches!(
+            sink.finish(),
+            Err(Error::OutputLimit { limit: 16 })
+        ));
     }
 }

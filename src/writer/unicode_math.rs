@@ -7,6 +7,123 @@ use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
 use crate::writer::Writer as MathWriter;
+use crate::writer::limits::OutputLimits;
+
+trait UnicodeSink: std::ops::Deref<Target = str> {
+    fn push(&mut self, value: char);
+    fn push_str(&mut self, value: &str);
+    fn insert(&mut self, at: usize, value: char);
+    fn truncate(&mut self, at: usize);
+    fn replace_range(&mut self, range: std::ops::Range<usize>, value: &str);
+    fn repeat_char(&mut self, value: char, count: usize);
+    fn stopped(&self) -> bool;
+}
+
+impl UnicodeSink for String {
+    fn push(&mut self, value: char) {
+        String::push(self, value);
+    }
+    fn push_str(&mut self, value: &str) {
+        String::push_str(self, value);
+    }
+    fn insert(&mut self, at: usize, value: char) {
+        String::insert(self, at, value);
+    }
+    fn truncate(&mut self, at: usize) {
+        String::truncate(self, at);
+    }
+    fn replace_range(&mut self, range: std::ops::Range<usize>, value: &str) {
+        String::replace_range(self, range, value);
+    }
+    fn repeat_char(&mut self, value: char, count: usize) {
+        self.extend(std::iter::repeat_n(value, count));
+    }
+    fn stopped(&self) -> bool {
+        false
+    }
+}
+
+struct LimitedUnicode {
+    text: String,
+    limits: OutputLimits,
+    failure: Option<crate::writer::limits::OutputFailure>,
+}
+
+impl LimitedUnicode {
+    fn new(limits: &OutputLimits) -> Self {
+        Self {
+            text: String::new(),
+            limits: limits.clone(),
+            failure: None,
+        }
+    }
+
+    fn check(&mut self, additional: usize) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        if self.limits.is_cancelled() {
+            self.failure = Some(crate::writer::limits::OutputFailure::Cancelled);
+            return false;
+        }
+        if let Some(limit) = self.limits.max_bytes
+            && self.text.len().saturating_add(additional) > limit
+        {
+            self.failure = Some(crate::writer::limits::OutputFailure::Bytes(limit));
+            return false;
+        }
+        true
+    }
+
+    fn finish(self) -> Result<String> {
+        if let Some(failure) = self.failure {
+            return Err(failure.into_error());
+        }
+        Ok(self.text)
+    }
+}
+
+impl std::ops::Deref for LimitedUnicode {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl UnicodeSink for LimitedUnicode {
+    fn push(&mut self, value: char) {
+        if self.check(value.len_utf8()) {
+            self.text.push(value);
+        }
+    }
+    fn push_str(&mut self, value: &str) {
+        if self.check(value.len()) {
+            self.text.push_str(value);
+        }
+    }
+    fn insert(&mut self, at: usize, value: char) {
+        if self.check(value.len_utf8()) {
+            self.text.insert(at, value);
+        }
+    }
+    fn truncate(&mut self, at: usize) {
+        self.text.truncate(at);
+    }
+    fn replace_range(&mut self, range: std::ops::Range<usize>, value: &str) {
+        let old = range.end.saturating_sub(range.start);
+        if value.len() <= old || self.check(value.len() - old) {
+            self.text.replace_range(range, value);
+        }
+    }
+    fn repeat_char(&mut self, value: char, count: usize) {
+        for _ in 0..count {
+            self.push(value);
+        }
+    }
+    fn stopped(&self) -> bool {
+        self.failure.is_some()
+    }
+}
 
 /// Classifies a compact node that the UnicodeMath writer cannot fully or
 /// round-trippably represent. UnicodeMath is a lossy linear notation.
@@ -135,6 +252,49 @@ pub struct UnicodeMathWriter;
 const ZERO_WIDTH_SPACE: char = '\u{200B}';
 
 impl UnicodeMathWriter {
+    /// Write compact UnicodeMath with a caller-selected output budget.
+    ///
+    /// The recursive writer uses the same sink as the unlimited path, so a
+    /// request stops at an emission boundary before retaining excess output.
+    pub fn write_compact_with_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_compact_limited_validated(&prepared, limits)
+    }
+
+    /// Write compact UnicodeMath with diagnostics and output controls.
+    pub fn write_compact_with_diagnostics_and_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        let output = write_compact_limited_validated(&prepared, limits)?;
+        Ok((output, Self::compact_diagnostics(&prepared, config)))
+    }
+
+    pub(crate) fn write_compact_with_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
+        write_compact_limited_validated(&prepared, limits)
+    }
+
+    pub(crate) fn write_compact_with_diagnostics_and_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
+        let output = write_compact_limited_validated(&prepared, limits)?;
+        Ok((output, Self::compact_diagnostics(&prepared, config)))
+    }
+
     pub(crate) fn compact_diagnostics(expr: &CompactExpr, config: &Config) -> Vec<Diagnostic> {
         let mut visitor = UnicodeMathLossVisitor::default();
         visitor.visit_expr(expr);
@@ -147,6 +307,19 @@ impl UnicodeMathWriter {
             });
         }
         diagnostics
+    }
+
+    /// Collect loss diagnostics without retaining UnicodeMath output.
+    pub(crate) fn compact_diagnostics_only(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<Vec<Diagnostic>> {
+        limits.check_cancelled()?;
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        let diagnostics = Self::compact_diagnostics(&prepared, config);
+        limits.check_cancelled()?;
+        Ok(diagnostics)
     }
 
     /// Fast internal bridge for an expression returned by a parser or checked
@@ -231,7 +404,7 @@ impl CompactVisitor for UnicodeMathLossVisitor {
     }
 }
 
-fn write_unicode_space(out: &mut String, width: Rational) {
+fn write_unicode_space(out: &mut dyn UnicodeSink, width: Rational) {
     // UnicodeMath has no negative space (LaTeX `\!`): it is dropped rather
     // than written as a positive one. The zero-width space (UTN #28 section
     // 3.16) keeps the letters around it apart.
@@ -273,7 +446,7 @@ fn phantom_shortcut(kind: PhantomKind) -> char {
 /// UnicodeMath widths are 1/18, 1/6, 2/9, 5/18, 1/3, 1/4, 1/2 and 1 em.
 /// The bounded decomposition keeps the common one-character spellings
 /// unchanged.
-fn write_exact_unicode_space(out: &mut String, units: u32) -> bool {
+fn write_exact_unicode_space(out: &mut dyn UnicodeSink, units: u32) -> bool {
     let Some(parts) = unicode_space_parts(units) else {
         return false;
     };
@@ -400,6 +573,13 @@ fn write_compact_validated(expr: &CompactExpr) -> Result<String> {
     Ok(out)
 }
 
+fn write_compact_limited_validated(expr: &CompactExpr, limits: &OutputLimits) -> Result<String> {
+    let mut out = LimitedUnicode::new(limits);
+    let arena = &expr.arena;
+    write_nodes_c_with_style(&mut out, arena, expr.roots, MathStyle::from(expr.display));
+    out.finish()
+}
+
 fn table_loss(arena: &AstArena, table: &CompactNode) -> Option<String> {
     let CompactNode::Array {
         cells,
@@ -471,11 +651,11 @@ fn table_loss(arena: &AstArena, table: &CompactNode) -> Option<String> {
 /// Forced bounds keep their position in inline math. Movable bounds use
 /// ordinary scripts; the UnicodeMath function name determines their layout.
 fn write_bound(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     position: AccentPosition,
     movable: bool,
     line: bool,
-    write_arg: impl FnOnce(&mut String),
+    write_arg: impl FnOnce(&mut dyn UnicodeSink),
 ) {
     let mark = match (position, movable, line) {
         (AccentPosition::Above, _, true) => '\u{0305}',
@@ -494,7 +674,7 @@ fn write_bound(
 /// An undefined LaTeX command's name as quoted text. UnicodeMath text has no
 /// escape for its quote, so a `"` in a name that is no control word (only
 /// possible through the API) is written as a full-width quote.
-fn write_undefined_command_name(out: &mut String, name: &str) {
+fn write_undefined_command_name(out: &mut dyn UnicodeSink, name: &str) {
     out.push('"');
     for ch in name.chars() {
         out.push(if ch == '"' { '\u{FF02}' } else { ch });
@@ -504,7 +684,7 @@ fn write_undefined_command_name(out: &mut String, name: &str) {
 
 /// Quoted text, with `\"` for a quote and `\\` for a backslash in it (UTN
 /// #28 sections 3.2 and 3.15).
-fn write_quoted_text(out: &mut String, text: &str) {
+fn write_quoted_text(out: &mut dyn UnicodeSink, text: &str) {
     out.push('"');
     for c in text.chars() {
         if matches!(c, '"' | '\\') {
@@ -520,7 +700,7 @@ fn write_quoted_text(out: &mut String, text: &str) {
 /// style must reach through both shapes so the builder and one-shot routes
 /// emit the same UnicodeMath glyphs.
 fn write_styled_children(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     children: &[MathNode],
     text_style: TextStyle,
     style: MathStyle,
@@ -552,7 +732,10 @@ fn write_styled_children(
     }
 }
 
-fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_node(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
+    if out.stopped() {
+        return;
+    }
     match node {
         MathNode::Number(s) => out.push_str(s),
         MathNode::Identifier(s) => write_identifier(out, s),
@@ -968,7 +1151,11 @@ fn structured_content_needs_group(node: &MathNode) -> bool {
     }
 }
 
-fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle) {
+fn write_structured_nodes_with_style(
+    out: &mut dyn UnicodeSink,
+    nodes: &[MathNode],
+    style: MathStyle,
+) {
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
@@ -1020,7 +1207,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
     }
 }
 
-fn write_structured_identifier_run(out: &mut String, value: &str) {
+fn write_structured_identifier_run(out: &mut dyn UnicodeSink, value: &str) {
     // Normalization can turn a row of letters into one Identifier. Both
     // representations must remain one operand when a decoration follows.
     if value.is_empty() {
@@ -1047,7 +1234,7 @@ fn write_structured_identifier_run(out: &mut String, value: &str) {
 }
 
 fn write_accent(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     base: &MathNode,
     accent: char,
     position: AccentPosition,
@@ -1101,7 +1288,7 @@ fn structured_decorated_base_needs_group(node: &MathNode) -> bool {
     }
 }
 
-fn write_structured_decorated_base(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_structured_decorated_base(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     if structured_decorated_base_needs_group(node) {
         out.push('〖');
         write_structured_content(out, node, style);
@@ -1114,7 +1301,7 @@ fn write_structured_decorated_base(out: &mut String, node: &MathNode, style: Mat
 /// Write a bound in a structured body. A run of letters and digits is one
 /// script operand (UTN #28 section 2.2) and is written as is (`┴nⅆx`), not
 /// quoted as text.
-fn write_structured_bound(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_structured_bound(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Identifier(name) if reads_as_script_run(name) => out.push_str(name),
         MathNode::Row(children) if write_simple_script(out, script_items(children)) => {},
@@ -1130,7 +1317,12 @@ fn write_structured_bound(out: &mut String, node: &MathNode, style: MathStyle) {
 }
 
 /// Compact counterpart of [`write_structured_bound`].
-fn write_structured_bound_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_structured_bound_c(
+    out: &mut dyn UnicodeSink,
+    arena: &AstArena,
+    id: NodeId,
+    style: MathStyle,
+) {
     match *arena.node(id) {
         CompactNode::Identifier(sid) if reads_as_script_run(arena.str_val(sid)) => {
             out.push_str(arena.str_val(sid));
@@ -1152,7 +1344,7 @@ fn write_structured_bound_c(out: &mut String, arena: &AstArena, id: NodeId, styl
 /// Write a structured operator's body without introducing the literal
 /// parentheses used by ordinary UnicodeMath grouping. Decorations and nested
 /// rows remain linear and can be recovered by the UnicodeMath parser.
-fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_structured_content(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Identifier(value) => write_structured_identifier_run(out, value),
         MathNode::Row(children) => write_structured_nodes_with_style(out, children, style),
@@ -1327,7 +1519,7 @@ fn operator_body_needs_group_c(arena: &AstArena, id: NodeId, style: MathStyle) -
     }
 }
 
-fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_base(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     if let MathNode::MathAtom {
         atom_type: MathAtomType::Op,
         content,
@@ -1388,7 +1580,7 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
 
 /// Write the base of a combining accent, grouped when the accent would take
 /// only the last part of what it writes.
-fn write_accent_base(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_accent_base(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     let grouped = match select_mathchoice(node, style) {
         MathNode::Identifier(name) => name.chars().nth(1).is_some(),
         MathNode::Row(children) => !children.is_empty(),
@@ -1421,7 +1613,7 @@ fn write_accent_base(out: &mut String, node: &MathNode, style: MathStyle) {
 }
 
 /// Compact counterpart of [`write_accent_base`].
-fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_accent_base_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
     let grouped = match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Identifier(sid) => arena.str_val(sid).chars().nth(1).is_some(),
         CompactNode::Row(span) => !span.is_empty(),
@@ -1457,7 +1649,7 @@ fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: Ma
 
 /// The base of a bound. An accent is itself written with a bound's mark
 /// (`x┴⎴`), which a second one would join (`x┴(⎴┴n)`).
-fn write_bound_base(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_bound_base(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     if ends_in_bound(node) {
         out.push('〖');
         write_node(out, node, style);
@@ -1485,7 +1677,7 @@ fn ends_in_bound(node: &MathNode) -> bool {
 }
 
 /// Compact counterpart of [`write_bound_base`].
-fn write_bound_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_bound_base_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
     if ends_in_bound_c(arena, id) {
         out.push('〖');
         write_node_c(out, arena, id, style);
@@ -1513,7 +1705,7 @@ fn ends_in_bound_c(arena: &AstArena, id: NodeId) -> bool {
 /// Write the base of a subscript or superscript. A word is grouped: the
 /// script would take only its last letter (`〖ab〗_1` is `{ab}_1`, `ab_1`
 /// is `a b_1`).
-fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_script_base(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
         MathNode::Identifier(name) if name.chars().nth(1).is_some() => {
             out.push('〖');
@@ -1588,14 +1780,14 @@ fn prime_superscript<'a>(
 
 /// Write a script argument. One that writes as nothing is an empty group:
 /// `x^` or `(_1)` alone reads back as text.
-fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_script_arg(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     let start = out.len();
     write_script_arg_unguarded(out, node, style);
     let fenced = matches!(select_mathchoice(node, style), MathNode::Fenced { .. });
     group_null_operand(out, start, !fenced);
 }
 
-fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_script_arg_unguarded(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
         // The reader skips a space after `^`; in parentheses it is content.
         MathNode::Identifier(name) => write_script_word(out, name),
@@ -1726,7 +1918,10 @@ fn script_items_c(
 /// without parentheses (UTN #28 section 2.2, appendix A `soperand`): letters
 /// and digits (`a_ij`, `x^2y`), possibly after a sign (`e^-x`, `x^-1`), or a
 /// signed infinity (`∑_(n=-∞)`, `x^-∞`). Otherwise nothing is written.
-fn write_simple_script<'a>(out: &mut String, items: impl Iterator<Item = ScriptItem<'a>>) -> bool {
+fn write_simple_script<'a>(
+    out: &mut dyn UnicodeSink,
+    items: impl Iterator<Item = ScriptItem<'a>>,
+) -> bool {
     let start = out.len();
     let mut run = start;
     let mut after_number = false;
@@ -1778,7 +1973,7 @@ fn write_simple_script<'a>(out: &mut String, items: impl Iterator<Item = ScriptI
 
 /// Write a word as a script operand: as it is when the reader takes it
 /// whole, else grouped if a space has to break it (`x_(m ax)`).
-fn write_script_word(out: &mut String, name: &str) {
+fn write_script_word(out: &mut dyn UnicodeSink, name: &str) {
     let start = out.len();
     if reads_as_script_run(name) {
         out.push_str(name);
@@ -1794,7 +1989,7 @@ fn write_script_word(out: &mut String, name: &str) {
 /// Replace an operand written as nothing from `start` on, or as nothing but
 /// dropped spaces (`x^{\!}`), by an empty group. `grouping`: parentheses
 /// around it are the writer's.
-fn group_null_operand(out: &mut String, start: usize, grouping: bool) {
+fn group_null_operand(out: &mut dyn UnicodeSink, start: usize, grouping: bool) {
     // Most operands start with a letter, a digit or an operator.
     if out[start..].starts_with(|c: char| c != '(' && c.is_ascii()) {
         return;
@@ -1805,13 +2000,14 @@ fn group_null_operand(out: &mut String, start: usize, grouping: bool) {
         .and_then(|inner| inner.strip_suffix(')'))
         .filter(|_| grouping);
     if written.is_empty() || is_null_operand(inner.unwrap_or(written)) || inner == Some("") {
-        out.replace_range(start.., "〖〗");
+        let end = out.len();
+        out.replace_range(start..end, "〖〗");
     }
 }
 
 /// Parenthesize a denominator whose operator the fraction bar would negate
 /// (`x/(∣⃗)`).
-fn group_negatable(out: &mut String, start: usize) {
+fn group_negatable(out: &mut dyn UnicodeSink, start: usize) {
     let first = out[start..].chars().next();
     if first.is_some_and(|c| crate::unicode::symbols::precomposed_negation(c).is_some()) {
         out.insert(start, '(');
@@ -1892,7 +2088,7 @@ fn is_equation_array_heap(node: &MathNode) -> bool {
 
 /// Write a heap table using the requested UnicodeMath marker. Ordinary
 /// matrices use U+25A0; cases use U+24B8 and share this exact body formatter.
-fn write_heap_table(out: &mut String, node: &MathNode, marker: char) {
+fn write_heap_table(out: &mut dyn UnicodeSink, node: &MathNode, marker: char) {
     let rows = match node {
         MathNode::Array { rows, .. }
         | MathNode::Matrix { rows, .. }
@@ -1933,13 +2129,10 @@ fn write_heap_table(out: &mut String, node: &MathNode, marker: char) {
             }
             write_nodes_with_style(out, cell, MathStyle::Text);
             let span = table_cell_span(cell);
-            out.extend(std::iter::repeat_n('&', span - 1));
+            out.repeat_char('&', span - 1);
             column += span;
         }
-        out.extend(std::iter::repeat_n(
-            '&',
-            width.saturating_sub(column.max(1)),
-        ));
+        out.repeat_char('&', width.saturating_sub(column.max(1)));
     }
     // The reader drops an empty last row that no at-sign ends.
     if !rows.is_empty() && out.len() == row_start {
@@ -2001,7 +2194,7 @@ fn is_equation_array_c(arena: &AstArena, id: NodeId) -> bool {
 /// Write a compact table using the requested UnicodeMath marker. The body is
 /// shared by ordinary matrices and cases, so nested cases are emitted once
 /// while their cells are traversed.
-fn write_compact_table(out: &mut String, arena: &AstArena, id: NodeId, marker: char) {
+fn write_compact_table(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, marker: char) {
     let CompactNode::Array {
         cells, num_cols, ..
     } = *arena.node(id)
@@ -2047,7 +2240,7 @@ fn write_compact_table(out: &mut String, arena: &AstArena, id: NodeId, marker: c
             j += 1;
         }
         if authored_rows.is_none() {
-            out.extend(std::iter::repeat_n('&', stride - row.len()));
+            out.repeat_char('&', stride - row.len());
         }
     }
     // The reader drops an empty last row that no at-sign ends.
@@ -2075,7 +2268,7 @@ fn needs_script_group(glyph: &str) -> bool {
 
 /// Parenthesize a script operand written with a space outside brackets,
 /// which would end it (`x_(∑ a)`).
-fn group_spaced_script(out: &mut String, start: usize) {
+fn group_spaced_script(out: &mut dyn UnicodeSink, start: usize) {
     if out[start..].contains(' ') && !continues_naryand(out, start, &[]) {
         out.insert(start, '(');
         out.push(')');
@@ -2098,7 +2291,7 @@ fn breaks_word(name: &str) -> bool {
 /// Write a word, broken by a space where it would read as a function name
 /// (the word `inf` is `i nf`, not the function inf). The reader joins the
 /// letters into one word again.
-fn write_identifier(out: &mut String, name: &str) {
+fn write_identifier(out: &mut dyn UnicodeSink, name: &str) {
     if name.len() == 1 {
         out.push_str(name);
         return;
@@ -2156,7 +2349,7 @@ fn negated_glyph(glyph: &str) -> Option<String> {
 
 /// Follow the letters of adjacent words: `word` is where they start. The
 /// node written from `start` on ends them unless it is a word itself.
-fn track_word(out: &mut String, word: &mut Option<usize>, start: usize, is_word: bool) {
+fn track_word(out: &mut dyn UnicodeSink, word: &mut Option<usize>, start: usize, is_word: bool) {
     if is_word {
         word.get_or_insert(start);
     } else if let Some(from) = word.take() {
@@ -2202,7 +2395,7 @@ fn is_word_c(arena: &AstArena, id: NodeId) -> bool {
 }
 
 /// Write a node that is a word ([`is_word`]) as it is.
-fn write_word(out: &mut String, node: &MathNode) {
+fn write_word(out: &mut dyn UnicodeSink, node: &MathNode) {
     match node {
         MathNode::Identifier(text) | MathNode::Number(text) => out.push_str(text),
         MathNode::Row(children) => children.iter().for_each(|child| write_word(out, child)),
@@ -2211,7 +2404,7 @@ fn write_word(out: &mut String, node: &MathNode) {
 }
 
 /// Compact counterpart of [`write_word`].
-fn write_word_c(out: &mut String, arena: &AstArena, id: NodeId) {
+fn write_word_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Identifier(sid) | CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Row(span) => {
@@ -2225,7 +2418,7 @@ fn write_word_c(out: &mut String, arena: &AstArena, id: NodeId) {
 
 /// Break the letters `out[from..to]`, written by adjacent identifiers, where
 /// they would read as a function name with what follows (`i nf(x)`).
-fn break_function_names(out: &mut String, from: usize, mut to: usize) {
+fn break_function_names(out: &mut dyn UnicodeSink, from: usize, mut to: usize) {
     let mut start = from;
     while start < to {
         let letters = |bytes: &[u8]| bytes.iter().take_while(|b| b.is_ascii_alphabetic()).count();
@@ -2343,7 +2536,7 @@ fn is_scripted_empty_nary_c(arena: &AstArena, id: NodeId, style: MathStyle) -> b
 /// (UTN #28 section 2.1), so a compound operand is parenthesized and so is a
 /// parenthesized one (`((a+b))/c` keeps its parentheses); an operand that
 /// writes as nothing is an empty group (`〖〗/y`).
-fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_fraction_arg(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     let start = out.len();
     match select_mathchoice(node, style) {
         MathNode::Row(children) if children.len() > 1 => {
@@ -2396,13 +2589,13 @@ fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
 /// Write a radical or enclosure operand, parenthesized unless it is one
 /// letter or digit. One that writes as nothing is an empty group (`√〖〗`):
 /// `√()` reads back as visible parentheses.
-fn write_paren_if_complex(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_paren_if_complex(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     let start = out.len();
     write_paren_if_complex_unguarded(out, node, style);
     group_null_operand(out, start, true);
 }
 
-fn write_paren_if_complex_unguarded(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_paren_if_complex_unguarded(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
         // Already bracketed.
         MathNode::MathAtom {
@@ -2458,14 +2651,14 @@ fn select_mathchoice(node: &MathNode, style: MathStyle) -> &MathNode {
     }
 }
 
-fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle) {
+fn write_nodes_with_style(out: &mut dyn UnicodeSink, nodes: &[MathNode], style: MathStyle) {
     write_nodes_tracking(out, nodes, style, None);
 }
 
 /// Write `nodes`; with `applied`, record the offsets of the spaces written
 /// between a function name and its argument (see [`continues_naryand`]).
 fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     nodes: &[N],
     style: MathStyle,
     mut applied: Option<&mut SmallVec<[usize; 4]>>,
@@ -2494,7 +2687,8 @@ fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
             && let MathNode::Symbol(_, next) = select_mathchoice(next, current_style)
             && let Some(negated) = negated_glyph(next)
         {
-            track_word(out, &mut word, out.len(), false);
+            let end = out.len();
+            track_word(out, &mut word, end, false);
             out.push_str(&negated);
             edge = symbol_edge(next);
             previous = None;
@@ -2568,7 +2762,8 @@ fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
         wrote_node = true;
     }
     if let Some(from) = word {
-        break_function_names(out, from, out.len());
+        let end = out.len();
+        break_function_names(out, from, end);
     }
 }
 
@@ -2664,7 +2859,7 @@ fn continues_naryand(out: &str, start: usize, applied: &[usize]) -> bool {
 /// that takes it as a superscript (UTN #28 reads `y′` as `y` primed, so the
 /// sibling prime of LaTeX `y{'}` is written `y ′`).
 fn separate_following_operand(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     start: usize,
     previous_operator: impl FnOnce() -> bool,
     takes_prime: bool,
@@ -2735,7 +2930,7 @@ fn separate_following_operand(
 /// Set the fence content at `out[start..]`, which starts with a fraction, apart
 /// from an opening bar that the reader would not pair with the closing one
 /// (`| a/b+|`, `|a| b/c||`).
-fn separate_bar_content(out: &mut String, start: usize) {
+fn separate_bar_content(out: &mut dyn UnicodeSink, start: usize) {
     let Some(bar) = out[..start].chars().next_back().filter(|&c| is_bar(c)) else {
         return;
     };
@@ -2789,7 +2984,7 @@ fn in_open_bar(before: &str) -> bool {
 /// Separate the sibling written from `start` on from a script before it
 /// that would take it (`x_i y`, not `x_iy`), in a list written without
 /// [`write_nodes_with_style`] (a fence or a styled run).
-fn separate_after_script(out: &mut String, start: usize, previous_operator: bool) {
+fn separate_after_script(out: &mut dyn UnicodeSink, start: usize, previous_operator: bool) {
     separate_following_operand(
         out,
         start,
@@ -2802,7 +2997,7 @@ fn separate_after_script(out: &mut String, start: usize, previous_operator: bool
 
 /// Write an n-ary operator. `grouped`: group an n-aryand that ends in a
 /// function name, which the reader would give the operand after it.
-fn write_nary(out: &mut String, node: &MathNode, style: MathStyle, grouped: bool) {
+fn write_nary(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle, grouped: bool) {
     if let MathNode::Nary {
         op,
         sub,
@@ -2856,7 +3051,13 @@ fn splits_naryand(next: &MathNode, style: MathStyle) -> bool {
 }
 
 /// Compact counterpart of [`write_nary`].
-fn write_nary_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle, grouped: bool) {
+fn write_nary_c(
+    out: &mut dyn UnicodeSink,
+    arena: &AstArena,
+    id: NodeId,
+    style: MathStyle,
+    grouped: bool,
+) {
     if let CompactNode::Nary {
         op,
         sub,
@@ -2931,7 +3132,7 @@ fn splits_naryand_c(arena: &AstArena, next: NodeId, style: MathStyle) -> bool {
 /// (`∑_i a_i b_i`), and anything else that is not one operand, or that is
 /// written with a space, in an invisible group (`∑ 〖a+b〗`): the reader
 /// keeps parentheses around an n-aryand (`∏_k (1+x_k)`).
-fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle, grouped: bool) {
+fn write_naryand(out: &mut dyn UnicodeSink, node: &MathNode, style: MathStyle, grouped: bool) {
     let node = select_mathchoice(node, style);
     let plain = match node {
         // A fraction is a factor too (`∑ log 1/k`, `∫ f/x ⅆx`); the spaces
@@ -3001,7 +3202,7 @@ fn reads_whole_with_bars(out: &str, start: usize, grouped: bool) -> bool {
 
 /// Compact counterpart of [`write_naryand`].
 fn write_naryand_c(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     id: NodeId,
     style: MathStyle,
@@ -3440,7 +3641,7 @@ fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId, style: MathStyle) 
 }
 
 fn write_styled_children_c(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     children: &[NodeId],
     text_style: TextStyle,
@@ -3480,7 +3681,10 @@ fn write_styled_children_c(
     }
 }
 
-fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_node_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
+    if out.stopped() {
+        return;
+    }
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Identifier(sid) => write_identifier(out, arena.str_val(sid)),
@@ -3863,7 +4067,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 #[cold]
 #[inline(never)]
 fn write_structured_operator_c(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     content: NodeId,
     style: MathStyle,
@@ -3907,7 +4111,7 @@ fn structured_content_needs_group_c(arena: &AstArena, id: NodeId) -> bool {
 }
 
 fn write_structured_nodes_c_with_style(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     span: crate::ast::compact::NodeSpan,
     style: MathStyle,
@@ -3964,7 +4168,7 @@ fn write_structured_nodes_c_with_style(
 }
 
 fn write_accent_c(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     base: NodeId,
     accent: char,
@@ -4016,7 +4220,7 @@ fn structured_decorated_base_needs_group_c(arena: &AstArena, id: NodeId) -> bool
 }
 
 fn write_structured_decorated_base_c(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     id: NodeId,
     style: MathStyle,
@@ -4030,7 +4234,12 @@ fn write_structured_decorated_base_c(
     }
 }
 
-fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_structured_content_c(
+    out: &mut dyn UnicodeSink,
+    arena: &AstArena,
+    id: NodeId,
+    style: MathStyle,
+) {
     match *arena.node(id) {
         CompactNode::Identifier(value) => {
             write_structured_identifier_run(out, arena.str_val(value))
@@ -4158,7 +4367,7 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
     }
 }
 
-fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_base_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
     if let CompactNode::MathAtom {
         atom_type: MathAtomType::Op,
         content,
@@ -4220,7 +4429,7 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 }
 
 /// Compact counterpart of [`write_script_base`].
-fn write_script_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_script_base_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
     // A letter or a number is an operand as it is.
     if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id)
         && arena.str_val(sid).len() == 1
@@ -4288,7 +4497,7 @@ fn prime_superscript_c(
 }
 
 /// Compact counterpart of [`write_script_arg`].
-fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_script_arg_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
     // A letter or a number is an operand as it is.
     if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id)
         && arena.str_val(sid).len() == 1
@@ -4305,7 +4514,12 @@ fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: Mat
     group_null_operand(out, start, !fenced);
 }
 
-fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_script_arg_unguarded_c(
+    out: &mut dyn UnicodeSink,
+    arena: &AstArena,
+    id: NodeId,
+    style: MathStyle,
+) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         // The reader skips a space after `^`; in parentheses it is content.
         CompactNode::Space(_) => {
@@ -4399,7 +4613,7 @@ fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, 
 }
 
 /// Compact counterpart of [`write_fraction_arg`].
-fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_fraction_arg_c(out: &mut dyn UnicodeSink, arena: &AstArena, id: NodeId, style: MathStyle) {
     // A letter or a number is an operand as it is.
     if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id)
         && arena.str_val(sid).len() == 1
@@ -4458,14 +4672,19 @@ fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: M
 }
 
 /// Compact counterpart of [`write_paren_if_complex`].
-fn write_paren_if_complex_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_paren_if_complex_c(
+    out: &mut dyn UnicodeSink,
+    arena: &AstArena,
+    id: NodeId,
+    style: MathStyle,
+) {
     let start = out.len();
     write_paren_if_complex_unguarded_c(out, arena, id, style);
     group_null_operand(out, start, true);
 }
 
 fn write_paren_if_complex_unguarded_c(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     id: NodeId,
     style: MathStyle,
@@ -4542,7 +4761,7 @@ fn select_operand_c(arena: &AstArena, id: NodeId, style: MathStyle) -> NodeId {
 }
 
 fn write_nodes_c_with_style(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     span: crate::ast::compact::NodeSpan,
     style: MathStyle,
@@ -4554,7 +4773,7 @@ fn write_nodes_c_with_style(
 /// (`sin⁡〖xy〗`, UTN #28): what is written from `start` on, after U+2061 and
 /// perhaps a space, which the group takes the place of. Returns where the
 /// argument starts now.
-fn group_argument(out: &mut String, start: usize) -> usize {
+fn group_argument(out: &mut dyn UnicodeSink, start: usize) -> usize {
     if out.len() == start {
         return start;
     }
@@ -4566,7 +4785,7 @@ fn group_argument(out: &mut String, start: usize) -> usize {
 
 /// Compact counterpart of [`write_nodes_tracking`].
 fn write_nodes_c_tracking(
-    out: &mut String,
+    out: &mut dyn UnicodeSink,
     arena: &AstArena,
     children: &[NodeId],
     style: MathStyle,
@@ -4597,7 +4816,8 @@ fn write_nodes_c_tracking(
                 *arena.node(select_mathchoice_c(arena, next, current_style))
             && let Some(negated) = negated_glyph(arena.str_val(next))
         {
-            track_word(out, &mut word, out.len(), false);
+            let end = out.len();
+            track_word(out, &mut word, end, false);
             out.push_str(&negated);
             edge = symbol_edge(arena.str_val(next));
             previous = None;
@@ -4711,7 +4931,8 @@ fn write_nodes_c_tracking(
         wrote_node = true;
     }
     if let Some(from) = word {
-        break_function_names(out, from, out.len());
+        let end = out.len();
+        break_function_names(out, from, end);
     }
 }
 

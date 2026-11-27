@@ -25,6 +25,10 @@ const MIN_EXPANSION_WORK: usize = 1 << 20;
 /// Resource failure raised while expanding the ordered macro stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpansionFailure {
+    /// A caller-controlled request was cancelled while expanding tokens.
+    RequestCancelled,
+    /// A caller-controlled request exceeded its work budget.
+    RequestWork { limit: usize },
     /// Rendered or intermediate expansion bytes exceeded the output cap.
     OutputBytes { limit: usize },
     /// Token processing, queue traversal or clone work exceeded its budget.

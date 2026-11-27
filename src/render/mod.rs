@@ -81,6 +81,23 @@ where
     })
 }
 
+/// Release the pooled layout scratch arena for the current worker thread.
+///
+/// Returns true when the pool was available and replaced with a fresh arena.
+/// A false result means a nested render currently holds the pool, so callers
+/// can retry after that request returns. Prepared renders own their arena and
+/// are unaffected by this operation. Font and glyph caches are managed
+/// separately and are intentionally retained.
+pub fn release_thread_render_cache() -> bool {
+    LAYOUT_ARENA_POOL.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut arena) => {
+            *arena = arena::LayoutArena::new();
+            true
+        },
+        Err(_) => false,
+    })
+}
+
 /// Options controlling SVG rendering output.
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
@@ -238,9 +255,7 @@ impl SvgOptions {
         if let Some(max) = limits.max_bytes
             && metadata_len > max
         {
-            return Err(crate::error::Error::Render {
-                message: "SVG output exceeded the configured byte limit".into(),
-            });
+            return Err(crate::error::Error::OutputLimit { limit: max });
         }
         let metadata = self.metadata_markup()?;
         // Metadata is streamed into the root opening tag by each emitter, so
@@ -293,6 +308,8 @@ pub struct SvgLimits {
     pub max_bytes: Option<usize>,
     /// Optional cancellation flag checked while output is emitted.
     pub cancellation: Option<Arc<AtomicBool>>,
+    output_limits: Option<crate::OutputLimits>,
+    request_cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl SvgLimits {
@@ -302,6 +319,8 @@ impl SvgLimits {
         Self {
             max_bytes: Some(max_bytes),
             cancellation: None,
+            output_limits: None,
+            request_cancellation: None,
         }
     }
 
@@ -313,18 +332,43 @@ impl SvgLimits {
         self
     }
 
+    /// Apply a shared text-output budget and cancellation policy.
+    #[must_use]
+    pub fn with_output_limits(mut self, output: &crate::writer::limits::OutputLimits) -> Self {
+        self.max_bytes = match (self.max_bytes, output.max_bytes) {
+            (Some(current), Some(shared)) => Some(current.min(shared)),
+            (None, shared) => shared,
+            (current, None) => current,
+        };
+        self.output_limits = Some(output.clone());
+        self
+    }
+
+    /// Share cancellation with a request control.
+    #[must_use]
+    pub fn with_request_control(mut self, control: &crate::RequestControl) -> Self {
+        self.request_cancellation = Some(control.cancellation_handle());
+        self
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancellation
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            || self
+                .output_limits
+                .as_ref()
+                .is_some_and(crate::OutputLimits::is_cancelled)
+            || self
+                .request_cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
 }
 
 fn reject_if_cancelled(limits: &SvgLimits) -> Result<()> {
     if limits.is_cancelled() {
-        return Err(crate::error::Error::Render {
-            message: "SVG rendering was cancelled".into(),
-        });
+        return Err(crate::error::Error::RequestCancelled);
     }
     Ok(())
 }
@@ -2024,6 +2068,42 @@ mod integration_tests {
             render_to_svg_compact_arena(&result.expr, &options, &mut layout_arena).unwrap();
 
         assert_eq!(heap_svg, arena_svg);
+    }
+
+    #[test]
+    fn release_thread_render_cache_drops_high_water_capacity() {
+        use crate::reader::Reader;
+
+        let config = crate::error::Config::default();
+        let expr = crate::reader::latex::LatexReader::parse_compact("x^2 + y^2", &config)
+            .unwrap()
+            .expr;
+        let before = render_to_svg_compact(&expr, &RenderOptions::default()).unwrap();
+        let default_capacity = with_pooled_arena(|arena| Ok(arena.capacity_bytes())).unwrap();
+        with_pooled_arena(|arena| {
+            for _ in 0..2048 {
+                arena.alloc(arena::ArenaLayoutBox::kern(1.0));
+            }
+            Ok(())
+        })
+        .unwrap();
+        let grown_capacity = with_pooled_arena(|arena| Ok(arena.capacity_bytes())).unwrap();
+        assert!(grown_capacity > default_capacity);
+        assert!(release_thread_render_cache());
+        let reset_capacity = with_pooled_arena(|arena| Ok(arena.capacity_bytes())).unwrap();
+        assert!(reset_capacity < grown_capacity);
+        let after = render_to_svg_compact(&expr, &RenderOptions::default()).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn release_thread_render_cache_defers_while_pool_is_borrowed() {
+        let result = with_pooled_arena(|_| {
+            assert!(!release_thread_render_cache());
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(release_thread_render_cache());
     }
 
     #[test]

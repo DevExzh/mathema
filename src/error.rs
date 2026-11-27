@@ -2,8 +2,11 @@
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
+use std::cell::RefCell;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Position span in source input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,6 +43,10 @@ pub(crate) fn safe_byte_span(source: &str, offset: usize) -> Span {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A caller cancelled an in-flight controlled request.
+    #[error("request cancelled")]
+    RequestCancelled,
+
     /// A LaTeX source string could not be parsed.
     #[error("LaTeX parse error: {message}")]
     LatexParse {
@@ -126,6 +133,13 @@ pub enum Error {
         /// Which configured limit was exceeded.
         kind: LimitKind,
         /// The configured value of that limit.
+        limit: usize,
+    },
+
+    /// Output was stopped because a caller-selected byte budget was reached.
+    #[error("output byte limit of {limit} exceeded")]
+    OutputLimit {
+        /// The configured maximum number of output bytes.
         limit: usize,
     },
 }
@@ -216,6 +230,8 @@ impl std::error::Error for LocatedError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LimitKind {
+    /// Work units consumed by a caller-controlled request.
+    Work,
     /// The number of AST nodes a single parse may create; see
     /// [`Config::max_nodes`].
     Nodes,
@@ -228,17 +244,161 @@ pub enum LimitKind {
     /// are indexed with 32 bits (see `AstArena::MAX_ENTRIES`); not
     /// configurable.
     ArenaSize,
+    /// Bytes emitted by a bounded output request.
+    OutputBytes,
 }
 
 impl std::fmt::Display for LimitKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            LimitKind::Work => "request work",
             LimitKind::Nodes => "node count",
             LimitKind::Depth => "nesting depth",
             LimitKind::ListLength => "list length",
             LimitKind::ArenaSize => "arena size",
+            LimitKind::OutputBytes => "output bytes",
         })
     }
+}
+
+/// Cooperative cancellation and work budget for one parsing or conversion
+/// request.
+///
+/// A control can be cloned and shared with a worker that owns the request. The
+/// reader checkpoints are thread-local to the controlled call, so concurrent
+/// requests do not share counters or cancellation state.
+#[derive(Clone, Debug)]
+pub struct RequestControl {
+    state: Arc<RequestState>,
+}
+
+#[derive(Debug)]
+struct RequestState {
+    cancelled: Arc<AtomicBool>,
+    work: AtomicUsize,
+    max_work: Option<usize>,
+}
+
+impl Default for RequestControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RequestControl {
+    /// Create a request control with no work ceiling.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(RequestState {
+                cancelled: Arc::new(AtomicBool::new(false)),
+                work: AtomicUsize::new(0),
+                max_work: None,
+            }),
+        }
+    }
+
+    /// Create a request control with a maximum number of cooperative work
+    /// units. A work unit is intentionally abstract and stable only within a
+    /// reader implementation.
+    #[must_use]
+    pub fn with_max_work(max_work: usize) -> Self {
+        Self {
+            state: Arc::new(RequestState {
+                cancelled: Arc::new(AtomicBool::new(false)),
+                work: AtomicUsize::new(0),
+                max_work: Some(max_work),
+            }),
+        }
+    }
+
+    /// Request cancellation. The next checkpoint returns
+    /// [`Error::RequestCancelled`].
+    pub fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Return a cancellation flag usable by bounded output controls.
+    #[must_use]
+    pub fn cancellation_handle(&self) -> Arc<AtomicBool> {
+        self.state.cancelled.clone()
+    }
+
+    /// Whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Number of work units charged so far.
+    #[must_use]
+    pub fn work(&self) -> usize {
+        self.state.work.load(Ordering::Relaxed)
+    }
+
+    /// Check cancellation and charge cooperative work.
+    pub fn checkpoint(&self, units: usize) -> Result<()> {
+        if self.is_cancelled() {
+            return Err(Error::RequestCancelled);
+        }
+        if let Some(limit) = self.state.max_work {
+            self.state
+                .work
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(units).filter(|next| *next <= limit)
+                })
+                .map_err(|_| Error::LimitExceeded {
+                    kind: LimitKind::Work,
+                    limit,
+                })?;
+        } else {
+            self.state.work.fetch_add(units, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Run a closure with this control installed for parser and writer
+    /// checkpoints. Nested scopes restore the previous control, including
+    /// when the closure unwinds through a panic.
+    pub fn scope<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.checkpoint(0)?;
+        let guard =
+            ActiveControlGuard(ACTIVE_CONTROL.with(|slot| slot.replace(Some(self.clone()))));
+        let result = f();
+        drop(guard);
+        let value = result?;
+        self.checkpoint(0)?;
+        Ok(value)
+    }
+
+    /// Internal spelling used by the conversion wrappers.
+    pub(crate) fn run<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.scope(f)
+    }
+}
+
+thread_local! {
+    static ACTIVE_CONTROL: RefCell<Option<RequestControl>> = const { RefCell::new(None) };
+}
+
+struct ActiveControlGuard(Option<RequestControl>);
+
+impl Drop for ActiveControlGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        ACTIVE_CONTROL.with(|slot| {
+            slot.replace(previous);
+        });
+    }
+}
+
+/// Charge work for the active controlled request. Uncontrolled paths are a
+/// no-op, retaining the existing parser hot path and API behavior.
+pub(crate) fn request_checkpoint(units: usize) -> Result<()> {
+    ACTIVE_CONTROL.with(|slot| match slot.borrow().as_ref() {
+        Some(control) => control.checkpoint(units),
+        None => Ok(()),
+    })
 }
 
 // `quick_xml` is an implementation detail of the MathML/OMML readers. Convert

@@ -4,6 +4,7 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::borrow::Cow;
 use std::io::Cursor;
 
+use super::limits::{OutputFailure, OutputLimits};
 use super::xml_chars;
 use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
@@ -202,6 +203,43 @@ impl MathWriter for MathmlWriter {
 }
 
 impl MathmlWriter {
+    /// Write compact MathML while enforcing a byte budget and cancellation.
+    pub fn write_compact_with_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_compact_limited_validated(&prepared, limits)
+    }
+
+    /// Write compact MathML with diagnostics and output controls.
+    pub fn write_compact_with_diagnostics_and_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let prepared = super::prepare_leading_scripts(expr, config)?;
+        write_limited_with_diagnostics(&prepared, limits)
+    }
+
+    pub(crate) fn write_compact_with_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
+        write_compact_limited_validated(&prepared, limits)
+    }
+
+    pub(crate) fn write_compact_with_diagnostics_and_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let prepared = super::prepare_leading_scripts_trusted(expr, config)?;
+        write_limited_with_diagnostics(&prepared, limits)
+    }
     /// Fast internal bridge for expressions returned by a parser or checked
     /// conversion result. Public trait calls retain strict arena validation.
     pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
@@ -278,6 +316,61 @@ fn write_compact_text(expr: &CompactExpr) -> (String, bool) {
         return (xml_chars::replace_non_xml_chars(buf.target), true);
     }
     (buf.target, false)
+}
+
+fn write_limited_with_diagnostics(
+    prepared: &CompactExpr,
+    limits: &OutputLimits,
+) -> Result<(String, Vec<Diagnostic>)> {
+    let (output, replaced) = write_compact_limited_validated_with_replacement(prepared, limits)?;
+    let mut diagnostics = super::collect_loss_diagnostics(prepared, mathml_loss);
+    if replaced {
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: xml_chars::REPLACED.into(),
+            span: None,
+        });
+    }
+    Ok((output, diagnostics))
+}
+
+fn write_compact_limited_validated(expr: &CompactExpr, limits: &OutputLimits) -> Result<String> {
+    write_compact_limited_validated_with_replacement(expr, limits).map(|(output, _)| output)
+}
+
+fn write_compact_limited_validated_with_replacement(
+    expr: &CompactExpr,
+    limits: &OutputLimits,
+) -> Result<(String, bool)> {
+    let mut buf = write_math_fast_with_limits(expr, expr.arena.has_size_scale(), Some(limits));
+    if buf.missed_size {
+        buf = write_math_fast_with_limits(expr, true, Some(limits));
+    }
+    let suspect = buf.invalid_glyph || xml_chars::has_non_xml_char(expr.arena.string_storage());
+    let raw = buf.finish_limited()?;
+    if suspect && xml_chars::has_non_xml_char(&raw) {
+        let repaired_len = repaired_xml_len(&raw, limits)?;
+        limits.check_bytes(repaired_len)?;
+        let output = xml_chars::replace_non_xml_chars(raw);
+        Ok((output, true))
+    } else {
+        Ok((raw, false))
+    }
+}
+
+fn repaired_xml_len(raw: &str, limits: &OutputLimits) -> Result<usize> {
+    let mut length = 0usize;
+    for (index, ch) in raw.chars().enumerate() {
+        if index & 4095 == 0 {
+            limits.check_cancelled()?;
+        }
+        length = length.saturating_add(if xml_chars::is_xml_char(ch) {
+            ch.len_utf8()
+        } else {
+            '\u{FFFD}'.len_utf8()
+        });
+    }
+    Ok(length)
 }
 
 struct StandardizedMathml {
@@ -666,8 +759,16 @@ fn token_tag_len(element: &str) -> Option<usize> {
 }
 
 fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
+    write_math_fast_with_limits(expr, has_sizes, None)
+}
+
+fn write_math_fast_with_limits(
+    expr: &CompactExpr,
+    has_sizes: bool,
+    limits: Option<&OutputLimits>,
+) -> XmlBuffer {
     let arena = &expr.arena;
-    let mut buf = MathOutput::new(String::with_capacity(512));
+    let mut buf = MathOutput::new_with_limits(String::with_capacity(512), limits.cloned());
     buf.has_sizes = has_sizes;
 
     if expr.display == DisplayStyle::Block {
@@ -695,6 +796,8 @@ fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
 /// the operator-name font in scope through fractions, accents and scripts.
 struct MathOutput<T> {
     target: T,
+    limits: Option<OutputLimits>,
+    failure: Option<OutputFailure>,
     operator_font: Option<TextStyle>,
     /// The style of the `mstyle` around, which a letter spells itself where
     /// that of the `mstyle` is not enough.
@@ -720,8 +823,14 @@ struct MathOutput<T> {
 
 impl<T> MathOutput<T> {
     fn new(target: T) -> Self {
+        Self::new_with_limits(target, None)
+    }
+
+    fn new_with_limits(target: T, limits: Option<OutputLimits>) -> Self {
         Self {
             target,
+            limits,
+            failure: None,
             operator_font: None,
             letter_style: None,
             base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
@@ -765,6 +874,54 @@ impl<T> MathOutput<T> {
         let result = write(self);
         self.letter_style = previous;
         result
+    }
+}
+
+impl MathOutput<String> {
+    fn check_output(&mut self, additional: usize) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        let Some(limits) = self.limits.as_ref() else {
+            return true;
+        };
+        if limits.is_cancelled() {
+            self.failure = Some(OutputFailure::Cancelled);
+            return false;
+        }
+        if let Some(max_bytes) = limits.max_bytes
+            && self.target.len().saturating_add(additional) > max_bytes
+        {
+            self.failure = Some(OutputFailure::Bytes(max_bytes));
+            return false;
+        }
+        true
+    }
+
+    #[inline]
+    fn push_str(&mut self, value: &str) {
+        if self.check_output(value.len()) {
+            self.target.push_str(value);
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, value: char) {
+        if self.check_output(value.len_utf8()) {
+            self.target.push(value);
+        }
+    }
+
+    #[inline]
+    fn stopped(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    fn finish_limited(self) -> Result<String> {
+        if let Some(failure) = self.failure {
+            return Err(failure.into_error());
+        }
+        Ok(self.target)
     }
 }
 
@@ -1286,6 +1443,9 @@ fn write_nodes_fast(
     inherited: MathStyle,
     explicit_row: bool,
 ) {
+    if buf.stopped() {
+        return;
+    }
     if buf.has_sizes {
         return write_sized_nodes_fast(buf, arena, nodes, inherited, explicit_row);
     }
@@ -2829,6 +2989,9 @@ fn write_node_fast_in(
     single_argument: bool,
     display_style: MathStyle,
 ) {
+    if buf.stopped() {
+        return;
+    }
     if arena.has_attrs() {
         return write_attributed_fast(buf, arena, id, single_argument, display_style);
     }
@@ -5047,6 +5210,70 @@ mod tests {
             "compact output: {output}"
         );
         assert!(!output.contains("><<"), "compact output: {output}");
+    }
+
+    #[test]
+    fn bounded_nary_replacement_is_counted_and_reported() {
+        let expr = MathExpr::inline(vec![MathNode::Nary {
+            op: '\u{13}',
+            sub: None,
+            sup: None,
+            body: Box::new(MathNode::Identifier("x".into())),
+            limits: LimitStyle::Default,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let config = Config::default();
+        let (unlimited, diagnostics) =
+            MathmlWriter::write_compact_with_diagnostics(&compact, &config).unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message == xml_chars::REPLACED })
+        );
+        let exact = MathmlWriter::write_compact_with_diagnostics_and_limits(
+            &compact,
+            &config,
+            &OutputLimits::with_max_bytes(unlimited.len()),
+        )
+        .unwrap();
+        assert_eq!(exact.0, unlimited);
+        assert!(matches!(
+            MathmlWriter::write_compact_with_diagnostics_and_limits(
+                &compact,
+                &config,
+                &OutputLimits::with_max_bytes(unlimited.len() - 1),
+            ),
+            Err(crate::Error::OutputLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_text_replacement_is_counted_and_reported() {
+        let expr = MathExpr::inline(vec![MathNode::Text(TextStyle::Normal, "a\u{13}b".into())]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let config = Config::default();
+        let (unlimited, diagnostics) =
+            MathmlWriter::write_compact_with_diagnostics(&compact, &config).unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message == xml_chars::REPLACED })
+        );
+        let exact = MathmlWriter::write_compact_with_diagnostics_and_limits(
+            &compact,
+            &config,
+            &OutputLimits::with_max_bytes(unlimited.len()),
+        )
+        .unwrap();
+        assert_eq!(exact.0, unlimited);
+        assert!(matches!(
+            MathmlWriter::write_compact_with_diagnostics_and_limits(
+                &compact,
+                &config,
+                &OutputLimits::with_max_bytes(unlimited.len() - 1),
+            ),
+            Err(crate::Error::OutputLimit { .. })
+        ));
     }
 
     #[test]

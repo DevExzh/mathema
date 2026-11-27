@@ -34,6 +34,7 @@ struct Lowering<'a> {
     base_pt: f64,
     approximated: usize,
     dropped: usize,
+    failure: Option<crate::error::Error>,
 }
 
 /// `expr` with its font sizes as size and style declarations.
@@ -54,12 +55,16 @@ pub(super) fn lower_sizes(expr: &CompactExpr) -> crate::error::Result<Lowered> {
         arena: &mut lowered.arena,
         approximated: 0,
         dropped: 0,
+        failure: None,
     };
     let context = Context {
         style: expr.display.into(),
         size: NORMAL,
     };
     let roots = lowering.list(expr.roots, context);
+    if let Some(error) = lowering.failure.take() {
+        return Err(error);
+    }
     let (approximated, dropped) = (lowering.approximated, lowering.dropped);
     lowered.roots = roots;
     lowered.arena.clear_attrs();
@@ -206,6 +211,13 @@ impl Lowering<'_> {
         let mut ambient = context;
         let mut current = context;
         for id in children {
+            if self.failure.is_some() {
+                break;
+            }
+            if let Err(error) = crate::error::request_checkpoint(1) {
+                self.failure = Some(error);
+                break;
+            }
             match *self.arena.node(id) {
                 CompactNode::StyleSwitch(value) => {
                     self.switch(&mut out, current, ambient);

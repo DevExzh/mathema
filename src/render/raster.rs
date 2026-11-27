@@ -6,6 +6,7 @@ mod color;
 
 use color::{parse_color, parse_color_checked, resolve_color};
 use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
 use std::sync::LazyLock;
 
 use fontdue::{Font, FontSettings};
@@ -19,6 +20,7 @@ use super::style::MathStyle;
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
 use crate::error::{Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticRecord, Result};
+use crate::writer::limits::OutputLimits;
 
 // ---------------------------------------------------------------------------
 // Embedded font (Latin Modern Math, GUST Font License)
@@ -77,22 +79,24 @@ pub enum ImageFormat {
     Jpeg,
 }
 
-/// Resource limits applied before allocating a raster pixmap.
+/// Resource and output controls for one raster request.
 ///
 /// The default retains the existing 8192-pixel per-side ceiling and permits
 /// the full area that those dimensions can occupy. Service hosts can lower
 /// `max_pixels` for requests that must use a smaller allocation budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RasterLimits {
     /// Maximum number of pixels allocated for one image.
     pub max_pixels: usize,
+    output: OutputLimits,
 }
 
 impl Default for RasterLimits {
     fn default() -> Self {
         Self {
             max_pixels: 8192usize * 8192,
+            output: OutputLimits::unlimited(),
         }
     }
 }
@@ -101,7 +105,30 @@ impl RasterLimits {
     /// Return limits with a caller-selected pixel allocation ceiling.
     #[must_use]
     pub const fn with_max_pixels(max_pixels: usize) -> Self {
-        Self { max_pixels }
+        Self {
+            max_pixels,
+            output: OutputLimits::unlimited(),
+        }
+    }
+
+    /// Apply a shared output byte budget and cancellation policy.
+    #[must_use]
+    pub fn with_output_limits(mut self, output: OutputLimits) -> Self {
+        self.output = output;
+        self
+    }
+
+    /// Share cancellation with a request control while retaining this pixel budget.
+    #[must_use]
+    pub fn with_request_control(self, control: &crate::RequestControl) -> Self {
+        Self {
+            output: self.output.with_request_control(control),
+            ..self
+        }
+    }
+
+    fn output(&self) -> &OutputLimits {
+        &self.output
     }
 }
 
@@ -515,6 +542,7 @@ fn rasterize_layout(
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<Vec<u8>> {
+    limits.output().check_bytes(0)?;
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
@@ -554,6 +582,9 @@ fn rasterize_layout(
         fg,
         cache: HashMap::new(),
         glyph_rgba_buf: Vec::new(),
+        output: limits.output(),
+        work: 0,
+        failure: None,
     };
 
     // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
@@ -566,8 +597,11 @@ fn rasterize_layout(
         baseline_y,
         HorizontalTransform::identity(),
     );
+    if let Some(error) = ctx.failure {
+        return Err(error);
+    }
 
-    encode_image(&pixmap, options)
+    encode_image(&pixmap, options, limits.output())
 }
 
 /// Arena-based counterpart of [`rasterize_layout`]. Produces byte-identical
@@ -579,6 +613,7 @@ pub(crate) fn rasterize_layout_arena(
     options: &RasterOptions,
     limits: &RasterLimits,
 ) -> Result<Vec<u8>> {
+    limits.output().check_bytes(0)?;
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
@@ -620,6 +655,9 @@ pub(crate) fn rasterize_layout_arena(
         fg,
         cache: HashMap::new(),
         glyph_rgba_buf: Vec::new(),
+        output: limits.output(),
+        work: 0,
+        failure: None,
     };
 
     // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
@@ -633,8 +671,11 @@ pub(crate) fn rasterize_layout_arena(
         baseline_y,
         HorizontalTransform::identity(),
     );
+    if let Some(error) = ctx.failure {
+        return Err(error);
+    }
 
-    encode_image(&pixmap, options)
+    encode_image(&pixmap, options, limits.output())
 }
 
 fn check_pixmap_limits(
@@ -671,12 +712,35 @@ fn check_pixmap_limits(
     Ok(())
 }
 
-struct RasterCtx {
+struct RasterCtx<'a> {
     em: f64,
     fg: Color,
     cache: HashMap<(FontId, char, u32), (fontdue::Metrics, Vec<u8>)>,
     /// Reusable RGBA buffer for glyph compositing (avoids per-glyph Pixmap allocation).
     glyph_rgba_buf: Vec<u8>,
+    output: &'a OutputLimits,
+    work: usize,
+    failure: Option<crate::Error>,
+}
+
+impl RasterCtx<'_> {
+    fn checkpoint(&mut self) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        self.work = self.work.saturating_add(1);
+        if self.work.is_multiple_of(256) {
+            if let Err(error) = self.output.check_bytes(0) {
+                self.failure = Some(error);
+                return false;
+            }
+            if let Err(error) = crate::error::request_checkpoint(1) {
+                self.failure = Some(error);
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Paint-time horizontal transform used by reflected boxes.
@@ -716,12 +780,15 @@ impl HorizontalTransform {
 
 fn emit_raster_box(
     pixmap: &mut Pixmap,
-    ctx: &mut RasterCtx,
+    ctx: &mut RasterCtx<'_>,
     layout: &LayoutBox,
     x: f64,
     y: f64, // baseline position (y-down)
     xform: HorizontalTransform,
 ) {
+    if !ctx.checkpoint() {
+        return;
+    }
     let em = ctx.em;
     let fg = ctx.fg;
     match &layout.kind {
@@ -1021,13 +1088,16 @@ fn draw_box(
 /// layout geometry.
 fn emit_raster_box_arena(
     pixmap: &mut Pixmap,
-    ctx: &mut RasterCtx,
+    ctx: &mut RasterCtx<'_>,
     arena: &LayoutArena,
     id: LayoutBoxId,
     x: f64,
     y: f64, // baseline position (y-down)
     xform: HorizontalTransform,
 ) {
+    if !ctx.checkpoint() {
+        return;
+    }
     let em = ctx.em;
     let fg = ctx.fg;
     let layout = arena.get(id);
@@ -1286,7 +1356,7 @@ fn partial_deslant_skew() -> f32 {
 #[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     pixmap: &mut Pixmap,
-    ctx: &mut RasterCtx,
+    ctx: &mut RasterCtx<'_>,
     ch: char,
     font_size_px: f32,
     x: f64,
@@ -2202,18 +2272,64 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
 // Image encoding
 // ---------------------------------------------------------------------------
 
-fn encode_image(pixmap: &Pixmap, options: &RasterOptions) -> Result<Vec<u8>> {
+fn encode_image(
+    pixmap: &Pixmap,
+    options: &RasterOptions,
+    limits: &OutputLimits,
+) -> Result<Vec<u8>> {
     match options.format {
-        ImageFormat::Png => pixmap
-            .encode_png()
-            .map_err(|e| crate::error::Error::Render {
-                message: format!("PNG encoding failed: {e}"),
-            }),
-        ImageFormat::Jpeg => encode_jpeg(pixmap, options.quality),
+        ImageFormat::Png => encode_png(pixmap, limits),
+        ImageFormat::Jpeg => encode_jpeg(pixmap, options.quality, limits),
     }
 }
 
-fn encode_jpeg(pixmap: &Pixmap, quality: u8) -> Result<Vec<u8>> {
+fn encode_png(pixmap: &Pixmap, limits: &OutputLimits) -> Result<Vec<u8>> {
+    limits.check_bytes(0)?;
+    let demultiplied_data = demultiply_pixels(pixmap, limits)?;
+    let capacity = demultiplied_data
+        .len()
+        .saturating_add(128)
+        .min(limits.max_bytes.unwrap_or(usize::MAX));
+    let mut output = LimitedImageWriter::new(limits, capacity);
+    let encoding_error = {
+        let mut encoder = png::Encoder::new(&mut output, pixmap.width(), pixmap.height());
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        match encoder.write_header() {
+            Ok(mut writer) => writer.write_image_data(&demultiplied_data).err(),
+            Err(error) => Some(error),
+        }
+    };
+    if let Some(error) = output.failure.take() {
+        return Err(error);
+    }
+    if let Some(error) = encoding_error {
+        return Err(crate::Error::Render {
+            message: format!("PNG encoding failed: {error}"),
+        });
+    }
+    Ok(output.output)
+}
+
+fn demultiply_pixels(pixmap: &Pixmap, limits: &OutputLimits) -> Result<Vec<u8>> {
+    let mut data = pixmap.data().to_vec();
+    for (index, pixel) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        if index & 4095 == 0 {
+            limits.check_bytes(0)?;
+        }
+        let alpha = pixel[3];
+        if alpha == 0 || alpha == 255 {
+            continue;
+        }
+        let factor = f64::from(alpha) / 255.0;
+        for channel in &mut pixel[..3] {
+            *channel = (f64::from(*channel) / factor + 0.5) as u8;
+        }
+    }
+    Ok(data)
+}
+
+fn encode_jpeg(pixmap: &Pixmap, quality: u8, limits: &OutputLimits) -> Result<Vec<u8>> {
     let quality = quality.clamp(1, 100);
     let w = pixmap.width() as usize;
     let h = pixmap.height() as usize;
@@ -2221,7 +2337,10 @@ fn encode_jpeg(pixmap: &Pixmap, quality: u8) -> Result<Vec<u8>> {
 
     // Convert premultiplied RGBA → straight RGB (with white fallback for transparent pixels)
     let mut rgb = Vec::with_capacity(w * h * 3);
-    for pixel in data.as_chunks::<4>().0 {
+    for (index, pixel) in data.as_chunks::<4>().0.iter().enumerate() {
+        if index & 4095 == 0 {
+            limits.check_bytes(0)?;
+        }
         let (pr, pg, pb, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
         if a == 0 {
             rgb.extend_from_slice(&[255, 255, 255]); // transparent → white
@@ -2246,14 +2365,52 @@ fn encode_jpeg(pixmap: &Pixmap, quality: u8) -> Result<Vec<u8>> {
     let h_u16 = u16::try_from(h).map_err(|_| crate::error::Error::Render {
         message: format!("image height {h} exceeds JPEG maximum of 65535"),
     })?;
-    let mut buf = Vec::with_capacity(w * h); // rough estimate for JPEG output
-    let encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
-    encoder
-        .encode(&rgb, w_u16, h_u16, jpeg_encoder::ColorType::Rgb)
-        .map_err(|e| crate::error::Error::Render {
-            message: format!("JPEG encoding failed: {e}"),
-        })?;
-    Ok(buf)
+    let mut output = LimitedImageWriter::new(limits, w * h);
+    let encoder = jpeg_encoder::Encoder::new(&mut output, quality);
+    if let Err(error) = encoder.encode(&rgb, w_u16, h_u16, jpeg_encoder::ColorType::Rgb) {
+        if let Some(error) = output.failure.take() {
+            return Err(error);
+        }
+        return Err(crate::error::Error::Render {
+            message: format!("JPEG encoding failed: {error}"),
+        });
+    }
+    Ok(output.output)
+}
+
+struct LimitedImageWriter<'a> {
+    output: Vec<u8>,
+    limits: &'a OutputLimits,
+    failure: Option<crate::Error>,
+}
+
+impl<'a> LimitedImageWriter<'a> {
+    fn new(limits: &'a OutputLimits, capacity: usize) -> Self {
+        Self {
+            output: Vec::with_capacity(capacity),
+            limits,
+            failure: None,
+        }
+    }
+}
+
+impl Write for LimitedImageWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Err(error) = self
+            .limits
+            .check_bytes(self.output.len().saturating_add(bytes.len()))
+        {
+            let message = error.to_string();
+            self.failure = Some(error);
+            return Err(io::Error::other(message));
+        }
+        self.output.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

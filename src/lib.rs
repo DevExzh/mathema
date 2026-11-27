@@ -80,14 +80,18 @@ pub use ast::arena::AstArena;
 pub use ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 pub use ast::{MathExpr, MathNode};
 pub use convert::{
-    ConvertResult, convert, convert_with, convert_with_config_and_diagnostic_records,
-    convert_with_config_and_diagnostics, convert_with_config_and_location,
-    convert_with_diagnostic_records, convert_with_diagnostics, convert_with_location, from_latex,
-    from_latex_with, from_mathml, from_mathml_with, from_mathml_with_location, from_mtef,
-    from_mtef_bytes, from_mtef_bytes_with, from_mtef_bytes_with_location, from_mtef_with,
-    from_omml, from_omml_with, from_omml_with_location, from_unicode_math, from_unicode_math_with,
-    from_unicode_math_with_location, write_compact_expr, write_compact_expr_with_diagnostics,
-    write_expr, write_expr_with_diagnostics,
+    ConvertResult, convert, convert_with, convert_with_config_and_control_and_limits,
+    convert_with_config_and_diagnostic_records, convert_with_config_and_diagnostics,
+    convert_with_config_and_diagnostics_control, convert_with_config_and_location,
+    convert_with_control, convert_with_control_and_limits, convert_with_diagnostic_records,
+    convert_with_diagnostics, convert_with_location, from_latex, from_latex_with,
+    from_latex_with_control, from_mathml, from_mathml_with, from_mathml_with_control,
+    from_mathml_with_location, from_mtef, from_mtef_bytes, from_mtef_bytes_with,
+    from_mtef_bytes_with_control, from_mtef_bytes_with_location, from_mtef_with,
+    from_mtef_with_control, from_omml, from_omml_with, from_omml_with_control,
+    from_omml_with_location, from_unicode_math, from_unicode_math_with,
+    from_unicode_math_with_control, from_unicode_math_with_location, write_compact_expr,
+    write_compact_expr_with_diagnostics, write_expr, write_expr_with_diagnostics,
 };
 #[cfg(feature = "render")]
 pub use convert::{
@@ -96,7 +100,7 @@ pub use convert::{
 };
 pub use error::{
     Config, Diagnostic, DiagnosticCode, DiagnosticKind, DiagnosticPhase, DiagnosticRecord, Error,
-    Format, LatexProfile, LimitKind, LocatedError, ParseResult, Result, Strictness,
+    Format, LatexProfile, LimitKind, LocatedError, ParseResult, RequestControl, Result, Strictness,
     TypesettingPolicy, UndefinedCommands,
 };
 pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
@@ -109,9 +113,9 @@ pub use render::raster::{
 #[cfg(feature = "render")]
 pub use render::{
     PreparedRender, RenderGeometry, RenderOptions, SvgLimits, SvgMode, SvgOptions, prepare_render,
-    prepare_render_compact, render_to_svg, render_to_svg_compact_with_options,
-    render_to_svg_text_compact_with_options, render_to_svg_text_with_options,
-    render_to_svg_with_diagnostics, render_to_svg_with_options,
+    prepare_render_compact, release_thread_render_cache, render_to_svg,
+    render_to_svg_compact_with_options, render_to_svg_text_compact_with_options,
+    render_to_svg_text_with_options, render_to_svg_with_diagnostics, render_to_svg_with_options,
     render_to_svg_with_options_and_limits,
 };
 #[cfg(feature = "render")]
@@ -119,6 +123,7 @@ pub use render::{
     render_to_svg_standalone, render_to_svg_standalone_compact,
     render_to_svg_standalone_compact_arena, render_to_svg_standalone_with_diagnostics,
 };
+pub use writer::limits::OutputLimits;
 pub use writer::mathml::{MathmlOptions, MathmlProfile};
 pub use writer::mtef::MtefWriteOptions;
 pub use writer::omml::{OmmlOptions, OmmlRunProperties};

@@ -8,6 +8,7 @@ use crate::unicode::symbols::{
     unicode_to_latex,
 };
 use crate::writer::Writer;
+use crate::writer::limits::OutputLimits;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -32,6 +33,73 @@ use escape::{
 pub struct LatexWriter;
 
 impl LatexWriter {
+    /// Write a compact expression while enforcing a caller-selected output
+    /// byte budget and cancellation flag.
+    pub fn write_compact_with_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        super::validate_compact_for_write(expr, config)?;
+        write_expr_validated_with_limits(expr, config, LossReport::default(), limits)
+            .map(|(latex, _)| latex)
+    }
+
+    /// Write a compact expression with loss diagnostics and output controls.
+    pub fn write_compact_with_diagnostics_and_limits(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_for_write(expr, config)?;
+        let (latex, report) =
+            write_expr_validated_with_limits(expr, config, LossReport::collecting(), limits)?;
+        Ok((latex, report.finish()))
+    }
+
+    pub(crate) fn write_compact_with_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<String> {
+        super::validate_compact_trusted(expr, config)?;
+        write_expr_validated_with_limits(expr, config, LossReport::default(), limits)
+            .map(|(latex, _)| latex)
+    }
+
+    pub(crate) fn write_compact_with_diagnostics_and_limits_trusted(
+        expr: &CompactExpr,
+        config: &Config,
+        limits: &OutputLimits,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        super::validate_compact_trusted(expr, config)?;
+        let (latex, report) =
+            write_expr_validated_with_limits(expr, config, LossReport::collecting(), limits)?;
+        Ok((latex, report.finish()))
+    }
+
+    /// Collect formatting losses before lowering, then let the real writer add
+    /// character and profile diagnostics while emitting the final representation.
+    pub(crate) fn write_after_normalization(
+        expr: &mut CompactExpr,
+        config: &Config,
+        limits: Option<&OutputLimits>,
+        normalize: impl FnOnce(&mut CompactExpr) -> Result<()>,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let mut report = LossReport::collecting();
+        colors::report_dropped(expr, &mut report)?;
+        if expr.arena.has_attrs() {
+            let _ = lower(expr, &mut report, config.typesetting)?;
+        }
+        normalize(expr)?;
+        super::validate_compact_trusted(expr, config)?;
+        let (output, report) = match limits {
+            Some(limits) => write_expr_validated_with_limits(expr, config, report, limits)?,
+            None => write_expr_validated(expr, config, report)?,
+        };
+        Ok((output, report.finish()))
+    }
+
     /// Fast internal bridge for an expression returned by a parser or checked
     /// conversion result. Public trait calls retain strict arena validation.
     pub(crate) fn write_compact_trusted(expr: &CompactExpr, config: &Config) -> Result<String> {
@@ -76,7 +144,7 @@ impl LatexWriter {
     ) -> Result<(String, Vec<Diagnostic>)> {
         super::validate_compact_trusted(expr, config)?;
         let mut report = LossReport::collecting();
-        colors::report_dropped(expr, &mut report);
+        colors::report_dropped(expr, &mut report)?;
         let grouped = colors::grouped(expr);
         let expr = grouped.as_ref().unwrap_or(expr);
         let (latex, report) = write_lowered(expr, config, report, normalize)?;
@@ -118,9 +186,26 @@ fn write_expr_validated(
     config: &Config,
     mut report: LossReport,
 ) -> Result<(String, LossReport)> {
-    colors::report_dropped(expr, &mut report);
+    colors::report_dropped(expr, &mut report)?;
     let with_atoms = colors::with_ordinary_atoms(expr);
     write_lowered(with_atoms.as_ref().unwrap_or(expr), config, report, None)
+}
+
+fn write_expr_validated_with_limits(
+    expr: &CompactExpr,
+    config: &Config,
+    mut report: LossReport,
+    limits: &OutputLimits,
+) -> Result<(String, LossReport)> {
+    colors::report_dropped(expr, &mut report)?;
+    let with_atoms = colors::with_ordinary_atoms(expr);
+    write_lowered_with_limits(
+        with_atoms.as_ref().unwrap_or(expr),
+        config,
+        report,
+        None,
+        limits,
+    )
 }
 
 /// A way to normalize an expression.
@@ -163,8 +248,18 @@ fn lower(
 fn write_lowered(
     expr: &CompactExpr,
     config: &Config,
+    report: LossReport,
+    normalize: Option<Normalize>,
+) -> Result<(String, LossReport)> {
+    write_lowered_with_limits(expr, config, report, normalize, &OutputLimits::unlimited())
+}
+
+fn write_lowered_with_limits(
+    expr: &CompactExpr,
+    config: &Config,
     mut report: LossReport,
     normalize: Option<Normalize>,
+    limits: &OutputLimits,
 ) -> Result<(String, LossReport)> {
     if expr.arena.has_attrs() {
         let mut lowered = lower(expr, &mut report, config.typesetting)?;
@@ -172,12 +267,13 @@ fn write_lowered(
             normalize(&mut lowered)?;
         }
         super::validate_compact_for_write(&lowered, config)?;
-        return write_lowered(&lowered, config, report, None);
+        return write_lowered_with_limits(&lowered, config, report, None, limits);
     }
-    let mut buf = LatexBuffer::new(
+    let mut buf = LatexBuffer::new_with_limits(
         config.undefined_commands == crate::UndefinedCommands::Keep,
         report,
         config.latex_profile,
+        Some(limits.clone()),
     );
     write_sequence(
         &mut buf,
@@ -185,18 +281,19 @@ fn write_lowered(
         expr.arena.children(expr.roots),
         false,
     );
-    let mut report = std::mem::take(&mut buf.report);
-    let latex = buf.finish();
+    let report = std::mem::take(&mut buf.report);
+    let output = buf.finish_result()?;
+    let mut report = report;
     if config.latex_profile == LatexProfile::PdfLaTeX
         && report.is_collecting()
-        && let Some(ch) = latex.chars().find(|ch| !ch.is_ascii())
+        && let Some(ch) = output.chars().find(|ch| !ch.is_ascii())
     {
         report.add(|| format!(
             "pdfLaTeX output retains literal U+{:04X}; a matching input definition and font may be required",
             u32::from(ch)
         ));
     }
-    Ok((latex, report))
+    Ok((output, report))
 }
 
 /// What the output does not keep, when the caller asked for it. Reports are
@@ -351,6 +448,9 @@ fn write_sequence(
     mut children: &[NodeId],
     mut ends_with_command: bool,
 ) {
+    if buf.stopped() {
+        return;
+    }
     // A trailing implicit script with no arguments emits nothing. Remove it
     // before deciding whether any preceding base needs grouping or a body.
     while let Some((&last, prefix)) = children.split_last() {
@@ -366,6 +466,9 @@ fn write_sequence(
     let mut spacing_prev: Option<NodeId> = None;
     let mut i = 0;
     while i < children.len() {
+        if buf.stopped() {
+            return;
+        }
         let id = children[i];
         if i > 0 && matches!(*arena.node(children[i - 1]), CompactNode::Newline) {
             row_breaks.push(buf.len());
@@ -1075,6 +1178,9 @@ fn write_script_arg(
             }
         },
     }
+    if buf.stopped() {
+        return false;
+    }
     let written = &buf[start..];
     // A base may be a command and its argument, a script argument may not: TeX
     // would take the command alone. So a single glyph spelled `\char…`,
@@ -1089,6 +1195,9 @@ fn write_script_arg(
         );
         buf.insert_text(start, "{");
         buf.push('}');
+        if buf.stopped() {
+            return false;
+        }
         debug_assert!(
             is_one_tex_argument(&buf[start..]),
             "script argument `{}` is not one group",
@@ -1399,7 +1508,7 @@ fn ends_with_bare_script<'a>(arena: &'a AstArena, mut children: &'a [NodeId]) ->
 /// rescanning the whole row at every sibling boundary.
 #[inline]
 fn appended_ends_with_letter_command(buf: &str, start: usize, previous: bool) -> bool {
-    if buf.len() == start {
+    if start >= buf.len() {
         return previous;
     }
     let bytes = &buf.as_bytes()[start..];
@@ -1583,6 +1692,9 @@ fn scalar_negation_command(arena: &AstArena, children: &[NodeId]) -> Option<&'st
 }
 
 fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
+    if buf.stopped() {
+        return;
+    }
     match *arena.node(id) {
         CompactNode::Number(sid) => {
             let s = arena.str_val(sid);
@@ -1995,6 +2107,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push_str("\\sqrt[");
             let start = buf.len();
             write_wrapped_content(buf, arena, index);
+            if buf.stopped() {
+                return;
+            }
             let argument = &buf[start..];
             // KaTeX strips one pair of braces from a bracketed argument that
             // starts with `{` and ends with `}`, matched or not, so
@@ -2375,6 +2490,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 if row_idx > 0
                     && row_idx + 1 == num_rows
                     && !(num_rows < 32 && row_seps & (1 << num_rows) != 0)
+                    && !buf.stopped()
                     && buf[cells_start..].trim().is_empty()
                 {
                     buf.truncate_text(cells_start);
@@ -2762,6 +2878,9 @@ fn write_structured_operator(
     let start = buf.len();
     let previous = std::mem::replace(&mut buf.in_operator_name, true);
     write_atom_content(buf, arena, content);
+    if buf.stopped() {
+        return;
+    }
     buf.in_operator_name = previous;
     separate_leading_mark(buf, start);
     // A constructed structured name may contain only plain letters. Keep a
@@ -3059,6 +3178,9 @@ fn ends_with_token(text: &str, tokens: &[char]) -> bool {
 /// Write a combining mark at the start of a function name, at `start`, by its
 /// code: as itself it would join the brace before it.
 fn separate_leading_mark(buf: &mut LatexBuffer, start: usize) {
+    if buf.stopped() || start > buf.len() {
+        return;
+    }
     let Some(mark) = buf[start..]
         .chars()
         .next()
@@ -4021,6 +4143,9 @@ fn write_math_atom_op(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) 
     buf.push_str("\\mathop{");
     let start = buf.len();
     write_atom_content(buf, arena, content);
+    if buf.stopped() {
+        return;
+    }
     // `\mathop{⅀}` is the operator.
     if single_char(&buf[start..]) == Some(UNNAMED_NARY) {
         buf.insert_text(start, "{");
@@ -4160,6 +4285,9 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push('$');
             let start = buf.len();
             write_box_math(buf, arena, math);
+            if buf.stopped() {
+                return;
+            }
             // A combining mark would join the math shift or brace before it.
             let joined: smallvec::SmallVec<[usize; 2]> = buf[start..]
                 .match_indices(is_joining_mark)
