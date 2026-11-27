@@ -1,6 +1,9 @@
 //! What lenient reading reports does not depend on where its buffers are.
 
-use mathema::{Config, Strictness, from_latex_with};
+use mathema::error::Error;
+use mathema::reader::Reader;
+use mathema::reader::latex::LatexReader;
+use mathema::{Config, Strictness, from_latex, from_latex_with};
 
 fn reported(latex: &str) -> Vec<String> {
     let config = Config::default().with_strictness(Strictness::Lenient);
@@ -111,4 +114,71 @@ fn a_color_before_a_middle_delimiter_is_its_fences() {
     let mathml =
         colored(r"\Braket{\left.\color{red}a\middle|b\right.}\Braket{\left.c\middle|d\right.}");
     assert_eq!(mathml.matches("mathcolor").count(), 2, "{mathml}");
+}
+
+#[test]
+fn terminal_table_separator_does_not_create_a_phantom_row() {
+    let output = from_latex(r"\begin{matrix}a&b\\c&d\\\end{matrix}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert_eq!(output.matches("<mtr>").count(), 2, "{output}");
+}
+
+#[test]
+fn whitespace_after_a_terminal_rule_does_not_create_a_phantom_row() {
+    let parsed = from_latex(r"\begin{array}{c}a\\ \hline \end{array}").unwrap();
+    let output = parsed.to_mathml().unwrap();
+    assert_eq!(output.matches("<mtr>").count(), 1, "{output}");
+    assert!(parsed.to_latex().unwrap().contains(r"\hline"));
+}
+
+#[test]
+fn an_authored_empty_table_row_is_preserved() {
+    let output = from_latex(r"\begin{matrix}a&b\\&\end{matrix}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert_eq!(output.matches("<mtr>").count(), 2, "{output}");
+    assert!(output.contains("<mtr><mtd columnalign=\"center\"></mtd>"));
+}
+
+#[test]
+fn unknown_environment_is_a_named_strict_error() {
+    let result =
+        LatexReader::parse_compact(r"\begin{misspelled}x\end{misspelled}", &Config::default());
+    assert!(matches!(
+        result,
+        Err(Error::LatexParse { message, .. })
+            if message.contains("unknown LaTeX environment `misspelled`")
+    ));
+}
+
+#[test]
+fn unknown_environment_fallback_is_diagnostic_in_lenient_mode() {
+    let config = Config::default().with_strictness(Strictness::Lenient);
+    let parsed = from_latex_with(r"\begin{misspelled}{x}y\end{misspelled}", &config).unwrap();
+    assert!(parsed.diagnostics().iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("unknown LaTeX environment `misspelled`")
+    }));
+    let output = parsed.to_mathml().unwrap();
+    assert!(output.contains("<mtable"), "{output}");
+    assert!(output.contains("<mi>x</mi>"), "{output}");
+    assert!(output.contains("<mi>y</mi>"), "{output}");
+}
+
+#[test]
+fn known_aligned_and_cases_variants_remain_strictly_supported() {
+    for (environment, body) in [
+        ("dcases*", r"a&b\\c&d"),
+        ("rcases*", r"a&b\\c&d"),
+        ("flalign", r"a&b\\c&d"),
+        ("flalign*", r"a&b\\c&d"),
+    ] {
+        let source = format!(r"\begin{{{environment}}}{body}\end{{{environment}}}");
+        from_latex(&source)
+            .unwrap_or_else(|error| panic!("{environment} should remain known: {error}"));
+    }
 }

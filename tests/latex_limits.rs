@@ -1,3 +1,4 @@
+use mathema::AstArena;
 use mathema::Config;
 use mathema::error::{Error, LimitKind, Strictness};
 use mathema::reader::Reader;
@@ -64,6 +65,25 @@ fn empty_array_column_repetition_does_not_iterate_the_count() {
 fn ordinary_nested_array_repetition_still_parses() {
     let input = r"\begin{array}{l*{2}{cr}}a&b&c\end{array}";
     assert!(LatexReader::parse_compact(input, &Config::default()).is_ok());
+}
+
+#[test]
+fn terminal_separator_does_not_reject_a_row_at_the_next_row_budget() {
+    // Before terminal separators were recognized before parsing their phantom
+    // row, this valid row was compared with MAX_CHILDREN / 2 and rejected.
+    let cells = AstArena::MAX_CHILDREN / 2 + 1;
+    let mut input = String::with_capacity(cells * 2 + 32);
+    input.push_str(r"\begin{array}{c}");
+    input.push('a');
+    for _ in 1..cells {
+        input.push('&');
+    }
+    input.push_str(r"\\\end{array}");
+
+    assert!(
+        LatexReader::parse_compact(&input, &Config::default()).is_ok(),
+        "terminal row separator must not consume the next-row child budget"
+    );
 }
 
 #[test]

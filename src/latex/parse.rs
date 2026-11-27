@@ -7292,11 +7292,18 @@ impl LatexCompactParser {
             "CD" => self.parse_cd_env(input, env_name),
             "prooftree" => self.parse_prooftree_env(input, env_name),
             "xy" => self.parse_xy_env(input, env_name),
-            "cases" | "dcases" => self.parse_cases_env(input, env_name),
-            "rcases" | "drcases" => self.parse_rcases_env(input, env_name),
+            // The compact table model has no separate starred-case style, so
+            // retain the cases geometry and let the surrounding style carry
+            // the representable information.
+            "cases" | "dcases" | "dcases*" => self.parse_cases_env(input, env_name),
+            "rcases" | "drcases" | "rcases*" => self.parse_rcases_env(input, env_name),
             "numcases" | "subnumcases" => self.parse_numcases_env(input, env_name),
             "empheq" => self.parse_empheq_env(input),
-            "aligned" | "align" | "align*" => self.parse_align_env(input, env_name),
+            // `flalign` adds host-level fill glue that the AST cannot encode;
+            // its aligned grid remains the closest faithful representation.
+            "aligned" | "align" | "align*" | "flalign" | "flalign*" => {
+                self.parse_align_env(input, env_name)
+            },
             "alignedat" | "alignat" | "alignat*" => self.parse_alignedat_env(input, env_name),
             "gathered" => self.parse_gather_env(input, env_name),
             "gather" | "gather*" => self.parse_gather_env(input, env_name),
@@ -7319,7 +7326,23 @@ impl LatexCompactParser {
                 self.parse_multline_env(inp, env_name)
             },
             "split" => self.parse_align_env(input, env_name),
-            _ => self.parse_array_env(input, env_name),
+            _ => {
+                if self.lenient {
+                    self.warn(format!(
+                        "unknown LaTeX environment `{env_name}`; parsed as a generic array"
+                    ));
+                    self.parse_unknown_environment_env(input, env_name)
+                } else {
+                    self.abort = Some(Error::LatexParse {
+                        message: format!("unknown LaTeX environment `{env_name}`"),
+                        span: None,
+                    });
+                    Err(nom::Err::Failure(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Verify,
+                    )))
+                }
+            },
         }
     }
 
@@ -7397,6 +7420,39 @@ impl LatexCompactParser {
                     rows: dashed_rows,
                 },
                 columns.2,
+                rows,
+            ),
+        ))
+    }
+
+    /// Recover an unknown environment as a generic array without interpreting
+    /// its first braced body as an `array` column preamble. A real `array`
+    /// environment has a declared column specification, but for an unknown
+    /// environment `{...}` is ordinary content and must remain visible.
+    fn parse_unknown_environment_env<'a>(
+        &mut self,
+        input: &'a str,
+        env_name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let (input, (rows, row_seps, dashed_rows)) = self.parse_table_body_with_seps(input, 0)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = tag("\\end")(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _) = tag(env_name)(input)?;
+        let (input, _) = char('}')(input)?;
+
+        Ok((
+            input,
+            self.build_array_with_seps_rows(
+                &[],
+                0,
+                row_seps,
+                RuleDashes {
+                    cols: 0,
+                    rows: dashed_rows,
+                },
+                true,
                 rows,
             ),
         ))
@@ -8806,6 +8862,14 @@ impl LatexCompactParser {
                     }
                     // A rule after this separator precedes the next row.
                     record(rows.len(), rules);
+                    // A separator immediately before `\end` terminates the
+                    // preceding row. Do not materialize a parser-only empty
+                    // row. Besides avoiding a phantom row, this keeps the
+                    // final real row within the per-row child budget.
+                    if strip_control_word(after_sep.trim_start(), "end").is_some() {
+                        rest = after_sep;
+                        break;
+                    }
                     // A wider later row also grows the padded earlier rows.
                     let limit = AstArena::MAX_CHILDREN / (rows.len() + 1);
                     if widest > limit {
@@ -8847,39 +8911,6 @@ impl LatexCompactParser {
         }
         if unreadable_cline {
             self.warn("\\cline without a readable column range was dropped");
-        }
-        // Drop a trailing rule recorded against a phantom empty row: if the last
-        // row is entirely empty it was produced by a trailing `\\`; move its rule
-        // bit down to the true bottom edge and discard the empty row.
-        if rows.len() > 1 && rows.last().is_some_and(|r| r.iter().all(|c| c.is_empty())) {
-            let last = rows.len();
-            // row_seps is a u32, so only row indices < 32 can carry a bit.  The
-            // hline setter above already caps rows.len() < 32, but a pathological
-            // input can produce more rows than that; guard the shift to avoid a
-            // left-shift overflow panic.
-            if last < 32 && row_seps & (1 << last) != 0 {
-                row_seps &= !(1 << last);
-                row_seps |= 1 << (last - 1);
-                if dashed_rows & (1 << last) != 0 {
-                    dashed_rows &= !(1 << last);
-                    dashed_rows |= 1 << (last - 1);
-                } else {
-                    dashed_rows &= !(1 << (last - 1));
-                }
-            }
-            // keep the empty row only if it carries no rule semantics; existing
-            // behavior preserved otherwise (do not change row count here).
-        }
-        // A rule after the final `\\` (`a \\ \hline \end{array}`) is the
-        // bottom edge: `\hline` is no row, so TeX ends the table there. Its
-        // bit already sits at the bottom boundary once the empty row goes.
-        let last = rows.len() - 1;
-        if last > 0
-            && last < 32
-            && row_seps & (1 << last) != 0
-            && matches!(rows[last].as_slice(), [cell] if cell.is_empty())
-        {
-            rows.pop();
         }
         Ok((rest, (rows, row_seps, dashed_rows)))
     }
