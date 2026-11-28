@@ -1469,125 +1469,13 @@ fn check_compact_node_data(
     Ok(())
 }
 
-/// Checked counterpart of [`compact_children`] for the cheap depth validator.
-/// It follows only the reachable graph and therefore avoids scanning dead
-/// arena slots on the normal parsed-tree path.
-fn compact_children_checked(
+/// Check a node reference without materializing a child list. The previous
+/// implementation returned a `SmallVec` for every visited node, which spills
+/// to a heap allocation for a flat row or a large table. Validation only needs
+/// to check the references before descending into them, so the two operations
+/// can happen directly over the arena slices.
+fn check_compact_id_checked(
     arena: &arena::AstArena,
-    node: &compact::CompactNode,
-) -> crate::error::Result<smallvec::SmallVec<[compact::NodeId; 4]>> {
-    use compact::CompactNode;
-    let mut out = smallvec::SmallVec::new();
-    match *node {
-        CompactNode::Number(_)
-        | CompactNode::Identifier(_)
-        | CompactNode::Operator { .. }
-        | CompactNode::Symbol(_, _)
-        | CompactNode::Text(_, _)
-        | CompactNode::Space(_)
-        | CompactNode::Newline
-        | CompactNode::Middle(_)
-        | CompactNode::ColAlign(_)
-        | CompactNode::Rule { .. }
-        | CompactNode::StyleSwitch(_)
-        | CompactNode::SizeScale(_) => {},
-        CompactNode::Row(span_)
-        | CompactNode::Styled(_, span_)
-        | CompactNode::UndefinedCommand {
-            arguments: span_, ..
-        } => append_compact_span_checked(arena, &mut out, span_)?,
-        CompactNode::Fenced { content, .. } => {
-            let children = arena
-                .try_children(content)
-                .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
-            for &id in children {
-                if matches!(arena.try_node(id), Some(CompactNode::Middle(_))) {
-                    continue;
-                }
-                append_compact_id_checked(arena, &mut out, id, true)?;
-            }
-        },
-        CompactNode::Array { cells, .. } => append_compact_span_checked(arena, &mut out, cells)?,
-        CompactNode::Subscript { base, sub }
-        | CompactNode::Superscript { base, sup: sub }
-        | CompactNode::Fraction {
-            num: base,
-            den: sub,
-            ..
-        } => {
-            append_compact_id_checked(arena, &mut out, base, true)?;
-            append_compact_id_checked(arena, &mut out, sub, true)?;
-        },
-        CompactNode::SubSup { base, sub, sup }
-        | CompactNode::UnderOver {
-            base,
-            under: sub,
-            over: sup,
-            ..
-        } => {
-            append_compact_id_checked(arena, &mut out, base, true)?;
-            append_compact_id_checked(arena, &mut out, sub, true)?;
-            append_compact_id_checked(arena, &mut out, sup, true)?;
-        },
-        CompactNode::PreScripts {
-            base,
-            pre_sub,
-            pre_sup,
-        } => {
-            append_compact_id_checked(arena, &mut out, base, true)?;
-            append_compact_id_checked(arena, &mut out, pre_sub, false)?;
-            append_compact_id_checked(arena, &mut out, pre_sup, false)?;
-        },
-        CompactNode::Overscript { base, over, .. }
-        | CompactNode::Underscript {
-            base, under: over, ..
-        } => {
-            append_compact_id_checked(arena, &mut out, base, true)?;
-            append_compact_id_checked(arena, &mut out, over, true)?;
-        },
-        CompactNode::Accent { base, .. } => append_compact_id_checked(arena, &mut out, base, true)?,
-        CompactNode::Sqrt(inner)
-        | CompactNode::Phantom(inner, _)
-        | CompactNode::Reflect { content: inner, .. }
-        | CompactNode::Boxed { content: inner, .. }
-        | CompactNode::Actuarial { content: inner, .. }
-        | CompactNode::Cancel { content: inner, .. }
-        | CompactNode::Scaled { content: inner, .. }
-        | CompactNode::RaiseBox { content: inner, .. }
-        | CompactNode::Color { content: inner, .. }
-        | CompactNode::MathAtom { content: inner, .. }
-        | CompactNode::StructuredOperator { content: inner, .. }
-        | CompactNode::AlignedCell { content: inner, .. }
-        | CompactNode::SpannedCell { content: inner, .. } => {
-            append_compact_id_checked(arena, &mut out, inner, true)?
-        },
-        CompactNode::Root { index, radicand } => {
-            append_compact_id_checked(arena, &mut out, index, true)?;
-            append_compact_id_checked(arena, &mut out, radicand, true)?;
-        },
-        CompactNode::Nary { sub, sup, body, .. } => {
-            append_compact_id_checked(arena, &mut out, sub, false)?;
-            append_compact_id_checked(arena, &mut out, sup, false)?;
-            append_compact_id_checked(arena, &mut out, body, true)?;
-        },
-        CompactNode::MathChoice {
-            display,
-            text,
-            script,
-            script_script,
-        } => {
-            append_compact_id_checked(arena, &mut out, display, true)?;
-            append_compact_id_checked(arena, &mut out, text, true)?;
-            append_compact_id_checked(arena, &mut out, script, true)?;
-            append_compact_id_checked(arena, &mut out, script_script, true)?;
-        },
-    }
-    Ok(out)
-}
-
-fn append_compact_id_checked(
-    arena: &arena::AstArena,
-    out: &mut smallvec::SmallVec<[compact::NodeId; 4]>,
     id: compact::NodeId,
     required: bool,
 ) -> crate::error::Result<()> {
@@ -1601,20 +1489,60 @@ fn append_compact_id_checked(
     if arena.try_node(id).is_none() {
         return Err(invalid_compact("node reference belongs to another arena"));
     }
-    out.push(id);
     Ok(())
 }
 
-fn append_compact_span_checked(
+fn check_compact_span_depth(
     arena: &arena::AstArena,
-    out: &mut smallvec::SmallVec<[compact::NodeId; 4]>,
     span: compact::NodeSpan,
+    depth: usize,
+    limit: usize,
 ) -> crate::error::Result<()> {
     let children = arena
         .try_children(span)
         .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
     for &id in children {
-        append_compact_id_checked(arena, out, id, true)?;
+        check_compact_id_checked(arena, id, true)?;
+    }
+    for &id in children {
+        check_compact_depth_checked(arena, id, depth, limit)?;
+    }
+    Ok(())
+}
+
+fn check_compact_fixed_depth(
+    arena: &arena::AstArena,
+    children: &[(compact::NodeId, bool)],
+    depth: usize,
+    limit: usize,
+) -> crate::error::Result<()> {
+    for &(id, required) in children {
+        check_compact_id_checked(arena, id, required)?;
+    }
+    for &(id, _) in children {
+        if id.is_some() {
+            check_compact_depth_checked(arena, id, depth, limit)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_compact_fenced_depth(
+    arena: &arena::AstArena,
+    span: compact::NodeSpan,
+    depth: usize,
+    limit: usize,
+) -> crate::error::Result<()> {
+    let children = arena
+        .try_children(span)
+        .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
+    for &id in children {
+        check_compact_id_checked(arena, id, true)?;
+    }
+    for &id in children {
+        if !matches!(arena.node(id), compact::CompactNode::Middle(_)) {
+            check_compact_depth_checked(arena, id, depth, limit)?;
+        }
     }
     Ok(())
 }
@@ -1632,10 +1560,110 @@ fn check_compact_depth_checked(
     let node = arena
         .try_node(id)
         .ok_or_else(|| invalid_compact("node reference belongs to another arena"))?;
-    for child in compact_children_checked(arena, node)? {
-        check_compact_depth_checked(arena, child, depth + 1, limit)?;
+    let child_depth = depth + 1;
+    use compact::CompactNode;
+    match *node {
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Symbol(_, _)
+        | CompactNode::Text(_, _)
+        | CompactNode::Space(_)
+        | CompactNode::Newline
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::Rule { .. }
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_) => Ok(()),
+        CompactNode::Row(span)
+        | CompactNode::Styled(_, span)
+        | CompactNode::UndefinedCommand {
+            arguments: span, ..
+        }
+        | CompactNode::Array { cells: span, .. } => {
+            check_compact_span_depth(arena, span, child_depth, limit)
+        },
+        CompactNode::Fenced { content, .. } => {
+            check_compact_fenced_depth(arena, content, child_depth, limit)
+        },
+        CompactNode::Subscript { base, sub }
+        | CompactNode::Superscript { base, sup: sub }
+        | CompactNode::Fraction {
+            num: base,
+            den: sub,
+            ..
+        } => check_compact_fixed_depth(arena, &[(base, true), (sub, true)], child_depth, limit),
+        CompactNode::SubSup { base, sub, sup }
+        | CompactNode::UnderOver {
+            base,
+            under: sub,
+            over: sup,
+            ..
+        } => check_compact_fixed_depth(
+            arena,
+            &[(base, true), (sub, true), (sup, true)],
+            child_depth,
+            limit,
+        ),
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => check_compact_fixed_depth(
+            arena,
+            &[(base, true), (pre_sub, false), (pre_sup, false)],
+            child_depth,
+            limit,
+        ),
+        CompactNode::Overscript { base, over, .. }
+        | CompactNode::Underscript {
+            base, under: over, ..
+        } => check_compact_fixed_depth(arena, &[(base, true), (over, true)], child_depth, limit),
+        CompactNode::Accent { base, .. }
+        | CompactNode::Sqrt(base)
+        | CompactNode::Phantom(base, _)
+        | CompactNode::Reflect { content: base, .. }
+        | CompactNode::Boxed { content: base, .. }
+        | CompactNode::Actuarial { content: base, .. }
+        | CompactNode::Cancel { content: base, .. }
+        | CompactNode::Scaled { content: base, .. }
+        | CompactNode::RaiseBox { content: base, .. }
+        | CompactNode::Color { content: base, .. }
+        | CompactNode::MathAtom { content: base, .. }
+        | CompactNode::StructuredOperator { content: base, .. }
+        | CompactNode::AlignedCell { content: base, .. }
+        | CompactNode::SpannedCell { content: base, .. } => {
+            check_compact_fixed_depth(arena, &[(base, true)], child_depth, limit)
+        },
+        CompactNode::Root { index, radicand } => check_compact_fixed_depth(
+            arena,
+            &[(index, true), (radicand, true)],
+            child_depth,
+            limit,
+        ),
+        CompactNode::Nary { sub, sup, body, .. } => check_compact_fixed_depth(
+            arena,
+            &[(sub, false), (sup, false), (body, true)],
+            child_depth,
+            limit,
+        ),
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => check_compact_fixed_depth(
+            arena,
+            &[
+                (display, true),
+                (text, true),
+                (script, true),
+                (script_script, true),
+            ],
+            child_depth,
+            limit,
+        ),
     }
-    Ok(())
 }
 
 fn check_node_depth(node: &MathNode, depth: usize, limit: usize) -> crate::error::Result<()> {
@@ -2001,5 +2029,31 @@ mod tests {
             let json = serde_json::to_value(&node).unwrap();
             assert_eq!(node, serde_json::from_value(json).unwrap());
         }
+    }
+
+    #[test]
+    fn compact_depth_validation_keeps_checked_reference_and_depth_errors() {
+        let mut arena = arena::AstArena::new();
+        let leaf = arena.push_node(compact::CompactNode::Identifier(compact::StrId::EMPTY));
+        let nested = arena.push_node(compact::CompactNode::Sqrt(leaf));
+        let roots = arena.push_children(&[nested]).unwrap();
+        assert!(matches!(
+            validate_compact_depth_with(&arena, roots, 0),
+            Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Depth,
+                limit: 0,
+            })
+        ));
+
+        let mut foreign = arena::AstArena::new();
+        foreign.push_node(compact::CompactNode::Newline);
+        foreign.push_node(compact::CompactNode::Newline);
+        let foreign_id = foreign.push_node(compact::CompactNode::Newline);
+        let foreign_roots = arena.push_children(&[foreign_id]).unwrap();
+        assert!(matches!(
+            validate_compact_depth_with(&arena, foreign_roots, MAX_AST_DEPTH),
+            Err(crate::error::Error::Unsupported(message))
+                if message.contains("belongs to another arena")
+        ));
     }
 }
