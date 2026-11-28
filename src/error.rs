@@ -349,15 +349,25 @@ impl RequestControl {
             return Ok(());
         }
         if let Some(limit) = self.state.max_work {
-            self.state
-                .work
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    current.checked_add(units).filter(|next| *next <= limit)
-                })
-                .map_err(|_| Error::LimitExceeded {
-                    kind: LimitKind::Work,
-                    limit,
-                })?;
+            let mut current = self.work();
+            loop {
+                let next = current
+                    .checked_add(units)
+                    .filter(|&sum| sum <= limit)
+                    .ok_or(Error::LimitExceeded {
+                        kind: LimitKind::Work,
+                        limit,
+                    })?;
+                match self.state.work.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => current = observed,
+                }
+            }
         } else {
             self.state.work.fetch_add(units, Ordering::Relaxed);
         }

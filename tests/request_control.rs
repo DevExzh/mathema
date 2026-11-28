@@ -497,6 +497,40 @@ fn bounded_svg_preserves_missing_glyph_and_host_paint_diagnostics() {
 }
 
 #[test]
+fn concurrent_charges_share_one_work_limit() {
+    let control = RequestControl::with_max_work(101);
+    let start = std::sync::Barrier::new(4);
+    let successes = thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    let mut successes = 0;
+                    loop {
+                        match control.checkpoint(3) {
+                            Ok(()) => successes += 1,
+                            Err(Error::LimitExceeded {
+                                kind: mathema::LimitKind::Work,
+                                limit: 101,
+                            }) => return successes,
+                            Err(error) => panic!("unexpected checkpoint error: {error}"),
+                        }
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .sum::<usize>()
+    });
+    assert_eq!(successes, 33);
+    assert_eq!(control.work(), 99);
+    control.checkpoint(2).unwrap();
+    assert_eq!(control.work(), 101);
+}
+
+#[test]
 fn shared_work_counter_refuses_overflow_at_the_maximum_budget() {
     let control = RequestControl::with_max_work(usize::MAX);
     control.checkpoint(usize::MAX).unwrap();
