@@ -79,6 +79,15 @@ pub fn unstyled_char(ch: char) -> Option<(char, TextStyle)> {
         _ => {},
     }
 
+    // Every remaining inverse mapping is in the Mathematical Alphanumeric
+    // Symbols block.  The legacy Letterlike Symbols and partial/nabla cases
+    // above are the only mappings outside this range.  Rejecting the common
+    // ordinary-text path here avoids the sparse Greek reverse search for every
+    // ASCII or BMP character.
+    if !(0x1D400..=0x1D7FF).contains(&cp) {
+        return None;
+    }
+
     // Greek mathematical-alphanumeric glyphs are interleaved with reserved
     // code points, so they cannot be represented by the contiguous ranges
     // below. Use the forward table as the source of truth for these sparse
@@ -476,6 +485,13 @@ mod tests {
     fn unstyle_plain_ascii_is_none() {
         assert_eq!(unstyled_char('x'), None);
         assert_eq!(unstyled_char('5'), None);
+    }
+
+    #[test]
+    fn unstyle_outside_math_alphanumeric_block_is_none() {
+        for ch in ['x', '\u{400}', '\u{10000}', '\u{1D800}', '\u{10FFFF}'] {
+            assert_eq!(unstyled_char(ch), None, "unexpected mapping for U+{:X}", ch as u32);
+        }
     }
 
     #[test]
