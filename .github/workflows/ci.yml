@@ -122,16 +122,34 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --no-default-features --features wasm
 
   neon:
-    name: AArch64 NEON writers
-    runs-on: ubuntu-24.04-arm
+    name: NEON writers (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: thumbv7neon-unknown-linux-gnueabihf
+            runner: ubuntu-24.04
+    env:
+      TARGET: ${{ matrix.target }}
+      CARGO_TARGET_THUMBV7NEON_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      CARGO_TARGET_THUMBV7NEON_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm -cpu cortex-a9 -L /usr/arm-linux-gnueabihf
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Install the ARMv7 linker and emulator
+        if: matrix.target == 'thumbv7neon-unknown-linux-gnueabihf'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
       - name: Run hex and XML parity tests on Arm
         run: |
-          cargo test --locked --no-default-features --features render --lib writer::mtef::tests::hex
-          cargo test --locked --no-default-features --features render --lib writer::xml_chars::tests
+          cargo test --locked --target "$TARGET" --no-default-features --features render --lib writer::mtef::tests::hex
+          cargo test --locked --target "$TARGET" --no-default-features --features render --lib writer::xml_chars::tests
 
   audit:
     name: cargo audit
