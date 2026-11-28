@@ -1224,7 +1224,11 @@ fn settle_list(
     // (e.g. a malformed/empty `\kern` or `\hspace{}`) and their presence can
     // block merges, suppress script attachment, or create/destroy separator
     // spaces in the writer.
-    let splayed: SmallVec<[NodeId; 8]> = if rules.leading_only {
+    let splayed: SmallVec<[NodeId; 8]> = if rules.leading_only
+        || !flattened
+            .iter()
+            .any(|&id| matches!(*arena.node(id), CompactNode::Space(r) if r == Rational::zero()))
+    {
         flattened
     } else {
         flattened
@@ -1247,16 +1251,16 @@ fn settle_list(
     let merged_ids = if rules.leading_only {
         splayed
     } else {
-        let merged = merge_runs(arena, &splayed, |_, node| match node {
+        let merged = merge_runs(arena, splayed, |_, node| match node {
             CompactNode::Text(style, sid) => Some((MergeKind::Text(style), sid)),
             _ => None,
         });
-        let final_nodes = merge_runs(arena, &merged, |_, node| match node {
+        let final_nodes = merge_runs(arena, merged, |_, node| match node {
             CompactNode::Number(sid) => Some((MergeKind::Number, sid)),
             _ => None,
         });
         if rules.identifiers == Identifiers::Joined {
-            merge_runs(arena, &final_nodes, |arena, node| match node {
+            merge_runs(arena, final_nodes, |arena, node| match node {
                 CompactNode::Identifier(sid) if arena.str_val(sid).is_ascii() => {
                     Some((MergeKind::Identifier, sid))
                 },
@@ -1430,15 +1434,21 @@ fn merged_source_range(arena: &AstArena, ids: &[NodeId]) -> Option<crate::error:
 /// run's first node, interning the run's string once.
 fn merge_runs(
     arena: &mut AstArena,
-    ids: &[NodeId],
+    ids: SmallVec<[NodeId; 8]>,
     key: impl Fn(&AstArena, CompactNode) -> Option<(MergeKind, StrId)>,
 ) -> SmallVec<[NodeId; 8]> {
-    let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+    // Most lists are already normalized. Delay allocating a replacement list
+    // until the first merge is found, then return the original SmallVec when
+    // no run needs rewriting. This keeps the normal compact conversion path
+    // allocation-free for already-separated atoms.
+    let mut out: Option<SmallVec<[NodeId; 8]>> = None;
     let mut i = 0;
     while i < ids.len() {
         let first = ids[i];
         let Some((kind, first_sid)) = key(arena, *arena.node(first)) else {
-            out.push(first);
+            if let Some(out) = &mut out {
+                out.push(first);
+            }
             i += 1;
             continue;
         };
@@ -1468,6 +1478,11 @@ fn merge_runs(
             end += 1;
         }
         if end - i > 1 {
+            let out = out.get_or_insert_with(|| {
+                let mut prefix = SmallVec::new();
+                prefix.extend_from_slice(&ids[..i]);
+                prefix
+            });
             let source_range = merged_source_range(arena, &ids[i..end]);
             let mut combined = String::from(arena.str_val(first_sid));
             for &id in &ids[i + 1..end] {
@@ -1486,11 +1501,13 @@ fn merge_runs(
             } else {
                 arena.clear_source_range(first);
             }
+            out.push(first);
+        } else if let Some(out) = &mut out {
+            out.push(first);
         }
-        out.push(first);
         i = end;
     }
-    out
+    out.unwrap_or(ids)
 }
 
 /// Normalize a single compact node. May replace it in-place via `arena.node_mut`.
