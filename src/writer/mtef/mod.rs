@@ -757,7 +757,11 @@ fn hex_encode(data: &[u8]) -> String {
             0
         };
         #[cfg(target_arch = "aarch64")]
-        let vectorized = hex_encode_neon(data, output);
+        let vectorized = if std::arch::is_aarch64_feature_detected!("neon") {
+            hex_encode_neon(data, output)
+        } else {
+            0
+        };
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         let vectorized = hex_encode_wasm_simd128(data, output);
         #[cfg(not(any(
