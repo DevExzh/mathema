@@ -53,6 +53,40 @@ fn hex_encoding_preserves_all_byte_values() {
 }
 
 #[test]
+fn hex_encoding_handles_unaligned_sources_and_scalar_fallback() {
+    let storage: Vec<u8> = (0..512).map(|index| index as u8).collect();
+    let lengths = [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127];
+    for offset in 0..16 {
+        for &len in &lengths {
+            let input = &storage[offset..offset + len];
+            let expected: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
+            assert_eq!(
+                super::hex_encode(input),
+                expected,
+                "offset {offset}, length {len}"
+            );
+
+            let mut scalar = vec![0; len * 2];
+            unsafe { super::hex_encode_scalar(input, scalar.as_mut_ptr()) };
+            assert_eq!(String::from_utf8(scalar).unwrap(), expected);
+
+            #[cfg(target_arch = "x86_64")]
+            if is_x86_feature_detected!("ssse3") {
+                let mut vectorized = vec![0; len * 2];
+                let consumed = unsafe { super::hex_encode_ssse3(input, vectorized.as_mut_ptr()) };
+                unsafe {
+                    super::hex_encode_scalar(
+                        &input[consumed..],
+                        vectorized.as_mut_ptr().add(consumed * 2),
+                    );
+                }
+                assert_eq!(String::from_utf8(vectorized).unwrap(), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn write_reports_native_rule_padding_normalization() {
     for (col_seps, row_seps) in [(0b111, 0), (0, 0b11)] {
         let expr = MathExpr::inline(vec![MathNode::NativeArray {

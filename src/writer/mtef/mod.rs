@@ -40,6 +40,8 @@ use crate::writer::Writer as MathWriter;
 use crate::writer::limits::OutputLimits;
 use encode::Encoder;
 
+const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
+
 /// Writer for MTEF equations.
 pub struct MtefWriter;
 
@@ -762,17 +764,17 @@ fn hex_encode(data: &[u8]) -> String {
     hex
 }
 
-/// Encode the complete input with the scalar fallback and return no value.
-/// The caller has reserved `data.len() * 2` bytes at `output`.
+/// Fill reserved output bytes with the scalar nibble expansion.
 #[inline]
 unsafe fn hex_encode_scalar(data: &[u8], output: *mut u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     for (index, &byte) in data.iter().enumerate() {
         unsafe {
-            output.add(index * 2).write(HEX[usize::from(byte >> 4)]);
+            output
+                .add(index * 2)
+                .write(HEX_DIGITS[usize::from(byte >> 4)]);
             output
                 .add(index * 2 + 1)
-                .write(HEX[usize::from(byte & 0x0F)]);
+                .write(HEX_DIGITS[usize::from(byte & 0x0F)]);
         }
     }
 }
@@ -789,9 +791,8 @@ unsafe fn hex_encode_ssse3(data: &[u8], output: *mut u8) -> usize {
         _mm_storeu_si128, _mm_unpackhi_epi8, _mm_unpacklo_epi8,
     };
 
-    const HEX: [u8; 16] = *b"0123456789abcdef";
     let mask = _mm_set1_epi8(0x0f);
-    let table = unsafe { _mm_loadu_si128(HEX.as_ptr().cast::<__m128i>()) };
+    let table = unsafe { _mm_loadu_si128(HEX_DIGITS.as_ptr().cast::<__m128i>()) };
     let blocks = data.len() / 16 * 16;
     let mut source = 0;
     while source < blocks {
