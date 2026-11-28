@@ -39,6 +39,17 @@ fn hex_encoding_preserves_all_byte_values() {
     let bytes: Vec<u8> = (0..=u8::MAX).collect();
     let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(super::hex_encode(&bytes), expected);
+
+    // Exercise the scalar fallback and every short SSSE3 tail length. The
+    // output must remain byte-for-byte identical when no complete vector block
+    // is available.
+    for len in 0..=65 {
+        let bytes: Vec<u8> = (0..len)
+            .map(|index| (index as u8).wrapping_mul(37))
+            .collect();
+        let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(super::hex_encode(&bytes), expected, "length {len}");
+    }
 }
 
 #[test]

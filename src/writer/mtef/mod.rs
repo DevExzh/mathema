@@ -741,7 +741,6 @@ impl MathWriter for MtefWriter {
 
 /// Encode bytes as a lowercase hex string.
 fn hex_encode(data: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let len = data.len() * 2;
     let mut hex = String::with_capacity(len);
     // Every table entry is ASCII, so the buffer remains valid UTF-8 while it
@@ -749,15 +748,70 @@ fn hex_encode(data: &[u8]) -> String {
     // per-character UTF-8 path used by `String::push`.
     unsafe {
         let output = hex.as_mut_vec().as_mut_ptr();
-        for (index, &byte) in data.iter().enumerate() {
+        #[cfg(target_arch = "x86_64")]
+        let vectorized = if is_x86_feature_detected!("ssse3") {
+            hex_encode_ssse3(data, output)
+        } else {
+            0
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let vectorized = 0;
+        hex_encode_scalar(&data[vectorized..], output.add(vectorized * 2));
+        hex.as_mut_vec().set_len(len);
+    }
+    hex
+}
+
+/// Encode the complete input with the scalar fallback and return no value.
+/// The caller has reserved `data.len() * 2` bytes at `output`.
+#[inline]
+unsafe fn hex_encode_scalar(data: &[u8], output: *mut u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (index, &byte) in data.iter().enumerate() {
+        unsafe {
             output.add(index * 2).write(HEX[usize::from(byte >> 4)]);
             output
                 .add(index * 2 + 1)
                 .write(HEX[usize::from(byte & 0x0F)]);
         }
-        hex.as_mut_vec().set_len(len);
     }
-    hex
+}
+
+/// Encode complete 16-byte blocks with SSSE3's byte-table shuffle. The return
+/// value is the number of source bytes consumed, leaving only a short tail for
+/// [`hex_encode_scalar`]. The runtime feature check at the call site keeps the
+/// public writer portable to CPUs without SSSE3.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn hex_encode_ssse3(data: &[u8], output: *mut u8) -> usize {
+    use std::arch::x86_64::{
+        __m128i, _mm_and_si128, _mm_loadu_si128, _mm_set1_epi8, _mm_shuffle_epi8, _mm_srli_epi16,
+        _mm_storeu_si128, _mm_unpackhi_epi8, _mm_unpacklo_epi8,
+    };
+
+    const HEX: [u8; 16] = *b"0123456789abcdef";
+    let mask = _mm_set1_epi8(0x0f);
+    let table = unsafe { _mm_loadu_si128(HEX.as_ptr().cast::<__m128i>()) };
+    let blocks = data.len() / 16 * 16;
+    let mut source = 0;
+    while source < blocks {
+        let input = unsafe { data.as_ptr().add(source).cast::<__m128i>() };
+        let value = unsafe { _mm_loadu_si128(input) };
+        let low = _mm_and_si128(value, mask);
+        let high = _mm_and_si128(_mm_srli_epi16(value, 4), mask);
+        let low = _mm_shuffle_epi8(table, low);
+        let high = _mm_shuffle_epi8(table, high);
+        let first = _mm_unpacklo_epi8(high, low);
+        let second = _mm_unpackhi_epi8(high, low);
+        let first_output = unsafe { output.add(source * 2).cast::<__m128i>() };
+        let second_output = unsafe { output.add(source * 2 + 16).cast::<__m128i>() };
+        unsafe {
+            _mm_storeu_si128(first_output, first);
+            _mm_storeu_si128(second_output, second);
+        }
+        source += 16;
+    }
+    source
 }
 
 /// Internal sinks use the MTEF payload ceiling when an OLE header is reserved.
