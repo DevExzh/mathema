@@ -2490,7 +2490,7 @@ impl LatexCompactParser {
     /// Turn an arena node-budget hit into a typed parser error. The parser
     /// keeps the last node temporarily so every in-flight ID remains valid,
     /// then unwinds before any partial tree can be returned to the caller.
-    #[inline(never)]
+    #[inline]
     fn check_node_limit(&mut self) -> bool {
         if let Some(limit) = self.max_nodes
             && self.arena.node_count() > limit
