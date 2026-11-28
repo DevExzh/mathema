@@ -5,25 +5,28 @@
 // the module once (lazily, browser-only) and expose a small, typed surface to
 // the rest of the app.
 
-import initWasm, {
-  init as installPanicHook,
-  MathemaConverter,
-  convert as wasmConvert,
-  type ParsedMath
-} from './wasm/mathema.js';
-// Vite resolves this to a served URL for the `.wasm` binary.
-import wasmUrl from './wasm/mathema_bg.wasm?url';
+import portableUrl from './wasm/mathema_bg.wasm?url';
+import simdUrl from './wasm-simd/mathema_bg.wasm?url';
 
+type Bindings = typeof import('./wasm/mathema.js') | typeof import('./wasm-simd/mathema.js');
+let wasm: Bindings;
 let readyPromise: Promise<void> | null = null;
+
+async function initialize(): Promise<void> {
+  // (module (func (drop (i8x16.splat (i32.const 0)))))
+  const simd = WebAssembly.validate(Uint8Array.of(
+    0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0,
+    10, 9, 1, 7, 0, 65, 0, 253, 15, 26, 11
+  ));
+  const bindings = simd ? await import('./wasm-simd/mathema.js') : await import('./wasm/mathema.js');
+  await bindings.default({ module_or_path: simd ? simdUrl : portableUrl });
+  bindings.init();
+  wasm = bindings;
+}
 
 /** Initialise the WebAssembly module exactly once. Safe to call repeatedly. */
 export function loadMathema(): Promise<void> {
-  if (!readyPromise) {
-    readyPromise = initWasm({ module_or_path: wasmUrl }).then(() => {
-      installPanicHook();
-    });
-  }
-  return readyPromise;
+  return readyPromise ??= initialize();
 }
 
 export interface InputFormat {
@@ -88,8 +91,8 @@ export function process(
   opts: ProcessOptions = {}
 ): ProcessResult {
   const { display = true, strict = false, fontSize = 28 } = opts;
-  const converter = MathemaConverter.withOptions(format, strict, display);
-  let parsed: ParsedMath | undefined;
+  const converter = wasm.MathemaConverter.withOptions(format, strict, display);
+  let parsed: ReturnType<typeof converter.parse> | undefined;
   try {
     parsed = converter.parse(input);
     const svg = parsed.toSvg(fontSize, display);
@@ -124,7 +127,7 @@ export function process(
 
 /** Direct one-shot conversion between two formats. */
 export function convert(input: string, from: string, to: string): string {
-  return wasmConvert(input, from, to);
+  return wasm.convert(input, from, to);
 }
 
 /** Normalise a thrown JsValue/Error/string into a readable message. */

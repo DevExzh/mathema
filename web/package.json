@@ -9,7 +9,7 @@
   },
   "description": "SvelteKit web app for the Mathema formula renderer and converter (WebAssembly).",
   "scripts": {
-    "wasm": "wasm-pack build .. --target web --out-dir web/src/lib/wasm --release -- --no-default-features --features \"wasm render\"",
+    "wasm": "node build-wasm.mjs",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",

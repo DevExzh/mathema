@@ -3,3 +3,5 @@ node_modules/
 /.svelte-kit/
 /.vercel/
 .DS_Store
+/src/lib/wasm/
+/src/lib/wasm-simd/

@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const packageDirectory = resolve(process.argv[2] ?? 'web/src/lib/wasm');
-const jsPath = resolve(packageDirectory, 'mathema.js');
-const wasmPath = resolve(packageDirectory, 'mathema_bg.wasm');
-const wasm = await import(pathToFileURL(jsPath).href);
-await wasm.default({ module_or_path: await readFile(wasmPath) });
-wasm.init();
+async function loadPackage(directory) {
+  const jsPath = resolve(directory, 'mathema.js');
+  const wasmPath = resolve(directory, 'mathema_bg.wasm');
+  const bindings = await import(pathToFileURL(jsPath).href);
+  await bindings.default({ module_or_path: await readFile(wasmPath) });
+  bindings.init();
+  return bindings;
+}
+
+const wasm = await loadPackage(process.argv[2] ?? 'web/src/lib/wasm');
 
 const freeSvg = wasm.convertSvg('x^2', 'latex');
 const freeTextSvg = wasm.convertSvg('x^2', 'latex', true);
@@ -81,3 +86,28 @@ for (const value of [parsed, diagnostic, asyncParsed, fallback]) value.free();
 diagnosticConverter.free();
 converter.free();
 console.log('WASM smoke passed: AST, structured diagnostics, Unicode spans, async parsing, SVG options, disposal');
+
+if (process.argv[3]) {
+  const simd = await loadPackage(process.argv[3]);
+  const latex = String.raw`\frac{\alpha+1}{x}+\sum_{i=0}^{n}i^2`;
+  const xmlText = `<math><mtext>${'α &amp; β &lt; γ '.repeat(24)}</mtext></math>`;
+  const mtef = wasm.convert(latex, 'latex', 'mtef');
+  assert.match(mtef, /^[0-9a-f]{64,}$/);
+  for (const [input, from] of [[latex, 'latex'], [xmlText, 'mathml'], [mtef, 'mtef']]) {
+    for (const to of ['latex', 'mathml', 'omml', 'unicodemath', 'mtef']) {
+      assert.equal(simd.convert(input, from, to), wasm.convert(input, from, to), `${from} to ${to}`);
+    }
+    for (const textMode of [true, false]) {
+      assert.equal(simd.convertSvg(input, from, textMode), wasm.convertSvg(input, from, textMode));
+    }
+  }
+
+  for (const marker of ['\uFFFE', '\uFFFF']) {
+    // EF BF BE/BF straddles a 16-byte lane boundary in the text storage.
+    const input = `\\text{${'x'.repeat(127)}${marker}aé&b}`;
+    const expected = wasm.convert(input, 'latex', 'mathml');
+    assert.ok(expected.includes('\uFFFD') && !expected.includes(marker));
+    assert.equal(simd.convert(input, 'latex', 'mathml'), expected);
+  }
+  console.log('WASM scalar and SIMD128 outputs match');
+}

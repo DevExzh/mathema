@@ -30,8 +30,17 @@ jobs:
         run: bun run wasm
       - name: Check generated WASM declarations
         run: node wasm/check-generated-types.mjs web/src/lib/wasm/mathema.d.ts
-      - name: Smoke test WASM bindings
-        run: node wasm/smoke.mjs web/src/lib/wasm
+      - name: Verify portable and SIMD128 WASM packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y wabt
+          wasm-validate --disable-simd web/src/lib/wasm/mathema_bg.wasm
+          wasm-validate web/src/lib/wasm-simd/mathema_bg.wasm
+          if wasm-validate --disable-simd web/src/lib/wasm-simd/mathema_bg.wasm 2>/dev/null; then
+            echo "::error::The SIMD package contains no SIMD instructions"
+            exit 1
+          fi
+          node wasm/smoke.mjs web/src/lib/wasm web/src/lib/wasm-simd
       - name: Install JS dependencies
         working-directory: ./web
         run: bun install --frozen-lockfile --registry https://registry.npmjs.org
@@ -111,6 +120,18 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build wasm bindings
         run: cargo build --target wasm32-unknown-unknown --no-default-features --features wasm
+
+  neon:
+    name: AArch64 NEON writers
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Run hex and XML parity tests on Arm
+        run: |
+          cargo test --locked --no-default-features --features render --lib writer::mtef::tests::hex
+          cargo test --locked --no-default-features --features render --lib writer::xml_chars::tests
 
   audit:
     name: cargo audit

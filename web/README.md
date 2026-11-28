@@ -28,7 +28,7 @@ compiled to `wasm32-unknown-unknown` and runs client-side.
 cd web
 bun install           # install JS deps
 
-# 1. Build the WebAssembly package (outputs to src/lib/wasm/).
+# 1. Build the portable and SIMD WebAssembly packages.
 #    Re-run this whenever the Rust crate changes.
 bun run wasm
 
@@ -40,15 +40,10 @@ bun run build
 bun run preview
 ```
 
-`bun run wasm` is a convenience wrapper for:
-
-```sh
-wasm-pack build .. --target web --out-dir web/src/lib/wasm --release \
-  -- --no-default-features --features "wasm render"
-```
-
-> The generated `src/lib/wasm/` directory is a build artifact (git-ignored).
-> Run `bun run wasm` after cloning before `bun run dev`/`bun run build`.
+`bun run wasm` builds two web packages. The portable module is generated in
+`src/lib/wasm/` and the SIMD128 module in `src/lib/wasm-simd/`. The loader
+checks SIMD support before fetching the matching package. Run this build after
+cloning or changing the Rust library. Both output directories are Git-ignored.
 
 ## How it works
 

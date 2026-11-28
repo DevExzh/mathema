@@ -18,7 +18,17 @@ wasm-pack build --target nodejs --no-default-features --features wasm
 wasm-pack build --target bundler --no-default-features --features wasm
 ```
 
-Output goes to `pkg/`.
+Output goes to `pkg/`. To build a SIMD128 variant with the same public API,
+enable the WebAssembly target feature and give it its own output directory.
+
+```sh
+RUSTFLAGS="-Ctarget-feature=+simd128" wasm-pack build --target web --out-dir pkg-simd \
+  -- --no-default-features --features wasm,render
+```
+
+This accelerates MTEF hexadecimal output and long XML scans. Load this module
+in engines that support SIMD128. The [web demo](../web/README.md) also builds a
+portable module and selects the appropriate variant before loading the bindings.
 
 Note: `wasm-opt` is disabled in `Cargo.toml` to avoid requiring the binary at
 build time. To produce an optimized (smaller) `.wasm` file, remove the
