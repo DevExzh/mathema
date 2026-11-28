@@ -25,12 +25,15 @@ pub(crate) fn has_non_xml_char(text: &str) -> bool {
         // which is needed to distinguish U+FFFE/U+FFFF from ordinary UTF-8.
         return unsafe { scan_xml_avx2::<false>(bytes) };
     }
-    bytes.iter().enumerate().any(|(at, &byte)| match byte {
-        b'\t' | b'\n' | b'\r' => false,
-        0..0x20 => true,
-        0xEF => matches!(bytes.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])),
-        _ => false,
-    })
+    #[cfg(target_arch = "aarch64")]
+    if bytes.len() >= 64 && std::arch::is_aarch64_feature_detected!("neon") {
+        return unsafe { scan_xml_neon::<false>(bytes) };
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if bytes.len() >= 64 {
+        return unsafe { scan_xml_wasm::<false>(bytes) };
+    }
+    scan_xml_scalar::<false>(bytes)
 }
 
 /// Whether a UTF-8 string needs XML escaping or XML 1.0 character repair.
@@ -43,13 +46,36 @@ pub(crate) fn needs_xml_sanitization(text: &str) -> bool {
     if bytes.len() >= 128 && std::is_x86_feature_detected!("avx2") {
         return unsafe { scan_xml_avx2::<true>(bytes) };
     }
-    bytes.iter().enumerate().any(|(at, &byte)| match byte {
-        b'<' | b'>' | b'&' | b'"' | b'\'' => true,
-        b'\t' | b'\n' | b'\r' | 0x20..=0x7e => false,
-        0..0x20 => true,
-        0xEF => matches!(bytes.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])),
-        _ => false,
-    })
+    #[cfg(target_arch = "aarch64")]
+    if bytes.len() >= 64 && std::arch::is_aarch64_feature_detected!("neon") {
+        return unsafe { scan_xml_neon::<true>(bytes) };
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if bytes.len() >= 64 {
+        return unsafe { scan_xml_wasm::<true>(bytes) };
+    }
+    scan_xml_scalar::<true>(bytes)
+}
+
+/// Scan XML bytes without an architecture-specific vector instruction.
+///
+/// The scalar path is also the tail and portability fallback for every
+/// vector backend. It records an `EF` byte so the two forbidden UTF-8
+/// noncharacters can be distinguished from ordinary UTF-8 without making a
+/// three-byte window check for every input byte.
+#[inline]
+fn scan_xml_scalar<const ESCAPE: bool>(bytes: &[u8]) -> bool {
+    for (index, &byte) in bytes.iter().enumerate() {
+        if (ESCAPE && matches!(byte, b'<' | b'>' | b'&' | b'"' | b'\''))
+            || (byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
+        {
+            return true;
+        }
+        if byte == 0xEF && matches!(bytes.get(index + 1..index + 3), Some([0xBF, 0xBE | 0xBF])) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -117,12 +143,113 @@ unsafe fn scan_xml_avx2<const ESCAPE: bool>(bytes: &[u8]) -> bool {
     saw_ef && has_xml_sentinel(bytes)
 }
 
-#[cfg(target_arch = "x86_64")]
 #[inline]
 fn has_xml_sentinel(bytes: &[u8]) -> bool {
     bytes
         .windows(3)
         .any(|window| matches!(window, [0xEF, 0xBF, 0xBE | 0xBF]))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn scan_xml_neon<const ESCAPE: bool>(bytes: &[u8]) -> bool {
+    use std::arch::aarch64::*;
+
+    let controls = vdupq_n_u8(0x20);
+    let tab = vdupq_n_u8(b'\t');
+    let line_feed = vdupq_n_u8(b'\n');
+    let carriage_return = vdupq_n_u8(b'\r');
+    let ef = vdupq_n_u8(0xEF);
+    let less = vdupq_n_u8(b'<');
+    let greater = vdupq_n_u8(b'>');
+    let ampersand = vdupq_n_u8(b'&');
+    let quote = vdupq_n_u8(b'"');
+    let apostrophe = vdupq_n_u8(b'\'');
+    let mut saw_ef = false;
+    let (chunks, remainder) = bytes.as_chunks::<16>();
+    for chunk in chunks {
+        let value = unsafe { vld1q_u8(chunk.as_ptr()) };
+        let below = vcltq_u8(value, controls);
+        let allowed = vorrq_u8(
+            vorrq_u8(vceqq_u8(value, tab), vceqq_u8(value, line_feed)),
+            vceqq_u8(value, carriage_return),
+        );
+        let mut invalid = vandq_u8(below, vmvnq_u8(allowed));
+        if ESCAPE {
+            let special = vorrq_u8(
+                vorrq_u8(
+                    vorrq_u8(vceqq_u8(value, less), vceqq_u8(value, greater)),
+                    vceqq_u8(value, ampersand),
+                ),
+                vorrq_u8(vceqq_u8(value, quote), vceqq_u8(value, apostrophe)),
+            );
+            invalid = vorrq_u8(invalid, special);
+        }
+        if vmaxvq_u8(invalid) != 0 {
+            return true;
+        }
+        saw_ef |= vmaxvq_u8(vceqq_u8(value, ef)) != 0;
+    }
+    let tail_invalid = scan_xml_scalar::<ESCAPE>(remainder);
+    if tail_invalid {
+        return true;
+    }
+    if saw_ef || remainder.iter().any(|&byte| byte == 0xEF) {
+        has_xml_sentinel(bytes)
+    } else {
+        false
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn scan_xml_wasm<const ESCAPE: bool>(bytes: &[u8]) -> bool {
+    use std::arch::wasm32::*;
+
+    let controls = u8x16_splat(0x20);
+    let tab = u8x16_splat(b'\t');
+    let line_feed = u8x16_splat(b'\n');
+    let carriage_return = u8x16_splat(b'\r');
+    let ef = u8x16_splat(0xEF);
+    let mut saw_ef = false;
+    let (chunks, remainder) = bytes.as_chunks::<16>();
+    for chunk in chunks {
+        let value = unsafe { v128_load(chunk.as_ptr().cast()) };
+        let below = u8x16_lt(value, controls);
+        let allowed = v128_or(
+            v128_or(u8x16_eq(value, tab), u8x16_eq(value, line_feed)),
+            u8x16_eq(value, carriage_return),
+        );
+        let mut invalid = v128_and(below, v128_not(allowed));
+        if ESCAPE {
+            let special = v128_or(
+                v128_or(
+                    v128_or(
+                        u8x16_eq(value, u8x16_splat(b'<')),
+                        u8x16_eq(value, u8x16_splat(b'>')),
+                    ),
+                    u8x16_eq(value, u8x16_splat(b'&')),
+                ),
+                v128_or(
+                    u8x16_eq(value, u8x16_splat(b'"')),
+                    u8x16_eq(value, u8x16_splat(b'\'')),
+                ),
+            );
+            invalid = v128_or(invalid, special);
+        }
+        if v128_any_true(invalid) {
+            return true;
+        }
+        saw_ef |= v128_any_true(u8x16_eq(value, ef));
+    }
+    if scan_xml_scalar::<ESCAPE>(remainder) {
+        return true;
+    }
+    if saw_ef || remainder.iter().any(|&byte| byte == 0xEF) {
+        has_xml_sentinel(bytes)
+    } else {
+        false
+    }
 }
 
 /// `text` with each character XML 1.0 cannot carry replaced by U+FFFD.
@@ -209,6 +336,55 @@ mod tests {
                         "{offset} {marker:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_scans_match_scalar_semantics() {
+        if !std::arch::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+        for offset in 0..32 {
+            for marker in ['\u{FFFE}', '\u{FFFF}', '\u{13}', '<', 'α'] {
+                let mut text = "x".repeat(64 + offset);
+                text.push(marker);
+                text.push('y');
+                let bytes = text.as_bytes();
+                assert_eq!(
+                    unsafe { scan_xml_neon::<false>(bytes) },
+                    scan_xml_scalar::<false>(bytes),
+                    "XML scan offset={offset} marker={marker:?}"
+                );
+                assert_eq!(
+                    unsafe { scan_xml_neon::<true>(bytes) },
+                    scan_xml_scalar::<true>(bytes),
+                    "escaping scan offset={offset} marker={marker:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[test]
+    fn wasm_simd_scans_match_scalar_semantics() {
+        for offset in 0..32 {
+            for marker in ['\u{FFFE}', '\u{FFFF}', '\u{13}', '<', 'α'] {
+                let mut text = "x".repeat(64 + offset);
+                text.push(marker);
+                text.push('y');
+                let bytes = text.as_bytes();
+                assert_eq!(
+                    unsafe { scan_xml_wasm::<false>(bytes) },
+                    scan_xml_scalar::<false>(bytes),
+                    "XML scan offset={offset} marker={marker:?}"
+                );
+                assert_eq!(
+                    unsafe { scan_xml_wasm::<true>(bytes) },
+                    scan_xml_scalar::<true>(bytes),
+                    "escaping scan offset={offset} marker={marker:?}"
+                );
             }
         }
     }
