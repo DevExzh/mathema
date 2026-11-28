@@ -162,11 +162,11 @@ fn estimate_capacity(glyphs: &GlyphSet) -> usize {
     for fg in glyphs.fonts.values() {
         for outline in fg.glyphs.values() {
             // `<path id="…" d="…"/>` plus a reference (`<use …/>`) per glyph.
-            cap += outline.path_data.len() + 96;
+            cap += outline.svg_path_data().len() + 96;
         }
     }
     for outline in glyphs.variants.values() {
-        cap += outline.path_data.len() + 96;
+        cap += outline.svg_path_data().len() + 96;
     }
     cap.max(4096)
 }
@@ -213,7 +213,16 @@ fn emit_svg_with_fonts_to(
     emit_defs(svg, glyphs);
 
     let baseline_y = root.height * em;
-    emit_box_embedded(svg, root, 0.0, baseline_y, em, options, glyphs);
+    emit_box_embedded(
+        svg,
+        root,
+        0.0,
+        baseline_y,
+        em,
+        options,
+        glyphs,
+        &options.fg_color,
+    );
 
     svg.push_str("</svg>");
 }
@@ -267,7 +276,7 @@ fn emit_defs(svg: &mut impl SvgSink, glyphs: &GlyphSet) {
             svg.push_str(r#"<path id=""#);
             push_glyph_id(svg, *font, *ch as u32);
             svg.push_str(r#"" d=""#);
-            push_xml_escaped(svg, &outline.path_data);
+            svg.push_str(outline.svg_path_data());
             svg.push_str(r#""/>"#);
         }
     }
@@ -281,7 +290,7 @@ fn emit_defs(svg: &mut impl SvgSink, glyphs: &GlyphSet) {
         svg.push_str("vg");
         push_u64(svg, u64::from(*id));
         svg.push_str(r#"" d=""#);
-        push_xml_escaped(svg, &outline.path_data);
+        svg.push_str(outline.svg_path_data());
         svg.push_str(r#""/>"#);
     }
 
@@ -459,6 +468,7 @@ fn emit_vertical_assembly_embedded(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_box_embedded(
     svg: &mut impl SvgSink,
     layout: &LayoutBox,
@@ -467,6 +477,7 @@ fn emit_box_embedded(
     em: f64,
     options: &RenderOptions,
     glyphs: &GlyphSet,
+    color: &str,
 ) {
     if svg.stopped() {
         return;
@@ -492,11 +503,13 @@ fn emit_box_embedded(
                     x,
                     y,
                     glyphs.font_info.units_per_em,
-                    &options.fg_color,
+                    color,
                 );
                 return;
             }
-            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic, *font);
+            emit_glyph(
+                svg, *ch, *size, x, y, em, options, glyphs, *italic, *font, color,
+            );
         },
 
         BoxKind::TextRun {
@@ -513,7 +526,9 @@ fn emit_box_embedded(
                     cx += width.as_f64() * *size * em;
                     continue;
                 }
-                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic, font);
+                emit_glyph(
+                    svg, ch, *size, cx, y, em, options, glyphs, *italic, font, color,
+                );
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
                 let m = fonts_registry::text_metrics(ch, *italic, font);
@@ -525,7 +540,7 @@ fn emit_box_embedded(
             for child in children {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
+                emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs, color);
             }
         },
 
@@ -533,7 +548,7 @@ fn emit_box_embedded(
             for child in children {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
+                emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs, color);
             }
         },
 
@@ -550,7 +565,7 @@ fn emit_box_embedded(
             svg.push_str(r#"" height=""#);
             push_f3(svg, th_px);
             svg.push_str(r#"" fill=""#);
-            push_xml_escaped(svg, &options.fg_color);
+            push_xml_escaped(svg, color);
             svg.push_str(r#""/>"#);
         },
 
@@ -578,7 +593,7 @@ fn emit_box_embedded(
                     x,
                     y,
                     glyphs.font_info.units_per_em,
-                    &options.fg_color,
+                    color,
                 );
                 return;
             }
@@ -594,7 +609,7 @@ fn emit_box_embedded(
                 x,
                 em,
                 glyphs.font_info.units_per_em,
-                &options.fg_color,
+                color,
             ) {
                 return;
             }
@@ -604,17 +619,9 @@ fn emit_box_embedded(
                 let ty = y - layout.height * em;
                 // "F:" prefix indicates a filled path (parentheses, braces)
                 if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
-                    push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
+                    push_fill_path(svg, tx, ty, em, fill_path, color);
                 } else {
-                    push_stroke_delim_path(
-                        svg,
-                        tx,
-                        ty,
-                        em,
-                        &dp.path_data,
-                        &options.fg_color,
-                        dp.stroke_width,
-                    );
+                    push_stroke_delim_path(svg, tx, ty, em, &dp.path_data, color, dp.stroke_width);
                 }
             } else {
                 // Fallback to glyph rendering
@@ -629,6 +636,7 @@ fn emit_box_embedded(
                     glyphs,
                     false,
                     FontId::Math,
+                    color,
                 );
             }
         },
@@ -638,18 +646,16 @@ fn emit_box_embedded(
             let ty = y - layout.height * em;
             // "F:" prefix indicates a filled path (KaTeX-style accents, arrows)
             if let Some(fill_path) = path.strip_prefix("F:") {
-                push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
+                push_fill_path(svg, tx, ty, em, fill_path, color);
             } else {
-                push_stroke_free_path(svg, tx, ty, em, path, &options.fg_color);
+                push_stroke_free_path(svg, tx, ty, em, path, color);
             }
         },
 
         BoxKind::Color { color, child } => {
-            let mut color_opts = options.clone();
-            color_opts.fg_color = color.clone();
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_box_embedded(svg, &child.layout, cx, cy, em, &color_opts, glyphs);
+            emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs, color);
         },
 
         BoxKind::Phantom => {},
@@ -662,10 +668,10 @@ fn emit_box_embedded(
         } => {
             let extent = (layout.width, layout.height, layout.depth);
             let colors = (bg_color.as_deref(), border_color.as_deref());
-            super::emit::push_box(svg, (x, y), extent, em, colors, &options.fg_color);
+            super::emit::push_box(svg, (x, y), extent, em, colors, color);
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
+            emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs, color);
         },
         BoxKind::Reflected { child } => {
             super::emit::open_reflected_group(svg, x + layout.width * em);
@@ -677,6 +683,7 @@ fn emit_box_embedded(
                 em,
                 options,
                 glyphs,
+                color,
             );
             svg.push_str("</g>");
         },
@@ -696,6 +703,7 @@ fn emit_glyph(
     glyphs: &GlyphSet,
     italic: bool,
     font: FontId,
+    color: &str,
 ) {
     // Text-face glyphs (e.g. \mathbf, \mathsf, \mathtt) carry their slant/weight
     // in the outline itself: draw the base codepoint with no remap or skew.
@@ -704,20 +712,11 @@ fn emit_glyph(
         if let Some((outline, used_font, info)) = glyphs.outline(font, ch) {
             let _ = outline;
             let scale = size * em / info.units_per_em;
-            push_use_glyph(
-                svg,
-                used_font,
-                ch as u32,
-                x,
-                y,
-                scale,
-                None,
-                &options.fg_color,
-            );
+            push_use_glyph(svg, used_font, ch as u32, x, y, scale, None, color);
             return;
         }
         // No outline in the text face nor the Math fallback → <text>.
-        emit_text_fallback(svg, ch, size, x, y, em, options, italic);
+        emit_text_fallback(svg, ch, size, x, y, em, options, italic, color);
         return;
     }
 
@@ -727,16 +726,7 @@ fn emit_glyph(
         && let Some((_, used_font, info)) = glyphs.outline(FontId::Math, italic_ch)
     {
         let scale = size * em / info.units_per_em;
-        push_use_glyph(
-            svg,
-            used_font,
-            italic_ch as u32,
-            x,
-            y,
-            scale,
-            None,
-            &options.fg_color,
-        );
+        push_use_glyph(svg, used_font, italic_ch as u32, x, y, scale, None, color);
         return;
     }
     if let Some((_, used_font, info)) = glyphs.outline(FontId::Math, ch) {
@@ -751,37 +741,19 @@ fn emit_glyph(
                 y,
                 scale,
                 Some("skewX(-12)"),
-                &options.fg_color,
+                color,
             );
         } else if ch == '\u{2202}' {
             // Give the nearly-upright Latin Modern Math `∂` the slight forward
             // italic lean MathJax uses. Mirrors the raster backend's shear so the
             // SVG and PNG outputs stay in parity.
             let skew = format!("skewX({})", super::layout::PARTIAL_DESLANT_DEG);
-            push_use_glyph(
-                svg,
-                used_font,
-                ch as u32,
-                x,
-                y,
-                scale,
-                Some(&skew),
-                &options.fg_color,
-            );
+            push_use_glyph(svg, used_font, ch as u32, x, y, scale, Some(&skew), color);
         } else {
-            push_use_glyph(
-                svg,
-                used_font,
-                ch as u32,
-                x,
-                y,
-                scale,
-                None,
-                &options.fg_color,
-            );
+            push_use_glyph(svg, used_font, ch as u32, x, y, scale, None, color);
         }
     } else {
-        emit_text_fallback(svg, ch, size, x, y, em, options, italic);
+        emit_text_fallback(svg, ch, size, x, y, em, options, italic, color);
     }
 }
 
@@ -796,6 +768,7 @@ fn emit_text_fallback(
     em: f64,
     options: &RenderOptions,
     italic: bool,
+    color: &str,
 ) {
     let font_size = em * size;
     svg.push_str(r#"<text x=""#);
@@ -811,7 +784,7 @@ fn emit_text_fallback(
     } else {
         svg.push_str(r#"" fill=""#);
     }
-    push_xml_escaped(svg, &options.fg_color);
+    push_xml_escaped(svg, color);
     svg.push_str(r#"">"#);
     write_escaped_char(svg, ch);
     svg.push_str("</text>");
@@ -896,7 +869,17 @@ fn emit_svg_with_fonts_arena_to(
     emit_defs(svg, glyphs);
 
     let baseline_y = root_box.height * em;
-    emit_box_arena_embedded(svg, arena, root, 0.0, baseline_y, em, options, glyphs);
+    emit_box_arena_embedded(
+        svg,
+        arena,
+        root,
+        0.0,
+        baseline_y,
+        em,
+        options,
+        glyphs,
+        &options.fg_color,
+    );
 
     svg.push_str("</svg>");
 }
@@ -969,6 +952,7 @@ fn emit_box_arena_embedded(
     em: f64,
     options: &RenderOptions,
     glyphs: &GlyphSet,
+    color: &str,
 ) {
     if svg.stopped() {
         return;
@@ -993,11 +977,13 @@ fn emit_box_arena_embedded(
                     x,
                     y,
                     glyphs.font_info.units_per_em,
-                    &options.fg_color,
+                    color,
                 );
                 return;
             }
-            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic, *font);
+            emit_glyph(
+                svg, *ch, *size, x, y, em, options, glyphs, *italic, *font, color,
+            );
         },
 
         ArenaBoxKind::TextRun {
@@ -1014,7 +1000,9 @@ fn emit_box_arena_embedded(
                     cx += width.as_f64() * *size * em;
                     continue;
                 }
-                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic, font);
+                emit_glyph(
+                    svg, ch, *size, cx, y, em, options, glyphs, *italic, font, color,
+                );
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
                 let m = fonts_registry::text_metrics(ch, *italic, font);
@@ -1026,7 +1014,7 @@ fn emit_box_arena_embedded(
             for child in arena.children(*children) {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box_arena_embedded(svg, arena, child.id, cx, cy, em, options, glyphs);
+                emit_box_arena_embedded(svg, arena, child.id, cx, cy, em, options, glyphs, color);
             }
         },
 
@@ -1034,7 +1022,7 @@ fn emit_box_arena_embedded(
             for child in arena.children(*children) {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box_arena_embedded(svg, arena, child.id, cx, cy, em, options, glyphs);
+                emit_box_arena_embedded(svg, arena, child.id, cx, cy, em, options, glyphs, color);
             }
         },
 
@@ -1051,7 +1039,7 @@ fn emit_box_arena_embedded(
             svg.push_str(r#"" height=""#);
             push_f3(svg, th_px);
             svg.push_str(r#"" fill=""#);
-            push_xml_escaped(svg, &options.fg_color);
+            push_xml_escaped(svg, color);
             svg.push_str(r#""/>"#);
         },
 
@@ -1079,7 +1067,7 @@ fn emit_box_arena_embedded(
                     x,
                     y,
                     glyphs.font_info.units_per_em,
-                    &options.fg_color,
+                    color,
                 );
                 return;
             }
@@ -1095,7 +1083,7 @@ fn emit_box_arena_embedded(
                 x,
                 em,
                 glyphs.font_info.units_per_em,
-                &options.fg_color,
+                color,
             ) {
                 return;
             }
@@ -1105,17 +1093,9 @@ fn emit_box_arena_embedded(
                 let ty = y - layout.height * em;
                 // "F:" prefix indicates a filled path (parentheses, braces)
                 if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
-                    push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
+                    push_fill_path(svg, tx, ty, em, fill_path, color);
                 } else {
-                    push_stroke_delim_path(
-                        svg,
-                        tx,
-                        ty,
-                        em,
-                        &dp.path_data,
-                        &options.fg_color,
-                        dp.stroke_width,
-                    );
+                    push_stroke_delim_path(svg, tx, ty, em, &dp.path_data, color, dp.stroke_width);
                 }
             } else {
                 // Fallback to glyph rendering
@@ -1130,6 +1110,7 @@ fn emit_box_arena_embedded(
                     glyphs,
                     false,
                     FontId::Math,
+                    color,
                 );
             }
         },
@@ -1139,16 +1120,14 @@ fn emit_box_arena_embedded(
             let ty = y - layout.height * em;
             // "F:" prefix indicates a filled path (KaTeX-style accents, arrows)
             if let Some(fill_path) = path.strip_prefix("F:") {
-                push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
+                push_fill_path(svg, tx, ty, em, fill_path, color);
             } else {
-                push_stroke_free_path(svg, tx, ty, em, path, &options.fg_color);
+                push_stroke_free_path(svg, tx, ty, em, path, color);
             }
         },
 
         ArenaBoxKind::Color { color, child } => {
-            let mut color_opts = options.clone();
-            color_opts.fg_color = color.clone();
-            emit_box_arena_embedded(svg, arena, *child, x, y, em, &color_opts, glyphs);
+            emit_box_arena_embedded(svg, arena, *child, x, y, em, options, glyphs, color);
         },
 
         ArenaBoxKind::Phantom => {},
@@ -1161,12 +1140,22 @@ fn emit_box_arena_embedded(
         } => {
             let extent = (layout.width, layout.height, layout.depth);
             let colors = (bg_color.as_deref(), border_color.as_deref());
-            super::emit::push_box(svg, (x, y), extent, em, colors, &options.fg_color);
-            emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
+            super::emit::push_box(svg, (x, y), extent, em, colors, color);
+            emit_box_arena_embedded(
+                svg,
+                arena,
+                *child,
+                x + padding * em,
+                y,
+                em,
+                options,
+                glyphs,
+                color,
+            );
         },
         ArenaBoxKind::Reflected { child } => {
             super::emit::open_reflected_group(svg, x + layout.width * em);
-            emit_box_arena_embedded(svg, arena, *child, 0.0, y, em, options, glyphs);
+            emit_box_arena_embedded(svg, arena, *child, 0.0, y, em, options, glyphs, color);
             svg.push_str("</g>");
         },
     }

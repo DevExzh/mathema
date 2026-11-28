@@ -13,9 +13,22 @@ use super::fonts_registry::{self, FontId};
 #[derive(Debug, Clone)]
 pub struct GlyphOutline {
     /// SVG path `d` attribute string in font units (y-negated).
-    pub path_data: String,
+    path_data: String,
     /// Horizontal advance width in font units.
     pub advance_width: f64,
+}
+
+impl GlyphOutline {
+    /// Return generated path data for direct SVG embedding.
+    ///
+    /// The only constructor is the OpenType outline converter below. It emits
+    /// command letters, digits, signs, decimal points, and whitespace through
+    /// [`PathWriter`], so the result is safe XML attribute content and does not
+    /// need another escaping scan when it is embedded in `<defs>`.
+    #[inline]
+    pub(crate) fn svg_path_data(&self) -> &str {
+        &self.path_data
+    }
 }
 
 /// Font-level metrics needed for coordinate transforms.
@@ -330,5 +343,26 @@ mod tests {
     fn extract_glyph_for_integral() {
         let outline = extract_glyph(FontId::Math, '∫');
         assert!(outline.is_some(), "∫ should have outline in LM Math");
+    }
+
+    #[test]
+    fn extracted_paths_are_safe_for_direct_svg_embedding() {
+        for ch in ['x', '2', 'α', '∫', '('] {
+            let Some(outline) = extract_glyph(FontId::Math, ch) else {
+                continue;
+            };
+            assert!(
+                !crate::writer::xml_chars::needs_xml_sanitization(outline.svg_path_data()),
+                "generated path for {ch:?} contains XML-sensitive bytes: {}",
+                outline.svg_path_data()
+            );
+            assert!(
+                outline.svg_path_data().bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(byte, b' ' | b'.' | b'-' | b'+' | b'\n' | b'\r' | b'\t')
+                }),
+                "generated path for {ch:?} contains an unexpected byte"
+            );
+        }
     }
 }
