@@ -35,6 +35,13 @@ fn write_emits_no_warning_for_lossless_input() {
 }
 
 #[test]
+fn hex_encoding_preserves_all_byte_values() {
+    let bytes: Vec<u8> = (0..=u8::MAX).collect();
+    let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(super::hex_encode(&bytes), expected);
+}
+
+#[test]
 fn write_reports_native_rule_padding_normalization() {
     for (col_seps, row_seps) in [(0b111, 0), (0, 0b11)] {
         let expr = MathExpr::inline(vec![MathNode::NativeArray {

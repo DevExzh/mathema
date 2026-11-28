@@ -742,10 +742,20 @@ impl MathWriter for MtefWriter {
 /// Encode bytes as a lowercase hex string.
 fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(data.len() * 2);
-    for &b in data {
-        hex.push(char::from(HEX[usize::from(b >> 4)]));
-        hex.push(char::from(HEX[usize::from(b & 0x0F)]));
+    let len = data.len() * 2;
+    let mut hex = String::with_capacity(len);
+    // Every table entry is ASCII, so the buffer remains valid UTF-8 while it
+    // is filled. Writing directly into the reserved bytes avoids the
+    // per-character UTF-8 path used by `String::push`.
+    unsafe {
+        let output = hex.as_mut_vec().as_mut_ptr();
+        for (index, &byte) in data.iter().enumerate() {
+            output.add(index * 2).write(HEX[usize::from(byte >> 4)]);
+            output
+                .add(index * 2 + 1)
+                .write(HEX[usize::from(byte & 0x0F)]);
+        }
+        hex.as_mut_vec().set_len(len);
     }
     hex
 }
