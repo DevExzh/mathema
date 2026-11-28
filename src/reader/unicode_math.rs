@@ -1734,6 +1734,21 @@ impl CompactParser {
     }
 
     fn parse_atom_alternatives<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // ASCII identifiers and numbers make up the common path. Their first
+        // byte disambiguates the only viable alternatives, so avoid walking
+        // the full ordered parser list for every character in a flat formula.
+        // This keeps all fallback alternatives available for Unicode symbols,
+        // delimiters, quoted text and malformed numeric runs.
+        match input.as_bytes().first().copied() {
+            Some(b'0'..=b'9') => return self.parse_number(input),
+            Some(b'a'..=b'z' | b'A'..=b'Z') => {
+                if let Ok(result) = self.parse_operator_word(input) {
+                    return Ok(result);
+                }
+                return self.parse_identifier(input);
+            },
+            _ => {},
+        }
         try_alt!(
             self,
             input,
