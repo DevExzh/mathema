@@ -827,32 +827,25 @@ unsafe fn hex_encode_ssse3(data: &[u8], output: *mut u8) -> usize {
     source
 }
 
-/// Encode complete 16-byte blocks with AArch64 NEON. AArch64 requires NEON,
-/// so this path has no runtime feature branch. The widening/narrowing shift
-/// extracts the high nibble for each byte, while the table lookup handles both
-/// nibbles without a scalar lane loop.
+/// Expand each nibble through the 16-byte ASCII alphabet and interleave the
+/// resulting high and low digits. The caller checks NEON availability and
+/// reserves two writable bytes per input byte.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn hex_encode_neon(data: &[u8], output: *mut u8) -> usize {
     use std::arch::aarch64::{
-        vand_u8, vcombine_u8, vdup_n_u8, vget_high_u8, vget_low_u8, vld1q_u8, vmovl_u8, vqtbl1q_u8,
-        vshrn_n_u16, vst1q_u8, vzip1q_u8, vzip2q_u8,
+        vandq_u8, vdupq_n_u8, vld1q_u8, vqtbl1q_u8, vshrq_n_u8, vst1q_u8, vzip1q_u8, vzip2q_u8,
     };
 
     let blocks = data.len() / 16 * 16;
-    let mut source = 0;
-    let mask = vdup_n_u8(0x0f);
+    let mask = vdupq_n_u8(0x0f);
     let table = unsafe { vld1q_u8(HEX_DIGITS.as_ptr()) };
+    let mut source = 0;
     while source < blocks {
+        // The loop reads one full block and writes two unaligned vectors.
         let value = unsafe { vld1q_u8(data.as_ptr().add(source)) };
-        let low = vcombine_u8(
-            vand_u8(vget_low_u8(value), mask),
-            vand_u8(vget_high_u8(value), mask),
-        );
-        let high = vcombine_u8(
-            vshrn_n_u16::<4>(vmovl_u8(vget_low_u8(value))),
-            vshrn_n_u16::<4>(vmovl_u8(vget_high_u8(value))),
-        );
+        let low = vandq_u8(value, mask);
+        let high = vshrq_n_u8::<4>(value);
         let low = vqtbl1q_u8(table, low);
         let high = vqtbl1q_u8(table, high);
         let first = vzip1q_u8(high, low);

@@ -17,23 +17,7 @@ pub(crate) fn is_xml_char(c: char) -> bool {
 /// a control below U+0020 is one byte, U+FFFE and U+FFFF are `EF BF BE/BF`.
 #[inline]
 pub(crate) fn has_non_xml_char(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    #[cfg(target_arch = "x86_64")]
-    if bytes.len() >= 128 && std::is_x86_feature_detected!("avx2") {
-        // The AVX2 path handles the common byte classes in wide chunks. It
-        // falls back to one scalar sentinel scan only when an EF byte occurs,
-        // which is needed to distinguish U+FFFE/U+FFFF from ordinary UTF-8.
-        return unsafe { scan_xml_avx2::<false>(bytes) };
-    }
-    #[cfg(target_arch = "aarch64")]
-    if bytes.len() >= 64 && std::arch::is_aarch64_feature_detected!("neon") {
-        return unsafe { scan_xml_neon::<false>(bytes) };
-    }
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-    if bytes.len() >= 64 {
-        return unsafe { scan_xml_wasm::<false>(bytes) };
-    }
-    scan_xml_scalar::<false>(bytes)
+    scan_xml::<false>(text.as_bytes())
 }
 
 /// Whether a UTF-8 string needs XML escaping or XML 1.0 character repair.
@@ -41,41 +25,35 @@ pub(crate) fn has_non_xml_char(text: &str) -> bool {
 #[inline]
 #[cfg(feature = "render")]
 pub(crate) fn needs_xml_sanitization(text: &str) -> bool {
-    let bytes = text.as_bytes();
+    scan_xml::<true>(text.as_bytes())
+}
+
+#[inline]
+fn scan_xml<const ESCAPE: bool>(bytes: &[u8]) -> bool {
     #[cfg(target_arch = "x86_64")]
     if bytes.len() >= 128 && std::is_x86_feature_detected!("avx2") {
-        return unsafe { scan_xml_avx2::<true>(bytes) };
+        return unsafe { scan_xml_avx2::<ESCAPE>(bytes) };
     }
     #[cfg(target_arch = "aarch64")]
     if bytes.len() >= 64 && std::arch::is_aarch64_feature_detected!("neon") {
-        return unsafe { scan_xml_neon::<true>(bytes) };
+        return unsafe { scan_xml_neon::<ESCAPE>(bytes) };
     }
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
     if bytes.len() >= 64 {
-        return unsafe { scan_xml_wasm::<true>(bytes) };
+        return unsafe { scan_xml_wasm::<ESCAPE>(bytes) };
     }
-    scan_xml_scalar::<true>(bytes)
+    scan_xml_scalar::<ESCAPE>(bytes)
 }
 
-/// Scan XML bytes without an architecture-specific vector instruction.
-///
-/// The scalar path is also the tail and portability fallback for every
-/// vector backend. It records an `EF` byte so the two forbidden UTF-8
-/// noncharacters can be distinguished from ordinary UTF-8 without making a
-/// three-byte window check for every input byte.
 #[inline]
 fn scan_xml_scalar<const ESCAPE: bool>(bytes: &[u8]) -> bool {
-    for (index, &byte) in bytes.iter().enumerate() {
-        if (ESCAPE && matches!(byte, b'<' | b'>' | b'&' | b'"' | b'\''))
-            || (byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
-        {
-            return true;
-        }
-        if byte == 0xEF && matches!(bytes.get(index + 1..index + 3), Some([0xBF, 0xBE | 0xBF])) {
-            return true;
-        }
-    }
-    false
+    bytes.iter().enumerate().any(|(at, &byte)| match byte {
+        b'<' | b'>' | b'&' | b'"' | b'\'' => ESCAPE,
+        b'\t' | b'\n' | b'\r' | 0x20..=0x7e => false,
+        0..0x20 => true,
+        0xEF => matches!(bytes.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])),
+        _ => false,
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -132,22 +110,23 @@ unsafe fn scan_xml_avx2<const ESCAPE: bool>(bytes: &[u8]) -> bool {
         }
         saw_ef |= _mm256_movemask_epi8(_mm256_cmpeq_epi8(value, ef)) != 0;
     }
-    for &byte in remainder {
-        if (ESCAPE && matches!(byte, b'<' | b'>' | b'&' | b'"' | b'\''))
-            || (byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
-        {
-            return true;
-        }
-        saw_ef |= byte == 0xEF;
-    }
-    saw_ef && has_xml_sentinel(bytes)
+    finish_xml_scan::<ESCAPE>(bytes, remainder, saw_ef)
 }
 
+// A forbidden EF BF BE/BF sequence can start in one vector and end in the next
+// vector or in the tail. Only revisit the full input if a bulk block contained EF.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128"),
+))]
 #[inline]
-fn has_xml_sentinel(bytes: &[u8]) -> bool {
-    bytes
-        .windows(3)
-        .any(|window| matches!(window, [0xEF, 0xBF, 0xBE | 0xBF]))
+fn finish_xml_scan<const ESCAPE: bool>(bytes: &[u8], tail: &[u8], saw_ef: bool) -> bool {
+    scan_xml_scalar::<ESCAPE>(tail)
+        || (saw_ef
+            && bytes
+                .windows(3)
+                .any(|w| matches!(w, [0xEF, 0xBF, 0xBE | 0xBF])))
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -168,13 +147,14 @@ unsafe fn scan_xml_neon<const ESCAPE: bool>(bytes: &[u8]) -> bool {
     let mut saw_ef = false;
     let (chunks, remainder) = bytes.as_chunks::<16>();
     for chunk in chunks {
+        // Each chunk contains 16 readable bytes; NEON permits unaligned loads.
         let value = unsafe { vld1q_u8(chunk.as_ptr()) };
         let below = vcltq_u8(value, controls);
         let allowed = vorrq_u8(
             vorrq_u8(vceqq_u8(value, tab), vceqq_u8(value, line_feed)),
             vceqq_u8(value, carriage_return),
         );
-        let mut invalid = vandq_u8(below, vmvnq_u8(allowed));
+        let mut invalid = vbicq_u8(below, allowed);
         if ESCAPE {
             let special = vorrq_u8(
                 vorrq_u8(
@@ -190,15 +170,7 @@ unsafe fn scan_xml_neon<const ESCAPE: bool>(bytes: &[u8]) -> bool {
         }
         saw_ef |= vmaxvq_u8(vceqq_u8(value, ef)) != 0;
     }
-    let tail_invalid = scan_xml_scalar::<ESCAPE>(remainder);
-    if tail_invalid {
-        return true;
-    }
-    if saw_ef || remainder.iter().any(|&byte| byte == 0xEF) {
-        has_xml_sentinel(bytes)
-    } else {
-        false
-    }
+    finish_xml_scan::<ESCAPE>(bytes, remainder, saw_ef)
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -214,6 +186,7 @@ unsafe fn scan_xml_wasm<const ESCAPE: bool>(bytes: &[u8]) -> bool {
     let mut saw_ef = false;
     let (chunks, remainder) = bytes.as_chunks::<16>();
     for chunk in chunks {
+        // v128.load accepts unaligned addresses and the chunk is 16 bytes.
         let value = unsafe { v128_load(chunk.as_ptr().cast()) };
         let below = u8x16_lt(value, controls);
         let allowed = v128_or(
@@ -242,14 +215,7 @@ unsafe fn scan_xml_wasm<const ESCAPE: bool>(bytes: &[u8]) -> bool {
         }
         saw_ef |= v128_any_true(u8x16_eq(value, ef));
     }
-    if scan_xml_scalar::<ESCAPE>(remainder) {
-        return true;
-    }
-    if saw_ef || remainder.iter().any(|&byte| byte == 0xEF) {
-        has_xml_sentinel(bytes)
-    } else {
-        false
-    }
+    finish_xml_scan::<ESCAPE>(bytes, remainder, saw_ef)
 }
 
 /// `text` with each character XML 1.0 cannot carry replaced by U+FFFD.
@@ -318,73 +284,29 @@ mod tests {
 
     #[test]
     fn wide_scans_match_scalar_semantics_at_chunk_boundaries() {
-        for offset in 0..64 {
-            for marker in ['\u{FFFE}', '\u{FFFF}', '\u{13}', '<', 'α'] {
-                let mut text = "x".repeat(128 + offset);
-                text.push(marker);
-                text.push('y');
-                let expected_xml = text.chars().any(|c| !is_xml_char(c));
-                assert_eq!(has_non_xml_char(&text), expected_xml, "{offset} {marker:?}");
-                #[cfg(feature = "render")]
-                {
-                    let expected_sanitization = text
-                        .chars()
-                        .any(|c| matches!(c, '<' | '>' | '&' | '"' | '\'') || !is_xml_char(c));
-                    assert_eq!(
-                        needs_xml_sanitization(&text),
-                        expected_sanitization,
-                        "{offset} {marker:?}"
-                    );
+        for len in [15, 16, 17, 63, 64, 65, 127, 128, 129, 256] {
+            for start in 0..16 {
+                for marker in [
+                    '\u{FFFE}', '\u{FFFF}', 'Ａ', '�', '\u{13}', '<', '>', '&', '"', '\'', '\r',
+                    '\n', '\t', 'α',
+                ] {
+                    let mut buf = "x".repeat(len + start);
+                    buf.push(marker);
+                    buf.push_str("end");
+                    for text in [&buf[start..], &buf[start..start + len]] {
+                        assert_eq!(
+                            has_non_xml_char(text),
+                            text.chars().any(|c| !is_xml_char(c))
+                        );
+                        #[cfg(feature = "render")]
+                        assert_eq!(
+                            needs_xml_sanitization(text),
+                            text.chars().any(|c| {
+                                matches!(c, '<' | '>' | '&' | '"' | '\'') || !is_xml_char(c)
+                            })
+                        );
+                    }
                 }
-            }
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[test]
-    fn neon_scans_match_scalar_semantics() {
-        if !std::arch::is_aarch64_feature_detected!("neon") {
-            return;
-        }
-        for offset in 0..32 {
-            for marker in ['\u{FFFE}', '\u{FFFF}', '\u{13}', '<', 'α'] {
-                let mut text = "x".repeat(64 + offset);
-                text.push(marker);
-                text.push('y');
-                let bytes = text.as_bytes();
-                assert_eq!(
-                    unsafe { scan_xml_neon::<false>(bytes) },
-                    scan_xml_scalar::<false>(bytes),
-                    "XML scan offset={offset} marker={marker:?}"
-                );
-                assert_eq!(
-                    unsafe { scan_xml_neon::<true>(bytes) },
-                    scan_xml_scalar::<true>(bytes),
-                    "escaping scan offset={offset} marker={marker:?}"
-                );
-            }
-        }
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-    #[test]
-    fn wasm_simd_scans_match_scalar_semantics() {
-        for offset in 0..32 {
-            for marker in ['\u{FFFE}', '\u{FFFF}', '\u{13}', '<', 'α'] {
-                let mut text = "x".repeat(64 + offset);
-                text.push(marker);
-                text.push('y');
-                let bytes = text.as_bytes();
-                assert_eq!(
-                    unsafe { scan_xml_wasm::<false>(bytes) },
-                    scan_xml_scalar::<false>(bytes),
-                    "XML scan offset={offset} marker={marker:?}"
-                );
-                assert_eq!(
-                    unsafe { scan_xml_wasm::<true>(bytes) },
-                    scan_xml_scalar::<true>(bytes),
-                    "escaping scan offset={offset} marker={marker:?}"
-                );
             }
         }
     }

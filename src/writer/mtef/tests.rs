@@ -67,65 +67,60 @@ fn hex_encoding_handles_unaligned_sources_and_scalar_fallback() {
             );
 
             let output_offset = (offset * 3 + len) % 16;
-            assert_direct_encoder(input, expected.as_bytes(), output_offset, |output| {
+            assert_direct_encoder(expected.as_bytes(), output_offset, input.len(), |output| {
                 unsafe {
                     super::hex_encode_scalar(input, output);
                 }
-                0
+                input.len()
             });
 
             #[cfg(target_arch = "x86_64")]
             if is_x86_feature_detected!("ssse3") {
-                assert_direct_encoder(input, expected.as_bytes(), output_offset, |output| unsafe {
-                    super::hex_encode_ssse3(input, output)
-                });
+                assert_direct_encoder(
+                    expected.as_bytes(),
+                    output_offset,
+                    len / 16 * 16,
+                    |output| unsafe { super::hex_encode_ssse3(input, output) },
+                );
             }
 
             #[cfg(target_arch = "aarch64")]
             if std::arch::is_aarch64_feature_detected!("neon") {
-                assert_direct_encoder(input, expected.as_bytes(), output_offset, |output| unsafe {
-                    super::hex_encode_neon(input, output)
-                });
+                assert_direct_encoder(
+                    expected.as_bytes(),
+                    output_offset,
+                    len / 16 * 16,
+                    |output| unsafe { super::hex_encode_neon(input, output) },
+                );
             }
 
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             {
-                assert_direct_encoder(input, expected.as_bytes(), output_offset, |output| unsafe {
-                    super::hex_encode_wasm_simd128(input, output)
-                });
+                assert_direct_encoder(
+                    expected.as_bytes(),
+                    output_offset,
+                    len / 16 * 16,
+                    |output| unsafe { super::hex_encode_wasm_simd128(input, output) },
+                );
             }
         }
     }
 }
 
 fn assert_direct_encoder(
-    input: &[u8],
     expected: &[u8],
     output_offset: usize,
+    expected_consumed: usize,
     encode: impl FnOnce(*mut u8) -> usize,
 ) {
     const SENTINEL: u8 = 0xa5;
     let mut storage = vec![SENTINEL; output_offset + expected.len() + 16];
-    let output = unsafe { storage.as_mut_ptr().add(output_offset) };
-    let consumed = encode(output);
-    assert!(consumed <= input.len() && consumed.is_multiple_of(16));
-    unsafe {
-        super::hex_encode_scalar(&input[consumed..], output.add(consumed * 2));
-    }
-    assert_eq!(
-        &storage[output_offset..output_offset + expected.len()],
-        expected
-    );
-    assert!(
-        storage[..output_offset]
-            .iter()
-            .all(|&byte| byte == SENTINEL)
-    );
-    assert!(
-        storage[output_offset + expected.len()..]
-            .iter()
-            .all(|&byte| byte == SENTINEL)
-    );
+    let consumed = encode(storage[output_offset..].as_mut_ptr());
+    assert_eq!(consumed, expected_consumed);
+    let end = output_offset + consumed * 2;
+    assert_eq!(&storage[output_offset..end], &expected[..consumed * 2]);
+    assert!(storage[..output_offset].iter().all(|&b| b == SENTINEL));
+    assert!(storage[end..].iter().all(|&b| b == SENTINEL));
 }
 
 #[test]
