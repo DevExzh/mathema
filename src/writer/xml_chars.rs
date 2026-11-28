@@ -25,15 +25,6 @@ pub(crate) fn has_non_xml_char(text: &str) -> bool {
         // which is needed to distinguish U+FFFE/U+FFFF from ordinary UTF-8.
         return unsafe { scan_xml_avx2::<false>(bytes) };
     }
-    // The arena string pool is overwhelmingly ASCII. Avoid the per-byte
-    // UTF-8 sentinel check on that hot path. `is_ascii` is a tight byte scan
-    // which the release compiler lowers to a vector-friendly loop, while the
-    // fallback below retains the precise FFFE/FFFF check for non-ASCII text.
-    if bytes.is_ascii() {
-        return bytes
-            .iter()
-            .any(|&byte| byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'));
-    }
     bytes.iter().enumerate().any(|(at, &byte)| match byte {
         b'\t' | b'\n' | b'\r' => false,
         0..0x20 => true,
@@ -51,12 +42,6 @@ pub(crate) fn needs_xml_sanitization(text: &str) -> bool {
     #[cfg(target_arch = "x86_64")]
     if bytes.len() >= 128 && std::is_x86_feature_detected!("avx2") {
         return unsafe { scan_xml_avx2::<true>(bytes) };
-    }
-    if bytes.is_ascii() {
-        return bytes.iter().any(|&byte| {
-            matches!(byte, b'<' | b'>' | b'&' | b'"' | b'\'')
-                || (byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
-        });
     }
     bytes.iter().enumerate().any(|(at, &byte)| match byte {
         b'<' | b'>' | b'&' | b'"' | b'\'' => true,
