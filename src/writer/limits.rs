@@ -89,10 +89,22 @@ impl OutputLimits {
     #[must_use]
     pub fn with_request_control(mut self, control: &crate::RequestControl) -> Self {
         let handle = control.cancellation_handle();
-        match self.request_cancelled.as_ref() {
-            None => self.request_cancelled = Some(handle),
-            Some(existing) if Arc::ptr_eq(existing, &handle) => {},
-            Some(_) => self.request_cancelled_extra.push(handle),
+        if self.request_cancelled.is_none() {
+            self.request_cancelled = Some(handle);
+        } else if self
+            .request_cancelled
+            .as_ref()
+            .is_some_and(|existing| Arc::ptr_eq(existing, &handle))
+            || self
+                .request_cancelled_extra
+                .iter()
+                .any(|existing| Arc::ptr_eq(existing, &handle))
+        {
+            // A composed request may attach the same control more than once.
+            // Keep one shared flag so cancellation checks remain proportional
+            // to the number of distinct controls.
+        } else {
+            self.request_cancelled_extra.push(handle);
         }
         self
     }
@@ -110,6 +122,51 @@ impl OutputLimits {
                 .request_cancelled_extra
                 .iter()
                 .any(|flag| flag.load(Ordering::Relaxed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputLimits;
+    use crate::RequestControl;
+
+    #[test]
+    fn composed_controls_keep_distinct_flags_without_duplicate_spill_entries() {
+        let first = RequestControl::new();
+        let second = RequestControl::new();
+        let third = RequestControl::new();
+        let limits = OutputLimits::unlimited()
+            .with_request_control(&first)
+            .with_request_control(&second)
+            .with_request_control(&third)
+            .with_request_control(&second)
+            .with_request_control(&first)
+            .with_request_control(&third);
+
+        assert_eq!(limits.request_cancelled_extra.len(), 2);
+        assert!(limits.request_cancelled.is_some());
+
+        second.cancel();
+        assert!(limits.is_cancelled());
+
+        fn each_distinct_flag_cancels() {
+            for index in 0..3 {
+                let controls = [
+                    RequestControl::new(),
+                    RequestControl::new(),
+                    RequestControl::new(),
+                ];
+                let limits = OutputLimits::unlimited()
+                    .with_request_control(&controls[0])
+                    .with_request_control(&controls[1])
+                    .with_request_control(&controls[2]);
+                assert!(!limits.is_cancelled());
+                controls[index].cancel();
+                assert!(limits.is_cancelled());
+            }
+        }
+
+        each_distinct_flag_cancels();
     }
 }
 
