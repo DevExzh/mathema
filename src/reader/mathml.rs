@@ -2610,7 +2610,7 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 _ => continue,
             };
-            slot.get_or_insert_with(|| unescape_attr(&attr.value));
+            slot.get_or_insert_with(|| unescape_attr(&attr.value).into_owned());
         }
         let frame_style = parse_mathml_rule_style(frame.as_deref().unwrap_or_default());
         if frame_style == MathmlRuleStyle::Invalid {
@@ -3594,7 +3594,7 @@ fn is_vertical_bar(text: &str) -> bool {
 
 fn fence_attr_value(raw: &str) -> std::borrow::Cow<'_, str> {
     if raw.contains('&') {
-        unescape_attr(raw).into()
+        unescape_attr(raw)
     } else {
         raw.into()
     }
@@ -3673,7 +3673,7 @@ fn operator_attributes(
             },
             "movablelimits" => {
                 if result.movable_limits.is_none() {
-                    result.movable_limits = match unescape_attr(&attr.value).as_str() {
+                    result.movable_limits = match unescape_attr(&attr.value).as_ref() {
                         "true" => Some(true),
                         "false" => Some(false),
                         _ => None,
@@ -3731,21 +3731,21 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
     for attr in start.attributes().flatten() {
         match attr.key.as_ref() {
             "data-mathema-reflect" if result.reflect.is_none() => {
-                result.reflect = Some(unescape_attr(&attr.value));
+                result.reflect = Some(unescape_attr(&attr.value).into_owned());
             },
             "style" if result.style.is_none() => {
-                result.style = Some(unescape_attr(&attr.value));
+                result.style = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mjx-texclass" => {
                 let class = unescape_attr(&attr.value);
-                result.atom_type = match class.as_str() {
+                result.atom_type = match class.as_ref() {
                     "OPEN" => Some(MathAtomType::Open),
                     "CLOSE" => Some(MathAtomType::Close),
                     "OP" => Some(MathAtomType::Op),
                     "REL" => Some(MathAtomType::Rel),
                     _ => None,
                 };
-                result.operator_class = match class.as_str() {
+                result.operator_class = match class.as_ref() {
                     "ORD" => Some(SymbolKind::Ordinary),
                     "BIN" => Some(SymbolKind::BinaryOp),
                     "REL" => Some(SymbolKind::Relation),
@@ -3757,7 +3757,7 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
                 result.movable_limits = unescape_attr(&attr.value) == "movable";
             },
             "data-mathema-structured-operator" => {
-                result.structured_operator = match unescape_attr(&attr.value).as_str() {
+                result.structured_operator = match unescape_attr(&attr.value).as_ref() {
                     "starred-default" => Some(OperatorNameForm::Starred(LimitStyle::Default)),
                     "starred-limits" => Some(OperatorNameForm::Starred(LimitStyle::AboveBelow)),
                     "starred-nolimits" => Some(OperatorNameForm::Starred(LimitStyle::SubSup)),
@@ -3766,10 +3766,10 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
                 };
             },
             "displaystyle" if display.is_none() => {
-                display = Some(unescape_attr(&attr.value));
+                display = Some(unescape_attr(&attr.value).into_owned());
             },
             "scriptlevel" if scriptlevel.is_none() => {
-                scriptlevel = Some(unescape_attr(&attr.value));
+                scriptlevel = Some(unescape_attr(&attr.value).into_owned());
             },
             _ => {},
         }
@@ -3795,7 +3795,7 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .map(|a| unescape_attr(&a.value))
+        .map(|a| unescape_attr(&a.value).into_owned())
 }
 
 #[derive(Default)]
@@ -3819,28 +3819,28 @@ fn table_cell_attributes(start: &quick_xml::events::BytesStart<'_>) -> TableCell
         let key = attr.key.as_ref();
         match key {
             "columnspan" if result.columnspan.is_none() => {
-                result.columnspan = Some(unescape_attr(&attr.value));
+                result.columnspan = Some(unescape_attr(&attr.value).into_owned());
             },
             "columnalign" if result.columnalign.is_none() => {
-                result.columnalign = Some(unescape_attr(&attr.value));
+                result.columnalign = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mathema-left-boundaries" if result.left_boundaries.is_none() => {
-                result.left_boundaries = Some(unescape_attr(&attr.value));
+                result.left_boundaries = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mathema-left-rule" if result.left_rule.is_none() => {
-                result.left_rule = Some(unescape_attr(&attr.value));
+                result.left_rule = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mathema-left-padding" if result.left_padding.is_none() => {
-                result.left_padding = Some(unescape_attr(&attr.value));
+                result.left_padding = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mathema-right-boundaries" if result.right_boundaries.is_none() => {
-                result.right_boundaries = Some(unescape_attr(&attr.value));
+                result.right_boundaries = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mathema-right-rule" if result.right_rule.is_none() => {
-                result.right_rule = Some(unescape_attr(&attr.value));
+                result.right_rule = Some(unescape_attr(&attr.value).into_owned());
             },
             "data-mathema-right-padding" if result.right_padding.is_none() => {
-                result.right_padding = Some(unescape_attr(&attr.value));
+                result.right_padding = Some(unescape_attr(&attr.value).into_owned());
             },
             _ => {},
         }
@@ -4023,7 +4023,7 @@ fn unescape_text(e: &BytesText<'_>) -> String {
         crate::unicode::MATHML_ENTITIES.get(name).copied()
     }) {
         Ok(cow) => cow.into_owned(),
-        Err(_) => resolve_entities_lossy(raw),
+        Err(_) => resolve_entities_lossy(raw).into_owned(),
     }
 }
 
@@ -4053,7 +4053,7 @@ fn character_data(event: Event<'_>) -> Option<Cow<'_, str>> {
 }
 
 /// Decode character and entity references in an XML attribute value.
-fn unescape_attr(raw: &str) -> String {
+fn unescape_attr(raw: &str) -> Cow<'_, str> {
     resolve_entities_lossy(raw)
 }
 
@@ -4065,9 +4065,9 @@ fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> Cow<'static, str>
 
 /// Manual entity resolver used as a robust fallback: replaces every
 /// `&name;` / `&#nnn;` / `&#xhhh;` it recognizes and leaves the rest intact.
-fn resolve_entities_lossy(s: &str) -> String {
+fn resolve_entities_lossy(s: &str) -> Cow<'_, str> {
     if !s.contains('&') {
-        return s.to_owned();
+        return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -4090,7 +4090,7 @@ fn resolve_entities_lossy(s: &str) -> String {
         }
     }
     out.push_str(rest);
-    out
+    Cow::Owned(out)
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
@@ -4188,7 +4188,7 @@ impl<'a> MstyleAttributes<'a> {
 /// An attribute value with its character references resolved.
 fn attr_text(value: Cow<'_, str>) -> Cow<'_, str> {
     if value.contains('&') {
-        Cow::Owned(unescape_attr(&value))
+        Cow::Owned(unescape_attr(&value).into_owned())
     } else {
         value
     }
