@@ -211,16 +211,18 @@ mod tests {
                 text.push(marker);
                 text.push('y');
                 let expected_xml = text.chars().any(|c| !is_xml_char(c));
-                let expected_sanitization = text
-                    .chars()
-                    .any(|c| matches!(c, '<' | '>' | '&' | '"' | '\'') || !is_xml_char(c));
                 assert_eq!(has_non_xml_char(&text), expected_xml, "{offset} {marker:?}");
                 #[cfg(feature = "render")]
-                assert_eq!(
-                    needs_xml_sanitization(&text),
-                    expected_sanitization,
-                    "{offset} {marker:?}"
-                );
+                {
+                    let expected_sanitization = text
+                        .chars()
+                        .any(|c| matches!(c, '<' | '>' | '&' | '"' | '\'') || !is_xml_char(c));
+                    assert_eq!(
+                        needs_xml_sanitization(&text),
+                        expected_sanitization,
+                        "{offset} {marker:?}"
+                    );
+                }
             }
         }
     }
