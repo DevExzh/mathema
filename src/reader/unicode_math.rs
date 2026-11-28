@@ -2862,13 +2862,16 @@ impl CompactParser {
     }
 
     fn parse_identifier<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (rest, ch) = satisfy(|c| {
+        let (rest, _) = satisfy(|c| {
             c.is_alphabetic()
                 && !is_math_symbol(c)
                 && !is_nary_char(c)
                 && script_character(c).is_none()
         })(input)?;
-        let sid = self.arena.push_str(&ch.to_string());
+        // `rest` is a suffix of `input`, so retain the matched scalar directly
+        // from the source instead of allocating a temporary one-character
+        // `String` for every identifier.
+        let sid = self.arena.push_str(&input[..input.len() - rest.len()]);
         let id = self.push_node(CompactNode::Identifier(sid));
         Ok((rest, id))
     }
