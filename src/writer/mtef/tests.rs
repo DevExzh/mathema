@@ -82,6 +82,33 @@ fn hex_encoding_handles_unaligned_sources_and_scalar_fallback() {
                 }
                 assert_eq!(String::from_utf8(vectorized).unwrap(), expected);
             }
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                let mut vectorized = vec![0; len * 2];
+                let consumed = unsafe { super::hex_encode_neon(input, vectorized.as_mut_ptr()) };
+                unsafe {
+                    super::hex_encode_scalar(
+                        &input[consumed..],
+                        vectorized.as_mut_ptr().add(consumed * 2),
+                    );
+                }
+                assert_eq!(String::from_utf8(vectorized).unwrap(), expected);
+            }
+
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            {
+                let mut vectorized = vec![0; len * 2];
+                let consumed =
+                    unsafe { super::hex_encode_wasm_simd128(input, vectorized.as_mut_ptr()) };
+                unsafe {
+                    super::hex_encode_scalar(
+                        &input[consumed..],
+                        vectorized.as_mut_ptr().add(consumed * 2),
+                    );
+                }
+                assert_eq!(String::from_utf8(vectorized).unwrap(), expected);
+            }
         }
     }
 }

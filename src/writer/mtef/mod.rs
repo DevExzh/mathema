@@ -756,7 +756,15 @@ fn hex_encode(data: &[u8]) -> String {
         } else {
             0
         };
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        let vectorized = hex_encode_neon(data, output);
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        let vectorized = hex_encode_wasm_simd128(data, output);
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128"),
+        )))]
         let vectorized = 0;
         hex_encode_scalar(&data[vectorized..], output.add(vectorized * 2));
         hex.as_mut_vec().set_len(len);
@@ -809,6 +817,79 @@ unsafe fn hex_encode_ssse3(data: &[u8], output: *mut u8) -> usize {
         unsafe {
             _mm_storeu_si128(first_output, first);
             _mm_storeu_si128(second_output, second);
+        }
+        source += 16;
+    }
+    source
+}
+
+/// Encode complete 16-byte blocks with AArch64 NEON. AArch64 requires NEON,
+/// so this path has no runtime feature branch. The widening/narrowing shift
+/// extracts the high nibble for each byte, while the table lookup handles both
+/// nibbles without a scalar lane loop.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn hex_encode_neon(data: &[u8], output: *mut u8) -> usize {
+    use std::arch::aarch64::{
+        vand_u8, vcombine_u8, vdup_n_u8, vget_high_u8, vget_low_u8, vld1q_u8, vmovl_u8, vqtbl1q_u8,
+        vshrn_n_u16, vst1q_u8, vzip1q_u8, vzip2q_u8,
+    };
+
+    let blocks = data.len() / 16 * 16;
+    let mut source = 0;
+    let mask = vdup_n_u8(0x0f);
+    let table = unsafe { vld1q_u8(HEX_DIGITS.as_ptr()) };
+    while source < blocks {
+        let value = unsafe { vld1q_u8(data.as_ptr().add(source)) };
+        let low = vcombine_u8(
+            vand_u8(vget_low_u8(value), mask),
+            vand_u8(vget_high_u8(value), mask),
+        );
+        let high = vcombine_u8(
+            vshrn_n_u16::<4>(vmovl_u8(vget_low_u8(value))),
+            vshrn_n_u16::<4>(vmovl_u8(vget_high_u8(value))),
+        );
+        let low = vqtbl1q_u8(table, low);
+        let high = vqtbl1q_u8(table, high);
+        let first = vzip1q_u8(high, low);
+        let second = vzip2q_u8(high, low);
+        unsafe {
+            vst1q_u8(output.add(source * 2), first);
+            vst1q_u8(output.add(source * 2 + 16), second);
+        }
+        source += 16;
+    }
+    source
+}
+
+/// Encode complete 16-byte blocks with WebAssembly SIMD. This function is
+/// compiled only when the crate itself is built with `+simd128`, leaving the
+/// ordinary wasm target portable to engines without SIMD support.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn hex_encode_wasm_simd128(data: &[u8], output: *mut u8) -> usize {
+    use std::arch::wasm32::{
+        u8x16_shr, u8x16_shuffle, u8x16_splat, u8x16_swizzle, v128_and, v128_load, v128_store,
+    };
+
+    let blocks = data.len() / 16 * 16;
+    let mut source = 0;
+    let mask = u8x16_splat(0x0f);
+    let table = unsafe { v128_load(HEX_DIGITS.as_ptr().cast()) };
+    while source < blocks {
+        let value = unsafe { v128_load(data.as_ptr().add(source).cast()) };
+        let low = v128_and(value, mask);
+        let high = v128_and(u8x16_shr(value, 4), mask);
+        let low = u8x16_swizzle(table, low);
+        let high = u8x16_swizzle(table, high);
+        let first =
+            u8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(high, low);
+        let second = u8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(
+            high, low,
+        );
+        unsafe {
+            v128_store(output.add(source * 2).cast(), first);
+            v128_store(output.add(source * 2 + 16).cast(), second);
         }
         source += 16;
     }
