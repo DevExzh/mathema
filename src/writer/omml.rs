@@ -13,6 +13,7 @@
 //! (`w:rPr`) or DrawingML (`a:rPr`).
 
 use super::xml_chars::is_xml_char;
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::ast::arena::AstArena;
@@ -328,8 +329,8 @@ impl OmmlWriter {
     }
 }
 
-fn dropped_sizes_for(host: OmmlRunProperties) -> Diagnostic {
-    let message = match host {
+fn dropped_size_message(host: OmmlRunProperties) -> &'static str {
+    match host {
         OmmlRunProperties::None => {
             "font sizes need host run properties (OmmlRunProperties::WordprocessingMl or DrawingMl) and were dropped"
         },
@@ -339,11 +340,6 @@ fn dropped_sizes_for(host: OmmlRunProperties) -> Diagnostic {
         OmmlRunProperties::DrawingMl => {
             "DrawingML has no host property for this OMML control glyph size and it was dropped"
         },
-    };
-    Diagnostic {
-        kind: DiagnosticKind::Info,
-        message: message.to_owned(),
-        span: None,
     }
 }
 
@@ -551,7 +547,7 @@ struct Emitter<'a> {
     /// The style that the reader of the output knows, for the sizes of runs.
     host_style: MathStyle,
     diags: Vec<Diagnostic>,
-    seen: HashSet<String>,
+    seen: HashSet<Cow<'static, str>>,
     /// Whether the name of a function is written, whose letters are one run.
     in_name: bool,
     /// The last run of such letters.
@@ -617,14 +613,18 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn loss(&mut self, message: impl Into<String>) {
-        let message = message.into();
-        if self.seen.insert(message.clone()) {
+    fn loss(&mut self, message: impl Into<Cow<'static, str>>) {
+        self.report_once(DiagnosticKind::Warning, message.into());
+    }
+
+    fn report_once(&mut self, kind: DiagnosticKind, message: Cow<'static, str>) {
+        if !self.seen.contains(message.as_ref()) {
             self.diags.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message,
+                kind,
+                message: message.to_string(),
                 span: None,
             });
+            self.seen.insert(message);
         }
     }
 
@@ -694,19 +694,39 @@ impl<'a> Emitter<'a> {
         self.val(tag, "1");
     }
 
-    /// Escape character data; characters XML 1.0 cannot carry are dropped.
+    /// Escape the run text after `run` has removed illegal XML characters.
     fn text(&mut self, s: &str) {
-        for ch in s.chars() {
-            match ch {
-                '<' => self.buf.push_str("&lt;"),
-                '>' => self.buf.push_str("&gt;"),
-                '&' => self.buf.push_str("&amp;"),
+        fn entity(c: char) -> Option<&'static str> {
+            match c {
+                '<' => Some("&lt;"),
+                '>' => Some("&gt;"),
+                '&' => Some("&amp;"),
                 // A literal CR would be normalized to LF by the reader.
-                '\r' => self.buf.push_str("&#13;"),
-                c if is_xml_char(c) => self.buf.push(c),
-                _ => self.loss("a character that XML cannot represent was dropped"),
+                '\r' => Some("&#13;"),
+                _ => None,
             }
         }
+
+        if self.buf.limits.is_some() {
+            for c in s.chars() {
+                match entity(c) {
+                    Some(escaped) => self.buf.push_str(escaped),
+                    None => self.buf.push(c),
+                }
+            }
+            return;
+        }
+
+        let mut start = 0;
+        for (at, b) in s.bytes().enumerate() {
+            if let Some(escaped) = entity(char::from(b)) {
+                // Each entity begins at a single-byte ASCII character.
+                self.buf.push_str(&s[start..at]);
+                self.buf.push_str(escaped);
+                start = at + 1;
+            }
+        }
+        self.buf.push_str(&s[start..]);
     }
 
     fn attr_text(&mut self, s: &str) {
@@ -745,6 +765,26 @@ impl<'a> Emitter<'a> {
     /// `<m:r>` with math properties `(scr, sty)` or `nor`, host properties
     /// and text.
     fn run(&mut self, text: &str, sty: Option<&str>, scr: Option<&str>, nor: bool, host: Host) {
+        // Most unstyled runs are a single identifier, numeral or operator.
+        // Keep bounded writes on their usual per-fragment checkpoints.
+        if self.buf.limits.is_none()
+            && !nor
+            && sty.is_none()
+            && scr.is_none()
+            && self.run_size.is_none()
+            && !host.bold
+            && !host.italic
+            && host.color.is_none()
+            && text
+                .chars()
+                .all(|c| c > ' ' && !matches!(c, '<' | '>' | '&' | '\u{FFFE}' | '\u{FFFF}'))
+        {
+            self.buf.push_str("<m:r><m:t>");
+            self.buf.push_str(text);
+            self.buf.push_str("</m:t></m:r>");
+            return;
+        }
+
         let sanitized: String;
         let plain = text.bytes().all(|b| matches!(b, b' '..=b'~'));
         let text = if plain || text.chars().all(is_xml_char) {
@@ -849,10 +889,10 @@ impl<'a> Emitter<'a> {
     }
 
     fn drop_size(&mut self) {
-        let loss = dropped_sizes_for(self.host);
-        if self.seen.insert(loss.message.clone()) {
-            self.diags.push(loss);
-        }
+        self.report_once(
+            DiagnosticKind::Info,
+            Cow::Borrowed(dropped_size_message(self.host)),
+        );
     }
 
     /// Whether a node or its own sign has a font size.

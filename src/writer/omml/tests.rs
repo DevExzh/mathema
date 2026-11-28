@@ -282,6 +282,34 @@ fn delimiter_defaults_are_omitted_and_empty_content_has_one_argument() {
 }
 
 #[test]
+fn bulk_run_text_preserves_xml_boundaries_and_reports_repeated_losses_once() {
+    let config = Config::default();
+    let expr = CompactExpr::from_math_expr(&MathExpr::inline(vec![
+        id("α"),
+        MathNode::Number("12".into()),
+        MathNode::Text(TextStyle::Normal, "🚀<&\r>β\u{ffff}".into()),
+        MathNode::Text(TextStyle::Normal, "\u{1}γ".into()),
+    ]))
+    .unwrap();
+    let (output, diags) = OmmlWriter::write_compact_with_diagnostics(&expr, &config).unwrap();
+    assert!(output.contains("<m:r><m:t>α</m:t></m:r>"));
+    assert!(output.contains("<m:t xml:space=\"preserve\">🚀&lt;&amp;&#13;&gt;β</m:t>"));
+    assert!(output.contains("<m:t>γ</m:t>"));
+    assert_eq!(diags.len(), 1);
+
+    let (bounded, bounded_diags) = OmmlWriter::write_compact_with_diagnostics_and_limits(
+        &expr,
+        &config,
+        &crate::OutputLimits::with_max_bytes(output.len()),
+    )
+    .unwrap();
+    assert_eq!(bounded, output);
+    assert_eq!(bounded_diags.len(), 1);
+    assert_eq!(bounded_diags[0].message, diags[0].message);
+    assert_eq!(bounded_diags[0].kind, diags[0].kind);
+}
+
+#[test]
 fn special_delimiter_attributes_are_escaped() {
     let (out, diags) = write_with(
         MathNode::Fenced {
