@@ -1469,29 +1469,9 @@ fn check_compact_node_data(
     Ok(())
 }
 
-/// Check a node reference without materializing a child list. The previous
-/// implementation returned a `SmallVec` for every visited node, which spills
-/// to a heap allocation for a flat row or a large table. Validation only needs
-/// to check the references before descending into them, so the two operations
-/// can happen directly over the arena slices.
-fn check_compact_id_checked(
-    arena: &arena::AstArena,
-    id: compact::NodeId,
-    required: bool,
-) -> crate::error::Result<()> {
-    if id.is_none() {
-        return if required {
-            Err(invalid_compact("missing node reference"))
-        } else {
-            Ok(())
-        };
-    }
-    if arena.try_node(id).is_none() {
-        return Err(invalid_compact("node reference belongs to another arena"));
-    }
-    Ok(())
-}
-
+/// The depth validator checks every immediate reference before descending into
+/// a child. It walks arena slices directly so flat rows do not allocate a
+/// temporary child list.
 fn check_compact_span_depth(
     arena: &arena::AstArena,
     span: compact::NodeSpan,
@@ -1502,7 +1482,7 @@ fn check_compact_span_depth(
         .try_children(span)
         .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
     for &id in children {
-        check_compact_id_checked(arena, id, true)?;
+        check_compact_id(arena, id, true)?;
     }
     for &id in children {
         check_compact_depth_checked(arena, id, depth, limit)?;
@@ -1517,7 +1497,7 @@ fn check_compact_fixed_depth(
     limit: usize,
 ) -> crate::error::Result<()> {
     for &(id, required) in children {
-        check_compact_id_checked(arena, id, required)?;
+        check_compact_id(arena, id, required)?;
     }
     for &(id, _) in children {
         if id.is_some() {
@@ -1537,7 +1517,7 @@ fn check_compact_fenced_depth(
         .try_children(span)
         .ok_or_else(|| invalid_compact("child span is outside its arena"))?;
     for &id in children {
-        check_compact_id_checked(arena, id, true)?;
+        check_compact_id(arena, id, true)?;
     }
     for &id in children {
         if !matches!(arena.node(id), compact::CompactNode::Middle(_)) {
