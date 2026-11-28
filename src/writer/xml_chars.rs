@@ -132,6 +132,7 @@ unsafe fn scan_xml_avx2<const ESCAPE: bool>(bytes: &[u8]) -> bool {
     saw_ef && has_xml_sentinel(bytes)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn has_xml_sentinel(bytes: &[u8]) -> bool {
     bytes
