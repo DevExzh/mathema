@@ -1,4 +1,7 @@
-/// SVG emission: converts a LayoutBox tree into an SVG string.
+//! Emit SVG from a laid-out expression.
+
+use std::borrow::Cow;
+
 use super::RenderOptions;
 use super::SvgLimits;
 use super::SvgMetadata;
@@ -221,6 +224,11 @@ pub(crate) fn push_xml_escaped(out: &mut impl SvgSink, s: &str) {
         out.push_str(s);
         return;
     }
+    push_xml_escaped_repaired(out, s);
+}
+
+/// Escape a string already known to need XML repair or entity references.
+fn push_xml_escaped_repaired(out: &mut impl SvgSink, s: &str) {
     for ch in s.chars() {
         let ch = if xml_chars::is_xml_char(ch) {
             ch
@@ -236,6 +244,20 @@ pub(crate) fn push_xml_escaped(out: &mut impl SvgSink, s: &str) {
             _ => out.push(ch),
         }
     }
+}
+
+/// Borrow an attribute value when the XML scanner finds nothing to repair.
+/// Unbounded SVG emission can then reuse the caller's `RenderOptions` strings
+/// without allocating temporary escaped copies. Values containing XML-sensitive
+/// bytes retain the existing repaired representation.
+#[inline]
+fn preescaped_attr(value: &str) -> Cow<'_, str> {
+    if !xml_chars::needs_xml_sanitization(value) {
+        return Cow::Borrowed(value);
+    }
+    let mut escaped = String::with_capacity(value.len() + 4);
+    push_xml_escaped_repaired(&mut escaped, value);
+    Cow::Owned(escaped)
 }
 
 /// Write a float as a minimal SVG attribute value (up to 3 decimal places,
@@ -529,16 +551,8 @@ fn emit_svg_to(
     let pad = 0.08 * em;
 
     let preescaped = !svg.is_bounded();
-    let font_family_escaped = preescaped.then(|| {
-        let mut value = String::with_capacity(options.font_family.len() + 4);
-        push_xml_escaped(&mut value, &options.font_family);
-        value
-    });
-    let fg_color_escaped = preescaped.then(|| {
-        let mut value = String::with_capacity(options.fg_color.len() + 4);
-        push_xml_escaped(&mut value, &options.fg_color);
-        value
-    });
+    let font_family_escaped = preescaped.then(|| preescaped_attr(&options.font_family));
+    let fg_color_escaped = preescaped.then(|| preescaped_attr(&options.fg_color));
     let attrs = EscapedAttrs {
         font_family: font_family_escaped
             .as_deref()
@@ -967,16 +981,8 @@ fn emit_svg_arena_to(
     let depth_px = root_box.depth * em;
 
     let preescaped = !svg.is_bounded();
-    let font_family_escaped = preescaped.then(|| {
-        let mut value = String::with_capacity(options.font_family.len() + 4);
-        push_xml_escaped(&mut value, &options.font_family);
-        value
-    });
-    let fg_color_escaped = preescaped.then(|| {
-        let mut value = String::with_capacity(options.fg_color.len() + 4);
-        push_xml_escaped(&mut value, &options.fg_color);
-        value
-    });
+    let font_family_escaped = preescaped.then(|| preescaped_attr(&options.font_family));
+    let fg_color_escaped = preescaped.then(|| preescaped_attr(&options.fg_color));
     let attrs = EscapedAttrs {
         font_family: font_family_escaped
             .as_deref()
@@ -1466,6 +1472,15 @@ mod tests {
         let mut output = String::new();
         push_xml_escaped(&mut output, "red\u{13}\u{FFFF}&");
         assert_eq!(output, "red\u{FFFD}\u{FFFD}&amp;");
+    }
+
+    #[test]
+    fn preescaped_attrs_borrow_clean_values_and_repair_sensitive_values() {
+        assert!(matches!(preescaped_attr("serif"), Cow::Borrowed("serif")));
+        assert!(matches!(
+            preescaped_attr("A&B\u{13}"),
+            Cow::Owned(value) if value == "A&amp;B\u{FFFD}"
+        ));
     }
     use crate::ast::*;
     use crate::render::layout::{PositionedBox, layout_expr};
