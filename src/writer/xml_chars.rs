@@ -38,6 +38,10 @@ fn scan_xml<const ESCAPE: bool>(bytes: &[u8]) -> bool {
     if bytes.len() >= 64 && std::arch::is_aarch64_feature_detected!("neon") {
         return unsafe { scan_xml_neon::<ESCAPE>(bytes) };
     }
+    #[cfg(target_arch = "arm")]
+    if bytes.len() >= 64 {
+        return scan_xml_arm_blocks::<ESCAPE>(bytes);
+    }
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
     if bytes.len() >= 64 {
         return unsafe { scan_xml_wasm::<ESCAPE>(bytes) };
@@ -118,6 +122,7 @@ unsafe fn scan_xml_avx2<const ESCAPE: bool>(bytes: &[u8]) -> bool {
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
+    target_arch = "arm",
     all(target_arch = "wasm32", target_feature = "simd128"),
 ))]
 #[inline]
@@ -171,6 +176,27 @@ unsafe fn scan_xml_neon<const ESCAPE: bool>(bytes: &[u8]) -> bool {
         saw_ef |= vmaxvq_u8(vceqq_u8(value, ef)) != 0;
     }
     finish_xml_scan::<ESCAPE>(bytes, remainder, saw_ef)
+}
+
+// ARM32 NEON intrinsics are outside the crate's MSRV. Fixed lanes with
+// bitwise reductions let LLVM vectorize NEON builds and also work on scalar ARM.
+#[cfg(target_arch = "arm")]
+fn scan_xml_arm_blocks<const ESCAPE: bool>(bytes: &[u8]) -> bool {
+    let (blocks, tail) = bytes.as_chunks::<16>();
+    let mut saw_ef = false;
+    for block in blocks {
+        let mut invalid = false;
+        for &b in block {
+            let control = (b < 0x20) & (b != b'\t') & (b != b'\n') & (b != b'\r');
+            let special = (b == b'<') | (b == b'>') | (b == b'&') | (b == b'"') | (b == b'\'');
+            invalid |= control | (ESCAPE & special);
+            saw_ef |= b == 0xEF;
+        }
+        if invalid {
+            return true;
+        }
+    }
+    finish_xml_scan::<ESCAPE>(bytes, tail, saw_ef)
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]

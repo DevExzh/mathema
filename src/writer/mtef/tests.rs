@@ -94,6 +94,14 @@ fn hex_encoding_handles_unaligned_sources_and_scalar_fallback() {
                 );
             }
 
+            #[cfg(target_arch = "arm")]
+            assert_direct_encoder(
+                expected.as_bytes(),
+                output_offset,
+                len / 16 * 16,
+                |output| unsafe { super::hex_encode_arm_blocks(input, output) },
+            );
+
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             {
                 assert_direct_encoder(

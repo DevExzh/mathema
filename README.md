@@ -183,6 +183,13 @@ cargo build --features font-embed      # standalone SVG with embedded fonts
 cargo build --features "render,serde,wasm"  # all optional features
 ```
 
+MTEF hexadecimal output and long XML text scans use SIMD on supported targets.
+x86-64 selects SSSE3 and AVX2 at runtime, and AArch64 uses NEON when available.
+On 32-bit ARM, fixed-size block loops can use NEON when built for a target such
+as `thumbv7neon-unknown-linux-gnueabihf`; generic ARM builds also work.
+WebAssembly builds select SIMD128 with `-Ctarget-feature=+simd128`. The web
+demo selects a compatible module when it loads.
+
 ## WASM
 
 Pre-built bindings and an example page live in `wasm/`. See [`wasm/README.md`](wasm/README.md) for build instructions and usage.

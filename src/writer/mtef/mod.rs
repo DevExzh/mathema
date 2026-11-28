@@ -762,11 +762,14 @@ fn hex_encode(data: &[u8]) -> String {
         } else {
             0
         };
+        #[cfg(target_arch = "arm")]
+        let vectorized = hex_encode_arm_blocks(data, output);
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         let vectorized = hex_encode_wasm_simd128(data, output);
         #[cfg(not(any(
             target_arch = "x86_64",
             target_arch = "aarch64",
+            target_arch = "arm",
             all(target_arch = "wasm32", target_feature = "simd128"),
         )))]
         let vectorized = 0;
@@ -857,6 +860,26 @@ unsafe fn hex_encode_neon(data: &[u8], output: *mut u8) -> usize {
         source += 16;
     }
     source
+}
+
+/// Stable Rust can widen these fixed lanes on ARMv7 NEON targets. The same
+/// code uses only the instructions permitted by a generic ARM target.
+#[cfg(target_arch = "arm")]
+unsafe fn hex_encode_arm_blocks(data: &[u8], output: *mut u8) -> usize {
+    let (blocks, _) = data.as_chunks::<16>();
+    for (index, block) in blocks.iter().enumerate() {
+        let mut pairs = [0u16; 16];
+        for (&byte, pair) in block.iter().zip(&mut pairs) {
+            let digit = |n: u8| b'0' + n + if n > 9 { b'a' - b'0' - 10 } else { 0 };
+            *pair = u16::from_ne_bytes([digit(byte >> 4), digit(byte & 15)]);
+        }
+        // The array holds 32 initialized ASCII bytes in output order. The
+        // caller reserves two bytes per input byte; the u8 copy needs no alignment.
+        unsafe {
+            std::ptr::copy_nonoverlapping(pairs.as_ptr().cast::<u8>(), output.add(index * 32), 32);
+        }
+    }
+    blocks.len() * 16
 }
 
 /// Encode complete 16-byte blocks with WebAssembly SIMD. This function is
