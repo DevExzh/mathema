@@ -337,9 +337,16 @@ impl RequestControl {
     }
 
     /// Check cancellation and charge cooperative work.
+    #[inline]
     pub fn checkpoint(&self, units: usize) -> Result<()> {
         if self.is_cancelled() {
             return Err(Error::RequestCancelled);
+        }
+        // Zero-unit checkpoints are used at scope boundaries and must still
+        // observe cancellation. They do not change the work counter, so skip
+        // the atomic read-modify-write entirely.
+        if units == 0 {
+            return Ok(());
         }
         if let Some(limit) = self.state.max_work {
             self.state
@@ -360,6 +367,7 @@ impl RequestControl {
     /// Run a closure with this control installed for parser and writer
     /// checkpoints. Nested scopes restore the previous control, including
     /// when the closure unwinds through a panic.
+    #[inline]
     pub fn scope<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         self.checkpoint(0)?;
         let guard =
@@ -394,6 +402,7 @@ impl Drop for ActiveControlGuard {
 
 /// Charge work for the active controlled request. Uncontrolled paths are a
 /// no-op, retaining the existing parser hot path and API behavior.
+#[inline]
 pub(crate) fn request_checkpoint(units: usize) -> Result<()> {
     ACTIVE_CONTROL.with(|slot| match slot.borrow().as_ref() {
         Some(control) => control.checkpoint(units),

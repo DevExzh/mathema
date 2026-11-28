@@ -12,7 +12,12 @@ pub struct OutputLimits {
     /// Maximum UTF-8 bytes retained by a text writer. `None` is unbounded.
     pub max_bytes: Option<usize>,
     cancelled: Option<Arc<AtomicBool>>,
-    request_cancelled: Vec<Arc<AtomicBool>>,
+    // Keep the common one-control case inline. A conversion clones and
+    // attaches its request control to these limits for every call, so storing
+    // the first flag separately avoids allocating a Vec for ordinary
+    // controlled requests while retaining support for composed controls.
+    request_cancelled: Option<Arc<AtomicBool>>,
+    request_cancelled_extra: Vec<Arc<AtomicBool>>,
 }
 
 impl OutputLimits {
@@ -22,7 +27,8 @@ impl OutputLimits {
         Self {
             max_bytes: None,
             cancelled: None,
-            request_cancelled: Vec::new(),
+            request_cancelled: None,
+            request_cancelled_extra: Vec::new(),
         }
     }
 
@@ -32,7 +38,8 @@ impl OutputLimits {
         Self {
             max_bytes: Some(max_bytes),
             cancelled: None,
-            request_cancelled: Vec::new(),
+            request_cancelled: None,
+            request_cancelled_extra: Vec::new(),
         }
     }
 
@@ -81,7 +88,12 @@ impl OutputLimits {
     /// Share cancellation with a [`RequestControl`](crate::RequestControl).
     #[must_use]
     pub fn with_request_control(mut self, control: &crate::RequestControl) -> Self {
-        self.request_cancelled.push(control.cancellation_handle());
+        let handle = control.cancellation_handle();
+        match self.request_cancelled.as_ref() {
+            None => self.request_cancelled = Some(handle),
+            Some(existing) if Arc::ptr_eq(existing, &handle) => {},
+            Some(_) => self.request_cancelled_extra.push(handle),
+        }
         self
     }
 
@@ -92,6 +104,10 @@ impl OutputLimits {
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
             || self
                 .request_cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            || self
+                .request_cancelled_extra
                 .iter()
                 .any(|flag| flag.load(Ordering::Relaxed))
     }
