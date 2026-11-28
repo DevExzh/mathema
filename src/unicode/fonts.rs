@@ -490,7 +490,12 @@ mod tests {
     #[test]
     fn unstyle_outside_math_alphanumeric_block_is_none() {
         for ch in ['x', '\u{400}', '\u{10000}', '\u{1D800}', '\u{10FFFF}'] {
-            assert_eq!(unstyled_char(ch), None, "unexpected mapping for U+{:X}", ch as u32);
+            assert_eq!(
+                unstyled_char(ch),
+                None,
+                "unexpected mapping for U+{:X}",
+                ch as u32
+            );
         }
     }
 
