@@ -86,16 +86,22 @@ where
 /// Returns true when the pool was available and replaced with a fresh arena.
 /// A false result means a nested render currently holds the pool, so callers
 /// can retry after that request returns. Prepared renders own their arena and
-/// are unaffected by this operation. Font and glyph caches are managed
-/// separately and are intentionally retained.
+/// are unaffected by this operation. Embedded font caches remain process
+/// resident, while raster glyph bitmaps are released with the same call when
+/// the `raster` feature is enabled.
 pub fn release_thread_render_cache() -> bool {
-    LAYOUT_ARENA_POOL.with(|cell| match cell.try_borrow_mut() {
+    let arena_released = LAYOUT_ARENA_POOL.with(|cell| match cell.try_borrow_mut() {
         Ok(mut arena) => {
             *arena = arena::LayoutArena::new();
             true
         },
         Err(_) => false,
-    })
+    });
+    #[cfg(feature = "raster")]
+    let raster_released = raster::release_thread_raster_cache();
+    #[cfg(not(feature = "raster"))]
+    let raster_released = true;
+    arena_released && raster_released
 }
 
 /// Options controlling SVG rendering output.

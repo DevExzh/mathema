@@ -5,6 +5,7 @@
 mod color;
 
 use color::{parse_color, parse_color_checked, resolve_color};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::sync::LazyLock;
@@ -64,6 +65,154 @@ fn rasterize(id: FontId, ch: char, px: f32) -> (fontdue::Metrics, Vec<u8>) {
 /// Lazily-parsed ttf-parser face for MATH-table variant outline extraction.
 static TTF_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
     ttf_parser::Face::parse(super::FONT_DATA, 0).expect("embedded font data must be valid")
+});
+
+type RasterGlyphKey = (FontId, char, u32);
+
+struct RasterizedGlyph {
+    metrics: fontdue::Metrics,
+    bitmap: Vec<u8>,
+}
+
+type RasterGlyphs = HashMap<RasterGlyphKey, RasterizedGlyph>;
+
+#[derive(Default)]
+struct RasterGlyphCache {
+    entries: RasterGlyphs,
+    bytes: usize,
+}
+
+impl RasterGlyphCache {
+    fn get_or_rasterize<'a>(
+        &'a mut self,
+        local: &'a mut RasterGlyphs,
+        key: RasterGlyphKey,
+        rasterize: impl FnOnce() -> (fontdue::Metrics, Vec<u8>),
+    ) -> &'a RasterizedGlyph {
+        use std::collections::hash_map::Entry;
+        let has_room = self.entries.len() < MAX_RASTER_GLYPH_CACHE_ENTRIES;
+        let vacant = match self.entries.entry(key) {
+            Entry::Occupied(entry) => return entry.into_mut(),
+            Entry::Vacant(entry) => entry,
+        };
+        if local.contains_key(&key) {
+            return &local[&key];
+        }
+
+        let (metrics, bitmap) = rasterize();
+        let bytes = bitmap.capacity();
+        let glyph = RasterizedGlyph { metrics, bitmap };
+        if has_room
+            && bytes <= MAX_RASTER_GLYPH_BYTES
+            && bytes <= MAX_RASTER_GLYPH_CACHE_BYTES - self.bytes
+        {
+            self.bytes += bytes;
+            vacant.insert(glyph)
+        } else {
+            // Keep the original per-image reuse for large glyphs and for
+            // keys that do not fit the worker cache. This map dies before encoding.
+            local.entry(key).or_insert(glyph)
+        }
+    }
+
+    fn release(&mut self) {
+        // Replacing the map releases both its entries and its backing table.
+        *self = Self::default();
+    }
+}
+
+// Glyph bitmaps are reusable between renders on the same worker. Keeping this
+// cache thread-local avoids a lock on every glyph while avoiding the repeated
+// fontdue rasterization cost of the old per-image cache. Font sizes are part of
+// the key because fontdue's bitmap depends on the exact pixel size. Entry and
+// byte caps prevent an application that renders many arbitrary sizes from
+// retaining an unbounded amount of bitmap data.
+const MAX_RASTER_GLYPH_CACHE_ENTRIES: usize = 4096;
+const MAX_RASTER_GLYPH_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RASTER_GLYPH_BYTES: usize = 256 * 1024;
+thread_local! {
+    static RASTER_GLYPH_CACHE: RefCell<RasterGlyphCache> = RefCell::new(RasterGlyphCache::default());
+}
+
+fn with_raster_glyph_cache<T>(f: impl FnOnce(&mut RasterGlyphCache) -> T) -> T {
+    RASTER_GLYPH_CACHE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut cache) => f(&mut cache),
+        Err(_) => {
+            // A callback or custom renderer can re-enter rasterization while
+            // the worker cache is borrowed. Keep that path correct without
+            // panicking or trying to share mutable cache state.
+            let mut cache = RasterGlyphCache::default();
+            f(&mut cache)
+        },
+    })
+}
+
+fn prepare_raster_glyph_cache(cache: &mut RasterGlyphCache) {
+    if cache.entries.len() >= MAX_RASTER_GLYPH_CACHE_ENTRIES
+        || cache.bytes >= MAX_RASTER_GLYPH_CACHE_BYTES
+    {
+        cache.release();
+    }
+}
+
+pub(crate) fn release_thread_raster_cache() -> bool {
+    RASTER_GLYPH_CACHE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut cache) => {
+            cache.release();
+            true
+        },
+        Err(_) => false,
+    })
+}
+
+// The PNG encoder needs straight-alpha channels while tiny-skia stores
+// premultiplied RGBA. Computing the same f64 division for every channel of
+// every partially transparent pixel is expensive on large images. There are
+// only 255 possible non-zero, non-opaque alpha values and 256 channel values,
+// so retain the exact conversion result in a small lookup table. Building the
+// table with the original expression preserves byte-for-byte output, including
+// the few half-way values affected by the intermediate floating-point divide.
+static DEMULTIPLY_TABLE: LazyLock<[[u8; 256]; 256]> = LazyLock::new(|| {
+    let mut table = [[0; 256]; 256];
+    for (channel, output) in table[0].iter_mut().enumerate() {
+        *output = channel as u8;
+    }
+    for (channel, output) in table[255].iter_mut().enumerate() {
+        *output = channel as u8;
+    }
+    for (alpha, row) in table.iter_mut().enumerate().skip(1).take(254) {
+        let factor = f64::from(alpha as u8) / 255.0;
+        for (channel, output) in row.iter_mut().enumerate() {
+            *output = (f64::from(channel as u8) / factor + 0.5) as u8;
+        }
+    }
+    table
+});
+
+// JPEG output composites transparent pixels onto white after undoing
+// premultiplication. Keep the original f32 arithmetic in the initializer, but
+// perform the per-pixel conversion as three table reads in the hot loop.
+static JPEG_CHANNEL_TABLE: LazyLock<[[u8; 256]; 256]> = LazyLock::new(|| {
+    let mut table = [[0; 256]; 256];
+    for (alpha, row) in table.iter_mut().enumerate() {
+        if alpha == 0 {
+            row.fill(255);
+            continue;
+        }
+        if alpha == 255 {
+            for (channel, output) in row.iter_mut().enumerate() {
+                *output = channel as u8;
+            }
+            continue;
+        }
+        let af = alpha as f32 / 255.0;
+        let inv = 1.0 - af;
+        for (channel, output) in row.iter_mut().enumerate() {
+            let straight = (channel as f32 / af).min(255.0);
+            *output = (straight * af + 255.0 * inv) as u8;
+        }
+    }
+    table
 });
 
 // ---------------------------------------------------------------------------
@@ -732,30 +881,35 @@ fn rasterize_layout_with_output(
 
     let fg = parse_color(&options.render.fg_color);
 
-    let mut ctx = RasterCtx {
-        em,
-        fg,
-        cache: HashMap::new(),
-        glyph_rgba_buf: Vec::new(),
-        output,
-        work: 0,
-        failure: None,
-    };
+    with_raster_glyph_cache(|cache| {
+        prepare_raster_glyph_cache(cache);
+        let mut ctx = RasterCtx {
+            em,
+            fg,
+            cache,
+            local_glyphs: RasterGlyphs::default(),
+            glyph_rgba_buf: Vec::new(),
+            output,
+            work: 0,
+            failure: None,
+        };
 
-    // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
-    let baseline_y = root.height * em + padding;
-    emit_raster_box(
-        &mut pixmap,
-        &mut ctx,
-        root,
-        padding + x_shift_px,
-        baseline_y,
-        HorizontalTransform::identity(),
-    );
-    if let Some(error) = ctx.failure {
-        return Err(error);
-    }
+        // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
+        let baseline_y = root.height * em + padding;
+        emit_raster_box(
+            &mut pixmap,
+            &mut ctx,
+            root,
+            padding + x_shift_px,
+            baseline_y,
+            HorizontalTransform::identity(),
+        );
+        if let Some(error) = ctx.failure {
+            return Err(error);
+        }
 
+        Ok(())
+    })?;
     encode_image(&pixmap, options, output)
 }
 
@@ -815,31 +969,36 @@ pub(crate) fn rasterize_layout_arena_with_output(
 
     let fg = parse_color(&options.render.fg_color);
 
-    let mut ctx = RasterCtx {
-        em,
-        fg,
-        cache: HashMap::new(),
-        glyph_rgba_buf: Vec::new(),
-        output,
-        work: 0,
-        failure: None,
-    };
+    with_raster_glyph_cache(|cache| {
+        prepare_raster_glyph_cache(cache);
+        let mut ctx = RasterCtx {
+            em,
+            fg,
+            cache,
+            local_glyphs: RasterGlyphs::default(),
+            glyph_rgba_buf: Vec::new(),
+            output,
+            work: 0,
+            failure: None,
+        };
 
-    // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
-    let baseline_y = root_box.height * em + padding;
-    emit_raster_box_arena(
-        &mut pixmap,
-        &mut ctx,
-        arena,
-        root,
-        padding + x_shift_px,
-        baseline_y,
-        HorizontalTransform::identity(),
-    );
-    if let Some(error) = ctx.failure {
-        return Err(error);
-    }
+        // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
+        let baseline_y = root_box.height * em + padding;
+        emit_raster_box_arena(
+            &mut pixmap,
+            &mut ctx,
+            arena,
+            root,
+            padding + x_shift_px,
+            baseline_y,
+            HorizontalTransform::identity(),
+        );
+        if let Some(error) = ctx.failure {
+            return Err(error);
+        }
 
+        Ok(())
+    })?;
     encode_image(&pixmap, options, output)
 }
 
@@ -880,7 +1039,8 @@ fn check_pixmap_limits(
 struct RasterCtx<'a> {
     em: f64,
     fg: Color,
-    cache: HashMap<(FontId, char, u32), (fontdue::Metrics, Vec<u8>)>,
+    cache: &'a mut RasterGlyphCache,
+    local_glyphs: RasterGlyphs,
     /// Reusable RGBA buffer for glyph compositing (avoids per-glyph Pixmap allocation).
     glyph_rgba_buf: Vec<u8>,
     output: &'a OutputLimits,
@@ -1544,11 +1704,10 @@ fn draw_glyph(
         if italic {
             if let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
                 let key = (FontId::Math, italic_ch, bits);
-                let (m, bm) = &*ctx
-                    .cache
-                    .entry(key)
-                    .or_insert_with(|| MATH_FONT.rasterize(italic_ch, font_size_px));
-                if m.width > 0 && m.height > 0 && !bm.is_empty() {
+                let glyph = ctx.cache.get_or_rasterize(&mut ctx.local_glyphs, key, || {
+                    MATH_FONT.rasterize(italic_ch, font_size_px)
+                });
+                if glyph.metrics.width > 0 && glyph.metrics.height > 0 && !glyph.bitmap.is_empty() {
                     (FontId::Math, italic_ch, false)
                 } else {
                     (FontId::Math, ch, true)
@@ -1561,11 +1720,10 @@ fn draw_glyph(
         }
     } else {
         let key = (font, ch, bits);
-        let (m, bm) = &*ctx
-            .cache
-            .entry(key)
-            .or_insert_with(|| rasterize(font, ch, font_size_px));
-        if m.width > 0 && m.height > 0 && !bm.is_empty() {
+        let glyph = ctx.cache.get_or_rasterize(&mut ctx.local_glyphs, key, || {
+            rasterize(font, ch, font_size_px)
+        });
+        if glyph.metrics.width > 0 && glyph.metrics.height > 0 && !glyph.bitmap.is_empty() {
             (font, ch, false)
         } else {
             (FontId::Math, ch, false)
@@ -1574,11 +1732,10 @@ fn draw_glyph(
 
     let key = (used_font, render_ch, bits);
     let fg = ctx.fg;
-    let (metrics, bitmap) = &*ctx
-        .cache
-        .entry(key)
-        .or_insert_with(|| rasterize(used_font, render_ch, font_size_px));
-    if metrics.width == 0 || metrics.height == 0 || bitmap.is_empty() {
+    let glyph = ctx.cache.get_or_rasterize(&mut ctx.local_glyphs, key, || {
+        rasterize(used_font, render_ch, font_size_px)
+    });
+    if glyph.metrics.width == 0 || glyph.metrics.height == 0 || glyph.bitmap.is_empty() {
         // No face can draw it (and it is not a space/control): draw a hollow
         // notdef box instead of a silent gap. The SVG emitters keep `<text>`.
         if super::glyph_fallback::needs_fallback(ch, font) {
@@ -1591,34 +1748,38 @@ fn draw_glyph(
     // Position the glyph bitmap using sub-pixel coordinates for spacing accuracy.
     // fontdue metrics: ymin is y-up from baseline to bottom of glyph bounding box.
     // Keep fractional positions; tiny-skia's transform handles sub-pixel placement.
-    let gx = x + metrics.xmin as f64;
-    let gy = (baseline_y as f32) - metrics.ymin as f32 - metrics.height as f32;
+    let gx = x + glyph.metrics.xmin as f64;
+    let gy = (baseline_y as f32) - glyph.metrics.ymin as f32 - glyph.metrics.height as f32;
 
     // Reuse the RGBA buffer from ctx to avoid per-glyph Pixmap allocation.
-    let gw = metrics.width as u32;
-    let gh = metrics.height as u32;
+    let gw = glyph.metrics.width as u32;
+    let gh = glyph.metrics.height as u32;
     let needed = (gw as usize) * (gh as usize) * 4;
     let buf = &mut ctx.glyph_rgba_buf;
     buf.resize(needed, 0);
     let mirrored = xform.sign < 0.0;
     let gw_usize = gw as usize;
     let ink = fg.to_color_u8();
-    for (i, &coverage) in bitmap.iter().enumerate() {
-        let src_x = i % gw_usize;
-        let row = i / gw_usize;
-        let dst_x = if mirrored {
-            gw_usize - 1 - src_x
-        } else {
-            src_x
-        };
-        let idx = (row * gw_usize + dst_x) * 4;
-        if idx + 3 < buf.len() {
-            // Glyph coverage and paint opacity both contribute to pixel alpha.
-            let alpha = (u16::from(coverage) * u16::from(ink.alpha()) + 127) / 255;
-            buf[idx] = (u16::from(ink.red()) * alpha / 255) as u8;
-            buf[idx + 1] = (u16::from(ink.green()) * alpha / 255) as u8;
-            buf[idx + 2] = (u16::from(ink.blue()) * alpha / 255) as u8;
-            buf[idx + 3] = alpha as u8;
+    // Walk one bitmap row at a time so rasterization avoids a modulo and
+    // division for every pixel. The old flat-index loop made these integer
+    // operations a visible part of the cost for large text runs and matrices.
+    for (row, source_row) in glyph.bitmap.chunks(gw_usize).enumerate() {
+        let row_start = row * gw_usize;
+        for (src_x, &coverage) in source_row.iter().enumerate() {
+            let dst_x = if mirrored {
+                gw_usize - 1 - src_x
+            } else {
+                src_x
+            };
+            let idx = (row_start + dst_x) * 4;
+            if idx + 3 < buf.len() {
+                // Glyph coverage and paint opacity both contribute to pixel alpha.
+                let alpha = (u16::from(coverage) * u16::from(ink.alpha()) + 127) / 255;
+                buf[idx] = (u16::from(ink.red()) * alpha / 255) as u8;
+                buf[idx + 1] = (u16::from(ink.green()) * alpha / 255) as u8;
+                buf[idx + 2] = (u16::from(ink.blue()) * alpha / 255) as u8;
+                buf[idx + 3] = alpha as u8;
+            }
         }
     }
     if let Some(glyph_ref) = tiny_skia::PixmapRef::from_bytes(buf, gw, gh) {
@@ -2486,9 +2647,8 @@ fn demultiply_pixels(pixmap: &Pixmap, limits: &OutputLimits) -> Result<Vec<u8>> 
         if alpha == 0 || alpha == 255 {
             continue;
         }
-        let factor = f64::from(alpha) / 255.0;
         for channel in &mut pixel[..3] {
-            *channel = (f64::from(*channel) / factor + 0.5) as u8;
+            *channel = DEMULTIPLY_TABLE[usize::from(alpha)][usize::from(*channel)];
         }
     }
     Ok(data)
@@ -2512,15 +2672,10 @@ fn encode_jpeg(pixmap: &Pixmap, quality: u8, limits: &OutputLimits) -> Result<Ve
         } else if a == 255 {
             rgb.extend_from_slice(&[pr, pg, pb]); // fully opaque
         } else {
-            // Unpremultiply and blend with white background
-            let af = a as f32 / 255.0;
-            let r = (pr as f32 / af).min(255.0);
-            let g = (pg as f32 / af).min(255.0);
-            let b = (pb as f32 / af).min(255.0);
-            let inv = 1.0 - af;
-            rgb.push((r * af + 255.0 * inv) as u8);
-            rgb.push((g * af + 255.0 * inv) as u8);
-            rgb.push((b * af + 255.0 * inv) as u8);
+            let row = &JPEG_CHANNEL_TABLE[usize::from(a)];
+            rgb.push(row[usize::from(pr)]);
+            rgb.push(row[usize::from(pg)]);
+            rgb.push(row[usize::from(pb)]);
         }
     }
 
@@ -2600,6 +2755,162 @@ mod tests {
             ..RasterOptions::default()
         };
         render_to_image(&expr, &options).unwrap()
+    }
+
+    #[test]
+    fn raster_glyph_cache_reuses_small_bitmaps_across_renders() {
+        let key = (FontId::Math, 'x', 16.0_f32.to_bits());
+        let mut cache = RasterGlyphCache::default();
+        let mut local = RasterGlyphs::default();
+        let first = cache.get_or_rasterize(&mut local, key, || {
+            (fontdue::Metrics::default(), vec![1, 2, 3, 4])
+        });
+        assert_eq!(first.bitmap, [1, 2, 3, 4]);
+        assert!(local.is_empty());
+        let mut next_render = RasterGlyphs::default();
+        let hit = cache.get_or_rasterize(&mut next_render, key, || panic!("expected cache hit"));
+        assert_eq!(hit.bitmap, [1, 2, 3, 4]);
+        assert_eq!(cache.bytes, 4);
+
+        cache.release();
+        assert_eq!(cache.bytes, 0);
+        assert_eq!(cache.entries.capacity(), 0);
+    }
+
+    #[test]
+    fn large_bitmaps_are_reused_only_within_one_image() {
+        let key = (FontId::Math, 'x', 1024.0_f32.to_bits());
+        let mut cache = RasterGlyphCache::default();
+        let mut local = RasterGlyphs::default();
+        let bytes = MAX_RASTER_GLYPH_BYTES + 1;
+        for _ in 0..2 {
+            let glyph = cache.get_or_rasterize(&mut local, key, || {
+                (fontdue::Metrics::default(), vec![0; bytes])
+            });
+            assert_eq!(glyph.bitmap.len(), bytes);
+            let hit = cache.get_or_rasterize(&mut local, key, || panic!("expected per-image hit"));
+            assert_eq!(hit.bitmap.len(), bytes);
+            assert!(cache.entries.is_empty());
+            assert_eq!(cache.bytes, 0);
+            assert_eq!(local.len(), 1);
+            local.clear(); // the next image starts with a fresh local cache
+        }
+    }
+
+    #[test]
+    fn raster_glyph_cache_near_capacity_is_released_at_next_render() {
+        let mut cache = RasterGlyphCache::default();
+        let mut spill = RasterGlyphs::default();
+        for index in 0..(MAX_RASTER_GLYPH_CACHE_ENTRIES - 1) {
+            let key = (FontId::Math, 'x', index as u32);
+            cache.get_or_rasterize(&mut spill, key, || {
+                (fontdue::Metrics::default(), vec![0; 1])
+            });
+        }
+        assert_eq!(cache.entries.len(), MAX_RASTER_GLYPH_CACHE_ENTRIES - 1);
+        prepare_raster_glyph_cache(&mut cache);
+        assert_eq!(cache.entries.len(), MAX_RASTER_GLYPH_CACHE_ENTRIES - 1);
+        let key = (
+            FontId::Math,
+            'x',
+            (MAX_RASTER_GLYPH_CACHE_ENTRIES - 1) as u32,
+        );
+        cache.get_or_rasterize(&mut spill, key, || {
+            (fontdue::Metrics::default(), vec![0; 1])
+        });
+        prepare_raster_glyph_cache(&mut cache);
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.bytes, 0);
+        assert_eq!(cache.entries.capacity(), 0);
+    }
+
+    #[test]
+    fn raster_glyph_cache_reentrant_access_uses_a_temporary_cache() {
+        with_raster_glyph_cache(|cache| {
+            let key = (FontId::Math, 'x', 16.0_f32.to_bits());
+            let mut spill = RasterGlyphs::default();
+            cache.get_or_rasterize(&mut spill, key, || {
+                (fontdue::Metrics::default(), vec![0; 4])
+            });
+            with_raster_glyph_cache(|nested| {
+                let mut nested_spill = RasterGlyphs::default();
+                nested.get_or_rasterize(&mut nested_spill, key, || {
+                    (fontdue::Metrics::default(), vec![0; 8])
+                });
+                assert_eq!(nested.bytes, 8);
+            });
+            assert_eq!(cache.bytes, 4);
+        });
+    }
+
+    #[test]
+    fn alpha_conversion_tables_match_the_original_float_formulas() {
+        for alpha in 0..=255_usize {
+            for channel in 0..=255_usize {
+                let demultiplied = if alpha == 0 || alpha == 255 {
+                    channel as u8
+                } else {
+                    let factor = alpha as f64 / 255.0;
+                    (channel as f64 / factor + 0.5) as u8
+                };
+                assert_eq!(
+                    DEMULTIPLY_TABLE[alpha][channel], demultiplied,
+                    "demultiply alpha={alpha} channel={channel}"
+                );
+
+                let jpeg = if alpha == 0 {
+                    255
+                } else if alpha == 255 {
+                    channel as u8
+                } else {
+                    let factor = alpha as f32 / 255.0;
+                    let straight = (channel as f32 / factor).min(255.0);
+                    (straight * factor + 255.0 * (1.0 - factor)) as u8
+                };
+                assert_eq!(
+                    JPEG_CHANNEL_TABLE[alpha][channel], jpeg,
+                    "JPEG alpha={alpha} channel={channel}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn release_thread_render_cache_releases_raster_glyphs() {
+        let expression = MathExpr::inline(vec![MathNode::Identifier("x".into())]);
+        render_to_image(&expression, &RasterOptions::default()).unwrap();
+        let retained = RASTER_GLYPH_CACHE.with(|cache| cache.borrow().bytes);
+        assert!(retained > 0);
+        assert!(crate::render::release_thread_render_cache());
+        RASTER_GLYPH_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            assert!(cache.entries.is_empty());
+            assert_eq!(cache.bytes, 0);
+            assert_eq!(cache.entries.capacity(), 0);
+        });
+    }
+
+    #[test]
+    fn large_font_render_does_not_retain_oversized_glyph_bitmaps() {
+        let expression = MathExpr::inline(vec![MathNode::Identifier("x".into())]);
+        let options = RasterOptions {
+            render: RenderOptions {
+                font_size_px: 512.0,
+                ..RenderOptions::default()
+            },
+            ..RasterOptions::default()
+        };
+        render_to_image(&expression, &options).unwrap();
+        RASTER_GLYPH_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            assert!(cache.bytes <= MAX_RASTER_GLYPH_CACHE_BYTES);
+            assert!(
+                cache
+                    .entries
+                    .values()
+                    .all(|glyph| glyph.bitmap.capacity() <= MAX_RASTER_GLYPH_BYTES)
+            );
+        });
     }
 
     #[test]
