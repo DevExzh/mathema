@@ -730,6 +730,10 @@ fn write_compact_with_diagnostics(
 /// Builder-style conversion result. Parse once, write to multiple formats.
 pub struct ConvertResult {
     with_leading_scripts: OnceLock<Option<Box<CompactExpr>>>,
+    /// Cached compact tree for pure OMML, which cannot carry colors or
+    /// typesetting attributes. Colored builder calls otherwise clone and
+    /// normalize the whole arena on every repeated write.
+    pure_omml: OnceLock<Option<Box<CompactExpr>>>,
     compact: CompactParseResult,
     config: Config,
     mtef: Option<MtefInfo>,
@@ -796,18 +800,25 @@ impl ConvertResult {
     }
 
     /// The expression without sizes and colors that pure OMML cannot carry.
-    fn in_pure_omml(&self) -> Result<Option<CompactExpr>> {
+    fn in_pure_omml(&self) -> Result<Option<&CompactExpr>> {
+        if let Some(cached) = self.pure_omml.get() {
+            return Ok(cached.as_deref());
+        }
+
         let expr = &self.compact.expr;
         if !expr.arena.has_attrs() && !crate::writer::omml::has_colors(expr) {
-            return Ok(None);
+            let cached = self.pure_omml.get_or_init(|| None);
+            return Ok(cached.as_deref());
         }
+
         let mut plain = expr.clone();
         drop_unwritten(&mut plain, Format::Omml)?;
         if let Some(normalize) = self.normalization() {
             normalize(&mut plain)?;
         }
         normalize_compact_expr_leading_scripts(&mut plain)?;
-        Ok(Some(plain))
+        let cached = self.pure_omml.get_or_init(|| Some(Box::new(plain)));
+        Ok(cached.as_deref())
     }
 
     fn write_omml(
@@ -821,7 +832,7 @@ impl ConvertResult {
         {
             let diagnostics =
                 OmmlWriter::compact_diagnostics_only(expr, config, &OutputLimits::unlimited())?;
-            let (output, _) = OmmlWriter::write_with_options_trusted(&plain, config, options)?;
+            let (output, _) = OmmlWriter::write_with_options_trusted(plain, config, options)?;
             return Ok((output, diagnostics));
         }
         OmmlWriter::write_with_options_trusted(expr, config, options)
@@ -897,7 +908,7 @@ impl ConvertResult {
     /// Serialize to OMML using the given configuration.
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
         match self.in_pure_omml()? {
-            Some(plain) => OmmlWriter::write_compact_trusted(&plain, config),
+            Some(plain) => OmmlWriter::write_compact_trusted(plain, config),
             None => OmmlWriter::write_compact_trusted(self.output_expr()?, config),
         }
     }
@@ -1511,6 +1522,7 @@ pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
     check_depth(&compact, config)?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
+        pure_omml: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -1547,6 +1559,7 @@ pub fn from_mathml_with_location(
         .map_err(|error| LocatedError::new(error, Some(Format::MathML)))?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
+        pure_omml: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -1564,6 +1577,7 @@ pub fn from_unicode_math_with_location(
         .map_err(|error| LocatedError::new(error, Some(Format::UnicodeMath)))?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
+        pure_omml: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -1599,6 +1613,7 @@ pub fn from_omml_with_location(
     check_depth(&compact, config).map_err(|error| LocatedError::new(error, Some(Format::Omml)))?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
+        pure_omml: OnceLock::new(),
         compact,
         config: *config,
         mtef: None,
@@ -1710,6 +1725,7 @@ fn finish_mtef(
     check_depth(&compact, config)?;
     Ok(ConvertResult {
         with_leading_scripts: OnceLock::new(),
+        pure_omml: OnceLock::new(),
         compact,
         config: *config,
         mtef,
